@@ -276,7 +276,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
       language: row['LANGUAGE_ID'] || 'da',
     }))
-    // Filter out empty rows - must have at least a title OR a SKU
+    // Filter out invalid rows
     .filter(product => {
       const hasTitle = product.title && product.title.trim() !== '';
       const hasSku = product.sku && product.sku.trim() !== '';
@@ -289,6 +289,18 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       // If no title but has SKU, log a warning
       if (!hasTitle && hasSku) {
         console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
+        return false;
+      }
+
+      // Filter out rows with HTML fragments in SKU (corrupted data)
+      if (product.sku && (product.sku.includes('<') || product.sku.includes('>'))) {
+        console.warn(`Skipping product with HTML in SKU: "${product.sku.substring(0, 50)}..."`);
+        return false;
+      }
+
+      // Filter out rows with HTML fragments in title (corrupted data)
+      if (product.title && product.title.startsWith('>') && product.title.includes('<')) {
+        console.warn(`Skipping product with corrupted HTML title: "${product.title.substring(0, 50)}..."`);
         return false;
       }
 
