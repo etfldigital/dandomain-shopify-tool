@@ -216,6 +216,38 @@ function extractVariantOption(baseSku: string, fullSku: string): string {
   return suffix.replace(/^[-_]/, '').toUpperCase() || 'Default';
 }
 
+// Extract base SKU from a full SKU (e.g., "205175-7558-L" -> "205175-7558")
+// This handles patterns like XXX-XXXX-M, XXX-XXXX-L, XXX-XXXX-XL etc.
+function extractBaseSku(sku: string): string {
+  if (!sku) return '';
+  
+  // Common size/variant suffixes to strip
+  const variantSuffixes = [
+    // Sizes
+    '-XXS', '-XS', '-S', '-M', '-L', '-XL', '-XXL', '-XXXL', '-2XL', '-3XL', '-4XL', '-5XL',
+    '-xxs', '-xs', '-s', '-m', '-l', '-xl', '-xxl', '-xxxl', '-2xl', '-3xl', '-4xl', '-5xl',
+    // Numbers (for shoe sizes, etc.)
+    '-35', '-36', '-37', '-38', '-39', '-40', '-41', '-42', '-43', '-44', '-45', '-46', '-47', '-48',
+    // Colors (common abbreviations)
+    '-BLK', '-WHT', '-RED', '-BLU', '-GRN', '-BRN', '-GRY', '-NAV', '-PNK',
+    '-blk', '-wht', '-red', '-blu', '-grn', '-brn', '-gry', '-nav', '-pnk',
+  ];
+  
+  for (const suffix of variantSuffixes) {
+    if (sku.endsWith(suffix)) {
+      return sku.slice(0, -suffix.length);
+    }
+  }
+  
+  // Also try to detect pattern: base-VARIANT where VARIANT is 1-4 uppercase chars
+  const match = sku.match(/^(.+)-([A-Z0-9]{1,4})$/);
+  if (match) {
+    return match[1];
+  }
+  
+  return sku;
+}
+
 function normalizeImageUrl(raw: string, baseUrl: string): string {
   let img = String(raw || '').trim();
   if (!img) return '';
@@ -314,17 +346,22 @@ async function uploadProductsWithVariants(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Group products by title (same title = variants of same product)
+  // Group products by BASE SKU (same base SKU = variants of same product)
+  // E.g., "205175-7558", "205175-7558-M", "205175-7558-L" all share base SKU "205175-7558"
   const productGroups: Map<string, any[]> = new Map();
   
   for (const item of allPending) {
+    const sku = item.data?.sku || '';
     const title = item.data?.title || '';
-    if (!title || title === 'Untitled') continue;
+    if (!sku && (!title || title === 'Untitled')) continue;
     
-    if (!productGroups.has(title)) {
-      productGroups.set(title, []);
+    // Use base SKU as the grouping key
+    const baseSku = extractBaseSku(sku) || sku || title;
+    
+    if (!productGroups.has(baseSku)) {
+      productGroups.set(baseSku, []);
     }
-    productGroups.get(title)!.push(item);
+    productGroups.get(baseSku)!.push(item);
   }
 
   let processed = 0;
@@ -1027,10 +1064,30 @@ async function uploadOrder(
 async function uploadCollection(shopifyUrl: string, token: string, category: any): Promise<string> {
   // Create a Smart Collection with a tag rule
   const tag = category.shopify_tag || category.name;
+  const collectionTitle = category.name;
+  
+  // First, check if a collection with this exact name already exists
+  const { response: searchResponse, body: searchBody } = await shopifyFetch(
+    `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
+    {
+      headers: { 'X-Shopify-Access-Token': token },
+    }
+  );
+  
+  if (searchResponse.ok) {
+    const searchResult = JSON.parse(searchBody);
+    const existing = searchResult.smart_collections?.find(
+      (c: any) => c.title.toLowerCase() === collectionTitle.toLowerCase()
+    );
+    if (existing) {
+      console.log(`Collection "${collectionTitle}" already exists with ID ${existing.id}, skipping creation`);
+      return String(existing.id);
+    }
+  }
   
   const collectionPayload = {
     smart_collection: {
-      title: category.name,
+      title: collectionTitle,
       rules: [{
         column: 'tag',
         relation: 'equals',
@@ -1050,6 +1107,21 @@ async function uploadCollection(shopifyUrl: string, token: string, category: any
   });
 
   if (!response.ok) {
+    // Handle case where collection was created between our check and creation attempt
+    if (response.status === 422 && body.includes('already exists')) {
+      console.log(`Collection "${collectionTitle}" was created concurrently, fetching existing...`);
+      const { response: retrySearch, body: retryBody } = await shopifyFetch(
+        `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
+        { headers: { 'X-Shopify-Access-Token': token } }
+      );
+      if (retrySearch.ok) {
+        const retryResult = JSON.parse(retryBody);
+        const existing = retryResult.smart_collections?.find(
+          (c: any) => c.title.toLowerCase() === collectionTitle.toLowerCase()
+        );
+        if (existing) return String(existing.id);
+      }
+    }
     throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
