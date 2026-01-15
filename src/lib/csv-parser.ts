@@ -202,7 +202,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       compare_at_price: row['PROD_PRICE_OFFER'] ? parsePrice(row['PROD_PRICE_OFFER']) : null,
       cost_price: row['PROD_COST_PRICE'] ? parsePrice(row['PROD_COST_PRICE']) : null,
       weight: row['PROD_WEIGHT'] ? parseFloat(row['PROD_WEIGHT'].replace(',', '.')) : null,
-      stock_quantity: parseInt(row['PROD_STOCK'] || row['stock'] || '0') || 0,
+      stock_quantity: parseInt(row['STOCK_COUNT'] || row['PROD_STOCK'] || row['stock'] || '0') || 0,
       active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
       images: row['PROD_IMAGE'] ? [row['PROD_IMAGE']] : [],
       tags: [],

@@ -18,6 +18,7 @@ interface ProductPreviewData {
     sku: string;
     price: number;
     cost_price: number | null;
+    stock_quantity: number;
     vendor: string | null;
     category_ids: string[];
   };
@@ -126,6 +127,7 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
           sku: data.sku || '',
           price: data.price || 0,
           cost_price: data.cost_price || null,
+          stock_quantity: data.stock_quantity || 0,
           vendor: data.vendor,
           category_ids: categoryIds,
         },
@@ -342,6 +344,21 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               </p>
             </CardContent>
           </Card>
+
+          {/* Stock Quantity */}
+          <Card>
+            <CardContent className="pt-4">
+              <label className="text-xs text-muted-foreground mb-1 block">Lagerbeholdning</label>
+              <Input 
+                value={product.original.stock_quantity.toString()} 
+                readOnly 
+                className="bg-background h-9 font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Fra: STOCK_COUNT
+              </p>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
@@ -384,6 +401,11 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               <Badge variant="outline" className="font-mono">PROD_NUM</Badge>
               <ArrowRight className="w-3 h-3 text-muted-foreground" />
               <span>SKU</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono">STOCK_COUNT</Badge>
+              <ArrowRight className="w-3 h-3 text-muted-foreground" />
+              <span>Lagerbeholdning</span>
             </div>
           </div>
         </CardContent>
