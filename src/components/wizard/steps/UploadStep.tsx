@@ -176,9 +176,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           allErrorDetails = [...allErrorDetails, ...result.errorDetails];
         }
 
+        // Ensure processed count never exceeds total
+        const cappedProcessed = Math.min(totalProcessed, displayTotal);
         setProgress(prev => prev.map(p => 
           p.entityType === entityType 
-            ? { ...p, processed: totalProcessed, errors: totalErrors, errorDetails: allErrorDetails } 
+            ? { ...p, processed: cappedProcessed, errors: totalErrors, errorDetails: allErrorDetails } 
             : p
         ));
 
