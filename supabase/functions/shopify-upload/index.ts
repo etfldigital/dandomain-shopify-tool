@@ -782,6 +782,16 @@ async function uploadOrder(
   // Use the original order ID from DanDomain as the order name/number
   const orderName = data.external_id ? `#${data.external_id}` : undefined;
 
+  // Build customer address from order data
+  const customerAddress = {
+    address1: data.customer_address || data.billing_address?.address1 || '',
+    address2: data.billing_address?.address2 || null,
+    city: data.customer_city || data.billing_address?.city || '',
+    zip: data.customer_zip || data.billing_address?.zip || '',
+    country: data.customer_country || data.billing_address?.country || 'DK',
+    phone: data.customer_phone || data.billing_address?.phone || null,
+  };
+
   const customerObject = shopifyCustomerId
     ? { id: Number(shopifyCustomerId) }
     : customerEmail
@@ -790,6 +800,7 @@ async function uploadOrder(
           first_name: data.customer_first_name || undefined,
           last_name: data.customer_last_name || undefined,
           phone: data.customer_phone || data.billing_address?.phone || null,
+          default_address: customerAddress,
         }
       : undefined;
 
