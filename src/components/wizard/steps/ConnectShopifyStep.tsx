@@ -14,9 +14,12 @@ interface ConnectShopifyStepProps {
 
 export function ConnectShopifyStep({ project, onUpdateProject, onNext }: ConnectShopifyStepProps) {
   const [storeDomain, setStoreDomain] = useState(project.shopify_store_domain || '');
-  const [accessToken, setAccessToken] = useState('');
+  const [accessToken, setAccessToken] = useState(project.shopify_access_token_encrypted || '');
+  
+  // If we already have saved credentials, show success state
+  const hasExistingConnection = project.shopify_store_domain && project.shopify_access_token_encrypted;
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(hasExistingConnection ? 'success' : null);
   const [errorMessage, setErrorMessage] = useState('');
 
   const handleTestConnection = async () => {
