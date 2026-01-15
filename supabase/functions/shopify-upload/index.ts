@@ -50,6 +50,15 @@ serve(async (req) => {
 
     // Get pending items based on entity type
     const tableName = `canonical_${entityType}`;
+    
+    // Special handling for products - group by title to create variants
+    if (entityType === 'products') {
+      const result = await uploadProductsWithVariants(supabase, projectId, shopifyUrl, shopifyToken, batchSize);
+      return new Response(JSON.stringify(result), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+    
     const { data: items, error: fetchError } = await supabase
       .from(tableName)
       .select('*')
@@ -77,9 +86,6 @@ serve(async (req) => {
         let shopifyId: string | null = null;
 
         switch (entityType) {
-          case 'products':
-            shopifyId = await uploadProduct(shopifyUrl, shopifyToken, item.data, supabase, projectId);
-            break;
           case 'customers':
             shopifyId = await uploadCustomer(shopifyUrl, shopifyToken, item.data);
             break;
@@ -97,7 +103,7 @@ serve(async (req) => {
         // Update status to uploaded
         await supabase
           .from(tableName)
-          .update({ 
+          .update({
             status: 'uploaded', 
             shopify_id: shopifyId,
             updated_at: new Date().toISOString()
@@ -149,6 +155,230 @@ serve(async (req) => {
     });
   }
 });
+
+// Helper to extract variant option from SKU suffix
+function extractVariantOption(baseSku: string, fullSku: string): string {
+  if (fullSku === baseSku) return 'Default';
+  const suffix = fullSku.substring(baseSku.length);
+  // Remove leading dash/separator
+  return suffix.replace(/^[-_]/, '').toUpperCase() || 'Default';
+}
+
+// Upload products with variant detection
+async function uploadProductsWithVariants(
+  supabase: any,
+  projectId: string,
+  shopifyUrl: string,
+  token: string,
+  batchSize: number
+): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[] }> {
+  
+  // Get all pending products
+  const { data: allPending, error: fetchError } = await supabase
+    .from('canonical_products')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('status', 'pending')
+    .order('data->>title');
+
+  if (fetchError) {
+    throw new Error(`Failed to fetch products: ${fetchError.message}`);
+  }
+
+  if (!allPending || allPending.length === 0) {
+    return { success: true, processed: 0, errors: 0, hasMore: false };
+  }
+
+  // Group products by title (same title = variants of same product)
+  const productGroups: Map<string, any[]> = new Map();
+  
+  for (const item of allPending) {
+    const title = item.data?.title || '';
+    if (!title || title === 'Untitled') continue;
+    
+    if (!productGroups.has(title)) {
+      productGroups.set(title, []);
+    }
+    productGroups.get(title)!.push(item);
+  }
+
+  let processed = 0;
+  let errors = 0;
+  const errorDetails: { externalId: string; message: string }[] = [];
+  
+  // Process up to batchSize product groups
+  const groupsToProcess = Array.from(productGroups.entries()).slice(0, batchSize);
+
+  for (const [title, items] of groupsToProcess) {
+    try {
+      // Sort items by SKU length (shortest first = base product)
+      items.sort((a, b) => (a.data?.sku || '').length - (b.data?.sku || '').length);
+      
+      const baseProduct = items[0];
+      const baseSku = baseProduct.data?.sku || '';
+      const data = baseProduct.data;
+      
+      // Skip untitled/empty products
+      if (!data.title || data.title === 'Untitled') {
+        throw new Error('Produktet har ingen titel og blev sprunget over');
+      }
+
+      // Transform title: strip vendor from title if present
+      let transformedTitle = data.title;
+      const vendor = data.vendor || '';
+      
+      if (vendor && transformedTitle.includes(vendor)) {
+        const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+        for (const sep of separators) {
+          if (transformedTitle.startsWith(vendor + sep)) {
+            transformedTitle = transformedTitle.substring(vendor.length + sep.length).trim();
+            break;
+          }
+        }
+      }
+
+      // Get tags from categories
+      const tags: string[] = [...(data.tags || [])];
+      
+      if (data.category_external_ids && data.category_external_ids.length > 0) {
+        const { data: categories } = await supabase
+          .from('canonical_categories')
+          .select('shopify_tag, name')
+          .eq('project_id', projectId)
+          .in('external_id', data.category_external_ids)
+          .eq('exclude', false);
+        
+        if (categories) {
+          for (const cat of categories) {
+            if (cat.shopify_tag) {
+              tags.push(cat.shopify_tag);
+            } else if (cat.name) {
+              tags.push(cat.name);
+            }
+          }
+        }
+      }
+
+      // Build variants from all items in the group
+      const variants = items.map((item, index) => {
+        const variantData = item.data;
+        const option = extractVariantOption(baseSku, variantData?.sku || '');
+        
+        return {
+          sku: variantData?.sku || '',
+          price: String(variantData?.price || 0),
+          compare_at_price: variantData?.compare_at_price ? String(variantData.compare_at_price) : null,
+          inventory_quantity: variantData?.stock_quantity || 0,
+          weight: variantData?.weight || 0,
+          weight_unit: 'kg',
+          inventory_management: 'shopify',
+          option1: option,
+          position: index + 1,
+        };
+      });
+
+      // Determine if we need variant options
+      const hasVariants = items.length > 1;
+      
+      // Collect all unique images from variants
+      const allImages: string[] = [];
+      for (const item of items) {
+        const imgs = item.data?.images || [];
+        for (const img of imgs) {
+          if (img && !allImages.includes(img)) {
+            allImages.push(img);
+          }
+        }
+      }
+
+      const productPayload: any = {
+        product: {
+          title: transformedTitle,
+          body_html: data.body_html || '',
+          vendor: vendor,
+          product_type: '',
+          tags: [...new Set(tags)].join(', '),
+          status: data.active ? 'active' : 'draft',
+          variants: variants,
+          images: allImages.map((url: string) => ({ src: url })),
+        }
+      };
+
+      // Add options if there are variants
+      if (hasVariants) {
+        productPayload.product.options = [{ name: 'Størrelse', values: variants.map(v => v.option1) }];
+      }
+
+      console.log(`Uploading product "${transformedTitle}" with ${variants.length} variant(s)`);
+
+      const response = await fetch(`${shopifyUrl}/products.json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': token,
+        },
+        body: JSON.stringify(productPayload),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+      }
+
+      const result = await response.json();
+      const shopifyId = String(result.product.id);
+
+      // Update all items in this group as uploaded
+      for (const item of items) {
+        await supabase
+          .from('canonical_products')
+          .update({
+            status: 'uploaded',
+            shopify_id: shopifyId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.id);
+      }
+
+      processed += items.length;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`Error uploading product group "${title}":`, errorMessage);
+      
+      // Mark all items in this group as failed
+      for (const item of items) {
+        await supabase
+          .from('canonical_products')
+          .update({
+            status: 'failed',
+            error_message: errorMessage,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.id);
+        
+        errorDetails.push({ externalId: item.external_id, message: errorMessage });
+      }
+      
+      errors += items.length;
+    }
+  }
+
+  // Check if there are more pending products
+  const { count: remainingCount } = await supabase
+    .from('canonical_products')
+    .select('*', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .eq('status', 'pending');
+
+  return {
+    success: true,
+    processed,
+    errors,
+    hasMore: (remainingCount || 0) > 0,
+    errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
+  };
+}
 
 async function uploadProduct(
   shopifyUrl: string, 
