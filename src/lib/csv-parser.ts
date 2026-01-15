@@ -174,6 +174,71 @@ function parseDate(dateStr: string): string {
   return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).toISOString();
 }
 
+
+function extractImagesFromRow(row: Record<string, string>): string[] {
+  const isMeaningful = (value: unknown) => {
+    const s = String(value ?? '').trim();
+    if (!s) return false;
+    const lower = s.toLowerCase();
+    return !['0', 'false', 'null', 'none', 'na', 'n/a'].includes(lower);
+  };
+
+  const candidates: string[] = [];
+
+  // Known common fields
+  const known = [
+    'PROD_PHOTO',
+    'PROD_IMAGE',
+    'PROD_PHOTO_1',
+    'PROD_PHOTO1',
+    'PROD_PHOTO_URL',
+    'PROD_IMAGE_URL',
+    'IMAGE_URL',
+    'PHOTO_URL',
+    'PROD_PICTURE',
+    'PICTURE',
+    'PHOTO',
+    'IMAGE',
+  ];
+
+  const getCI = (name: string) => {
+    if (row[name] != null && row[name] !== '') return row[name];
+    const lower = name.toLowerCase();
+    const key = Object.keys(row).find((k) => k.toLowerCase() === lower);
+    return key ? row[key] : '';
+  };
+
+  for (const k of known) {
+    const v = getCI(k);
+    if (isMeaningful(v)) candidates.push(v);
+  }
+
+  // Scan all fields (covers PROD_PHOTO_2, PROD_PHOTO_3, etc.)
+  for (const key of Object.keys(row)) {
+    if (!/(^prod_(photo|image)|photo|image|picture)/i.test(key)) continue;
+    const v = row[key];
+    if (isMeaningful(v)) candidates.push(v);
+  }
+
+  const out: string[] = [];
+  for (const rawCandidate of candidates) {
+    const raw = String(rawCandidate).trim();
+
+    // Some exports use '#', but don't split URLs containing '#'
+    const hashParts = raw.includes('#') && !/^https?:\/\//i.test(raw) ? raw.split('#') : [raw];
+
+    for (const part of hashParts) {
+      const parts = part
+        .split(/[|,]/)
+        .map((s) => s.trim())
+        .filter(isMeaningful);
+      out.push(...parts);
+    }
+  }
+
+  return Array.from(new Set(out));
+}
+
 /**
  * Parse products CSV from DanDomain
  */
@@ -204,23 +269,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       weight: row['PROD_WEIGHT'] ? parseFloat(row['PROD_WEIGHT'].replace(',', '.')) : null,
       stock_quantity: parseInt(row['STOCK_COUNT'] || row['PROD_STOCK'] || row['stock'] || '0') || 0,
       active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
-      images: (() => {
-        const raw = getField(
-          row,
-          'PROD_PHOTO',
-          'PROD_IMAGE',
-          'PROD_PHOTO_1',
-          'PROD_PHOTO1',
-          'PHOTO',
-          'IMAGE'
-        );
-        return raw
-          ? raw
-              .split(/[|,]/)
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : [];
-      })(),
+      images: extractImagesFromRow(row),
       tags: [],
       category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
       vendor: row['MANUFAC_ID'] || null,
@@ -231,18 +280,18 @@ export function parseProductsCSV(csvText: string): ProductData[] {
     .filter(product => {
       const hasTitle = product.title && product.title.trim() !== '';
       const hasSku = product.sku && product.sku.trim() !== '';
-      
+
       if (!hasTitle && !hasSku) {
         console.log('Skipping empty product row - no title or SKU');
         return false;
       }
-      
+
       // If no title but has SKU, log a warning
       if (!hasTitle && hasSku) {
         console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
         return false;
       }
-      
+
       return true;
     });
 }
@@ -348,6 +397,66 @@ function getField(row: Record<string, string>, ...fieldNames: string[]): string 
     }
   }
   return '';
+}
+
+function extractImages(row: Record<string, string>): string[] {
+  const isMeaningful = (value: unknown) => {
+    const s = String(value ?? '').trim();
+    if (!s) return false;
+    const lower = s.toLowerCase();
+    return !['0', 'false', 'null', 'none', 'na', 'n/a'].includes(lower);
+  };
+
+  // Collect values from any column that looks like an image field.
+  // DanDomain exports vary a lot: PROD_PHOTO, PROD_PHOTO_1..N, PROD_IMAGE, IMAGE_URL, etc.
+  const candidates: string[] = [];
+
+  const knownFields = [
+    'PROD_PHOTO',
+    'PROD_IMAGE',
+    'PROD_PHOTO_1',
+    'PROD_PHOTO1',
+    'PROD_PHOTO_URL',
+    'PROD_IMAGE_URL',
+    'IMAGE_URL',
+    'PHOTO_URL',
+    'PROD_PICTURE',
+    'PICTURE',
+    'PHOTO',
+    'IMAGE',
+  ];
+
+  for (const name of knownFields) {
+    const v = getField(row, name);
+    if (isMeaningful(v)) candidates.push(v);
+  }
+
+  // Additionally, scan all headers (covers PROD_PHOTO_2, PROD_PHOTO_3, etc.)
+  for (const key of Object.keys(row)) {
+    if (!/(^prod_(photo|image)|photo|image|picture)/i.test(key)) continue;
+    const v = row[key];
+    if (isMeaningful(v)) candidates.push(v);
+  }
+
+  // Split combined fields into a flat list
+  const out: string[] = [];
+  for (const rawCandidate of candidates) {
+    const raw = String(rawCandidate).trim();
+
+    // Some exports use '#' as a separator (e.g. "166#6#97" style). Only split on '#' for non-URLs.
+    const hashParts = raw.includes('#') && !/^https?:\/\//i.test(raw) ? raw.split('#') : [raw];
+
+    for (const p of hashParts) {
+      const parts = p
+        .split(/[|,]/)
+        .map((s) => s.trim())
+        .filter(isMeaningful);
+
+      for (const img of parts) out.push(img);
+    }
+  }
+
+  return Array.from(new Set(out));
 }
 
 export function parseCategoriesCSV(csvText: string): CategoryData[] {
