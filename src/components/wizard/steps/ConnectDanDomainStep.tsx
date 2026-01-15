@@ -14,9 +14,12 @@ interface ConnectDanDomainStepProps {
 
 export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: ConnectDanDomainStepProps) {
   const [shopUrl, setShopUrl] = useState(project.dandomain_shop_url || '');
-  const [apiKey, setApiKey] = useState('');
+  const [apiKey, setApiKey] = useState(project.dandomain_api_key_encrypted || '');
+  
+  // If we already have saved credentials, show success state
+  const hasExistingConnection = project.dandomain_shop_url && project.dandomain_api_key_encrypted;
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(hasExistingConnection ? 'success' : null);
   const [errorMessage, setErrorMessage] = useState('');
 
   const handleTestConnection = async () => {
