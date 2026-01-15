@@ -617,31 +617,46 @@ async function uploadProduct(
   return String(result.product.id);
 }
 
-// Normalize phone number for Shopify:
-// - Strip Danish country codes (45, +45, 0045) from the beginning
-// - Return null if the result is empty or invalid
+// Normalize phone number for Shopify.
+// Shopify is fairly strict, so we:
+// - keep digits only
+// - strip Danish country code prefixes (45 / +45 / 0045)
+// - output E.164 (e.g. +4512345678) when possible
+// - return undefined when we can't confidently normalize (so the order doesn't fail)
 function normalizePhoneNumber(raw: unknown): string | undefined {
-  let phone = String(raw ?? '').trim();
-  if (!phone) return undefined;
+  const input = String(raw ?? '').trim();
+  if (!input) return undefined;
 
-  // Remove all spaces, dashes, parentheses
-  phone = phone.replace(/[\s\-\(\)]/g, '');
+  // Keep digits only
+  let digits = input.replace(/\D/g, '');
+  if (!digits) return undefined;
 
-  // Strip Danish country codes from the beginning
-  // Order matters: check longer patterns first
-  if (phone.startsWith('+45')) {
-    phone = phone.substring(3);
-  } else if (phone.startsWith('0045')) {
-    phone = phone.substring(4);
-  } else if (phone.startsWith('45') && phone.length > 8) {
-    // Only strip "45" if phone is longer than 8 digits (Danish numbers are 8 digits)
-    phone = phone.substring(2);
+  // Strip DK country code
+  if (digits.startsWith('0045')) {
+    digits = digits.slice(4);
   }
 
-  // If empty or too short, return undefined
-  if (!phone || phone.length < 6) return undefined;
+  // At this point, numbers like "+45xxxxxxxx" become "45xxxxxxxx"
+  if (digits.startsWith('45') && digits.length > 8) {
+    digits = digits.slice(2);
+  }
 
-  return phone;
+  // Handle trunk prefix like 0XXXXXXXX
+  if (digits.length === 9 && digits.startsWith('0')) {
+    digits = digits.slice(1);
+  }
+
+  // DK numbers are 8 digits → emit +45 E.164
+  if (digits.length === 8) {
+    return `+45${digits}`;
+  }
+
+  // If it's already an international-looking number, emit +<digits>
+  if (digits.length >= 10 && digits.length <= 15) {
+    return `+${digits}`;
+  }
+
+  return undefined;
 }
 
 function normalizeCountryForShopify(raw: unknown): { country?: string; country_code?: string } {
@@ -929,7 +944,6 @@ async function uploadOrder(
       // Link to customer (by id)
       customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
       email: customerEmail || undefined,
-      phone: customerPhone || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
