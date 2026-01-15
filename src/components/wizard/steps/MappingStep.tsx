@@ -13,10 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Save, ArrowRight, Folder, Tag, Package } from 'lucide-react';
+import { Loader2, Save, ArrowRight, Folder, Tag, Package, Eye } from 'lucide-react';
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingPreview, MappingRules } from './ProductMappingPreview';
+import { ShopifyFieldPreview } from './ShopifyFieldPreview';
 
 interface MappingStepProps {
   project: Project;
@@ -133,16 +134,24 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="preview" className="gap-2">
+            <Eye className="w-4 h-4" />
+            Shopify Preview
+          </TabsTrigger>
           <TabsTrigger value="products" className="gap-2">
             <Package className="w-4 h-4" />
-            Produkt Mapping
+            Transformering
           </TabsTrigger>
           <TabsTrigger value="categories" className="gap-2">
             <Folder className="w-4 h-4" />
             Kategorier ({categories.length})
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="preview" className="mt-6">
+          <ShopifyFieldPreview projectId={project.id} />
+        </TabsContent>
 
         <TabsContent value="products" className="mt-6">
           <ProductMappingPreview 
