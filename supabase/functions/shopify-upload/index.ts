@@ -339,7 +339,7 @@ async function uploadProductsWithVariants(
   token: string,
   batchSize: number,
   dandomainBaseUrl: string
-): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[] }> {
+): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[] }> {
   
   // Get all pending products
   const { data: allPending, error: fetchError } = await supabase
@@ -354,11 +354,51 @@ async function uploadProductsWithVariants(
   }
 
   if (!allPending || allPending.length === 0) {
-    return { success: true, processed: 0, errors: 0, hasMore: false };
+    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
+  // First, fetch ALL existing products from Shopify to avoid per-product lookups
+  const existingProducts: Map<string, string> = new Map(); // title (lowercase) -> id
+  let pageInfo: string | null = null;
+  let hasMorePages = true;
+  
+  console.log('Fetching existing Shopify products...');
+  
+  while (hasMorePages) {
+    const url = pageInfo 
+      ? `${shopifyUrl}/products.json?limit=250&page_info=${pageInfo}`
+      : `${shopifyUrl}/products.json?limit=250&fields=id,title`;
+    
+    const { response, body } = await shopifyFetch(url, {
+      headers: { 'X-Shopify-Access-Token': token },
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch existing products: ${response.status} - ${body}`);
+      break;
+    }
+    
+    const result = JSON.parse(body);
+    const products = result.products || [];
+    
+    for (const product of products) {
+      existingProducts.set(product.title.toLowerCase(), String(product.id));
+    }
+    
+    // Check for pagination via Link header
+    const linkHeader = response.headers.get('Link');
+    if (linkHeader && linkHeader.includes('rel="next"')) {
+      const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
+      pageInfo = match ? match[1] : null;
+      hasMorePages = !!pageInfo;
+    } else {
+      hasMorePages = false;
+    }
+  }
+  
+  console.log(`Found ${existingProducts.size} existing Shopify products`);
+
   // Group products by BASE SKU (same base SKU = variants of same product)
-  // E.g., "205175-7558", "205175-7558-M", "205175-7558-L" all share base SKU "205175-7558"
   const productGroups: Map<string, any[]> = new Map();
   
   for (const item of allPending) {
@@ -377,12 +417,13 @@ async function uploadProductsWithVariants(
 
   let processed = 0;
   let errors = 0;
+  let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
   
   // Process up to batchSize product groups
   const groupsToProcess = Array.from(productGroups.entries()).slice(0, batchSize);
 
-  for (const [title, items] of groupsToProcess) {
+  for (const [groupKey, items] of groupsToProcess) {
     try {
       // Sort items by SKU length (shortest first = base product)
       items.sort((a, b) => (a.data?.sku || '').length - (b.data?.sku || '').length);
@@ -393,7 +434,19 @@ async function uploadProductsWithVariants(
       
       // Skip untitled/empty products
       if (!data.title || data.title === 'Untitled') {
-        throw new Error('Produktet har ingen titel og blev sprunget over');
+        // Mark as uploaded to skip them permanently
+        for (const item of items) {
+          await supabase
+            .from('canonical_products')
+            .update({
+              status: 'uploaded',
+              error_message: 'Sprunget over: ingen titel',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', item.id);
+        }
+        skipped += items.length;
+        continue;
       }
 
       // Transform title: strip vendor from title if present
@@ -408,6 +461,27 @@ async function uploadProductsWithVariants(
             break;
           }
         }
+      }
+
+      // Check if product already exists in cache (fast lookup)
+      const titleLower = transformedTitle.toLowerCase();
+      if (existingProducts.has(titleLower)) {
+        const existingProductId = existingProducts.get(titleLower)!;
+        console.log(`Product "${transformedTitle}" already exists (ID ${existingProductId}), skipping`);
+        
+        // Mark all items as uploaded with existing ID
+        for (const item of items) {
+          await supabase
+            .from('canonical_products')
+            .update({
+              status: 'uploaded',
+              shopify_id: existingProductId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', item.id);
+        }
+        skipped += items.length;
+        continue;
       }
 
       // Get tags from categories
@@ -461,7 +535,6 @@ async function uploadProductsWithVariants(
       const hasVariants = items.length > 1;
       
       // Collect all unique images from variants and build full URLs
-      // Use first product's images as primary, then add unique variant images
       const primaryImages: string[] = [];
       const variantImages: string[] = [];
       
@@ -472,12 +545,10 @@ async function uploadProductsWithVariants(
           if (!fullUrl) continue;
           
           if (i === 0) {
-            // First product's images are primary
             if (!primaryImages.includes(fullUrl)) {
               primaryImages.push(fullUrl);
             }
           } else {
-            // Other variants' images - only add if not already in primary
             if (!primaryImages.includes(fullUrl) && !variantImages.includes(fullUrl)) {
               variantImages.push(fullUrl);
             }
@@ -485,14 +556,9 @@ async function uploadProductsWithVariants(
         }
       }
       
-      // Combine: primary images first, then variant images
       const allImages = [...primaryImages, ...variantImages];
 
-      if (allImages.length > 0) {
-        console.log(`Product "${transformedTitle}" images:`, allImages.slice(0, 3));
-      }
-
-      // Build product payload - try without images first if we have problematic URLs
+      // Build product payload
       const productPayload: any = {
         product: {
           title: transformedTitle,
@@ -511,42 +577,7 @@ async function uploadProductsWithVariants(
         productPayload.product.options = [{ name: 'Størrelse', values: variants.map(v => v.option1) }];
       }
 
-      console.log(`Uploading product "${transformedTitle}" with ${variants.length} variant(s)`);
-
-      // First, check if a product with same SKU or title already exists
-      const lookupSku = items[0].data?.sku || '';
-      const { response: searchResp, body: searchBody } = await shopifyFetch(
-        `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}`,
-        {
-          headers: { 'X-Shopify-Access-Token': token },
-        }
-      );
-      
-      let existingProductId: string | null = null;
-      if (searchResp.ok) {
-        const searchResult = JSON.parse(searchBody);
-        const existingProducts = searchResult.products || [];
-        // Find exact title match
-        const exactMatch = existingProducts.find((p: any) => p.title === transformedTitle);
-        if (exactMatch) {
-          existingProductId = String(exactMatch.id);
-          console.log(`Product "${transformedTitle}" already exists with ID ${existingProductId}, skipping creation`);
-          
-          // Mark all items as uploaded with existing ID
-          for (const item of items) {
-            await supabase
-              .from('canonical_products')
-              .update({
-                status: 'uploaded',
-                shopify_id: existingProductId,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', item.id);
-          }
-          processed += items.length;
-          continue; // Skip to next product group
-        }
-      }
+      console.log(`Creating product "${transformedTitle}" with ${variants.length} variant(s)`);
 
       let { response, body: responseBody } = await shopifyFetch(`${shopifyUrl}/products.json`, {
         method: 'POST',
@@ -558,23 +589,53 @@ async function uploadProductsWithVariants(
       });
 
       // If image URL error, retry without images
-      if (!response.ok) {
-        if (response.status === 422 && responseBody.includes('Image URL is invalid') && allImages.length > 0) {
-          console.log(`Retrying product "${transformedTitle}" without images due to invalid URL`);
-          
-          // Retry without images
-          productPayload.product.images = [];
-          const retryResult = await shopifyFetch(`${shopifyUrl}/products.json`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Shopify-Access-Token': token,
-            },
-            body: JSON.stringify(productPayload),
-          });
-          response = retryResult.response;
-          responseBody = retryResult.body;
+      if (!response.ok && response.status === 422 && responseBody.includes('Image URL is invalid') && allImages.length > 0) {
+        console.log(`Retrying product "${transformedTitle}" without images due to invalid URL`);
+        productPayload.product.images = [];
+        const retryResult = await shopifyFetch(`${shopifyUrl}/products.json`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': token,
+          },
+          body: JSON.stringify(productPayload),
+        });
+        response = retryResult.response;
+        responseBody = retryResult.body;
+      }
+      
+      // Handle "already exists" error gracefully - mark as skipped, not failed
+      if (!response.ok && response.status === 422 && responseBody.includes('already exists')) {
+        console.log(`Product "${transformedTitle}" already exists (race condition), marking as uploaded`);
+        
+        // Try to find the existing product
+        const { response: searchResp, body: searchBody } = await shopifyFetch(
+          `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}&limit=5`,
+          { headers: { 'X-Shopify-Access-Token': token } }
+        );
+        
+        let existingId: string | null = null;
+        if (searchResp.ok) {
+          const searchResult = JSON.parse(searchBody);
+          const exactMatch = searchResult.products?.find((p: any) => p.title.toLowerCase() === titleLower);
+          if (exactMatch) {
+            existingId = String(exactMatch.id);
+          }
         }
+        
+        for (const item of items) {
+          await supabase
+            .from('canonical_products')
+            .update({
+              status: 'uploaded',
+              shopify_id: existingId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', item.id);
+        }
+        skipped += items.length;
+        existingProducts.set(titleLower, existingId || 'unknown');
+        continue;
       }
 
       if (!response.ok) {
@@ -583,6 +644,9 @@ async function uploadProductsWithVariants(
 
       const result = JSON.parse(responseBody);
       const shopifyId = String(result.product.id);
+      
+      // Add to cache
+      existingProducts.set(titleLower, shopifyId);
 
       // Update cost price (inventory cost) per variant via InventoryItem API
       const createdVariants = result?.product?.variants || [];
@@ -617,7 +681,7 @@ async function uploadProductsWithVariants(
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error(`Error uploading product group "${title}":`, errorMessage);
+      console.error(`Error uploading product group "${groupKey}":`, errorMessage);
       
       // Mark all items in this group as failed
       for (const item of items) {
@@ -648,6 +712,7 @@ async function uploadProductsWithVariants(
     success: true,
     processed,
     errors,
+    skipped,
     hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
