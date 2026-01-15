@@ -16,13 +16,29 @@ function parseCSV(csvText: string): Record<string, string>[] {
 
   if (!normalized) return [];
 
-  const lines = normalized.split('\n').filter(Boolean);
+  let lines = normalized.split('\n').filter(Boolean);
+  if (lines.length < 2) return [];
+
+  // DanDomain exports often have a single-word entity name on the first line
+  // e.g. "PRODUCTS", "CUSTOMERS", "ORDERS", "PRODUCTCATEGORIES"
+  // Check if first line looks like just an entity name (single word, no delimiter)
+  const firstLineDelimiter = detectDelimiter(lines[0]);
+  const firstLineParts = splitDelimitedLine(lines[0], firstLineDelimiter);
+  
+  // If first line has only one part and it looks like an entity name, skip it
+  if (firstLineParts.length === 1 && /^[A-Z_]+$/i.test(cleanCell(firstLineParts[0]))) {
+    console.log('Skipping entity name line:', lines[0]);
+    lines = lines.slice(1);
+  }
+
   if (lines.length < 2) return [];
 
   const headerLine = lines[0];
   const delimiter = detectDelimiter(headerLine);
 
   const headers = splitDelimitedLine(headerLine, delimiter).map((h) => cleanCell(h));
+  
+  console.log('CSV parsing - headers detected:', headers.slice(0, 5), '... total:', headers.length);
 
   const rows: Record<string, string>[] = [];
   for (let i = 1; i < lines.length; i++) {
