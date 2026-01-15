@@ -363,20 +363,27 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
   return rows.map(row => {
     const customerExternalId = getCI(row, 'CUST_ID', 'CUST_NUM', 'CUSTOMER_ID', 'CUSTOMER_NO', 'CUSTOMER_NUMBER');
 
-    const customerEmail = getCI(row, 'EMAIL', 'CUSTOMER_EMAIL', 'CUST_EMAIL', 'BILL_EMAIL', 'INVOICE_EMAIL', 'DELIVERY_EMAIL').trim();
-    const customerPhone = getCI(row, 'PHONE', 'CUSTOMER_PHONE', 'CUST_PHONE', 'BILL_PHONE', 'INVOICE_PHONE', 'DELIVERY_PHONE').trim();
+    // Use the exact DanDomain field names for customer data
+    const customerEmail = getCI(row, 'CUST_EMAIL', 'EMAIL', 'CUSTOMER_EMAIL', 'BILL_EMAIL', 'INVOICE_EMAIL', 'DELIVERY_EMAIL').trim();
+    const customerPhone = getCI(row, 'CUST_PHONE', 'PHONE', 'CUSTOMER_PHONE', 'BILL_PHONE', 'INVOICE_PHONE', 'DELIVERY_PHONE').trim();
+    const customerAddress = getCI(row, 'CUST_ADDRESS', 'ADDRESS', 'CUSTOMER_ADDRESS', 'BILL_ADDRESS', 'INVOICE_ADDRESS').trim();
+    const customerZip = getCI(row, 'CUST_ZIP_CODE', 'ZIP_CODE', 'CUSTOMER_ZIP', 'BILL_ZIP', 'INVOICE_ZIP').trim();
+    const customerCity = getCI(row, 'CUST_CITY', 'CITY', 'CUSTOMER_CITY', 'BILL_CITY', 'INVOICE_CITY').trim();
+    const customerCountry = getCI(row, 'CUST_COUNTRY', 'COUNTRY', 'CUSTOMER_COUNTRY', 'BILL_COUNTRY', 'INVOICE_COUNTRY').trim() || 'DK';
 
-    const fullName = getCI(row, 'NAME', 'CUSTOMER_NAME', 'BILL_NAME', 'INVOICE_NAME', 'DELIVERY_NAME').trim();
+    // Use CUST_NAME for customer name
+    const fullName = getCI(row, 'CUST_NAME', 'NAME', 'CUSTOMER_NAME', 'BILL_NAME', 'INVOICE_NAME', 'DELIVERY_NAME').trim();
     const nameParts = fullName ? fullName.split(' ') : [];
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
+    // Use customer address from CUST_ fields, fallback to delivery address
     const shippingAddress: Address = {
-      address1: row['DELIVERY_ADDRESS'] || getCI(row, 'DELIVERY_ADDRESS1', 'DELIVERY_ADDR') || '',
+      address1: customerAddress || row['DELIVERY_ADDRESS'] || getCI(row, 'DELIVERY_ADDRESS1', 'DELIVERY_ADDR') || '',
       address2: null,
-      city: row['DELIVERY_CITY'] || getCI(row, 'DELIVERY_TOWN', 'DELIVERY_CITYNAME') || '',
-      zip: row['DELIVERY_ZIP'] || getCI(row, 'DELIVERY_ZIP_CODE', 'DELIVERY_POSTCODE') || '',
-      country: row['DELIVERY_COUNTRY'] || getCI(row, 'COUNTRY', 'DELIVERY_COUNTRY_CODE') || 'DK',
+      city: customerCity || row['DELIVERY_CITY'] || getCI(row, 'DELIVERY_TOWN', 'DELIVERY_CITYNAME') || '',
+      zip: customerZip || row['DELIVERY_ZIP'] || getCI(row, 'DELIVERY_ZIP_CODE', 'DELIVERY_POSTCODE') || '',
+      country: customerCountry || row['DELIVERY_COUNTRY'] || 'DK',
       phone: customerPhone || null,
     };
 
@@ -398,6 +405,10 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
       customer_first_name: firstName || undefined,
       customer_last_name: lastName || undefined,
       customer_phone: customerPhone || undefined,
+      customer_address: customerAddress || undefined,
+      customer_zip: customerZip || undefined,
+      customer_city: customerCity || undefined,
+      customer_country: customerCountry || undefined,
       order_date: parseDate(row['DATE']),
       currency: row['CURRENCY_CODE'] || 'DKK',
       subtotal_price: parsePrice(row['ORDER_TOTAL_PRICE']) - parsePrice(row['ORDER_VAT_AMOUNT']),
@@ -406,7 +417,7 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
       shipping_price: parsePrice(row['SHIPPING_PRICE']),
       discount_total: parsePrice(row['DISCOUNT_AMOUNT']),
       line_items: lineItems,
-      billing_address: shippingAddress, // Use same as shipping for now
+      billing_address: shippingAddress,
       shipping_address: shippingAddress,
       financial_status: 'paid', // Historical orders
       fulfillment_status: 'fulfilled', // Historical orders
