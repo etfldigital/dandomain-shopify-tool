@@ -350,7 +350,7 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
             <CardContent className="pt-4">
               <label className="text-xs text-muted-foreground mb-1 block">Lagerbeholdning</label>
               <Input 
-                value={product.original.stock_quantity.toString()} 
+                value={(product.original.stock_quantity ?? 0).toString()} 
                 readOnly 
                 className="bg-background h-9 font-mono text-sm"
               />
