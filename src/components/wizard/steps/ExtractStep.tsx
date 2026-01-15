@@ -181,12 +181,33 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     setProcessing(true);
     setProgress(0);
 
+    // Clear old canonical data before re-importing
+    // This ensures we don't have stale/corrupted data from previous imports
+    const entityTypesToClear = uploadedFiles.map(f => f.type);
+    
+    for (const entityType of entityTypesToClear) {
+      switch (entityType) {
+        case 'products':
+          await supabase.from('canonical_products').delete().eq('project_id', project.id);
+          break;
+        case 'customers':
+          await supabase.from('canonical_customers').delete().eq('project_id', project.id);
+          break;
+        case 'orders':
+          await supabase.from('canonical_orders').delete().eq('project_id', project.id);
+          break;
+        case 'categories':
+          await supabase.from('canonical_categories').delete().eq('project_id', project.id);
+          break;
+      }
+    }
+
     const totalFiles = uploadedFiles.length;
     let processed = 0;
-    let productCount = project.product_count;
-    let customerCount = project.customer_count;
-    let orderCount = project.order_count;
-    let categoryCount = project.category_count;
+    let productCount = 0;
+    let customerCount = 0;
+    let orderCount = 0;
+    let categoryCount = 0;
 
     for (const uploadedFile of uploadedFiles) {
       setUploadedFiles(prev => 
