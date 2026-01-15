@@ -255,32 +255,69 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
   // Log available headers for debugging
   if (rows.length > 0) {
     console.log('Category CSV headers:', Object.keys(rows[0]));
-    console.log('First row:', rows[0]);
+    console.log('First 3 rows:', rows.slice(0, 3));
+  } else {
+    console.log('No rows parsed from category CSV');
+    console.log('Raw CSV preview (first 500 chars):', csvText.substring(0, 500));
   }
   
   return rows
     .map(row => {
-      // DanDomain uses PROD_CAT_ID for category ID
+      // DanDomain PRODUCTCATEGORIES export typically uses these field names
+      // Try multiple variations to be flexible
       const external_id = getField(row, 
-        'PROD_CAT_ID', 'CAT_ID', 'ID', 'CATEGORY_ID', 
-        'CategoryId', 'category_id', 'cat_id', 'id'
+        'PROD_CAT_ID',           // DanDomain primary
+        'InternalId',            // Sometimes used
+        'CAT_ID', 
+        'ID', 
+        'CATEGORY_ID', 
+        'CategoryId', 
+        'category_id', 
+        'cat_id', 
+        'id'
       );
       
-      // DanDomain uses PROD_CAT_NAME for category name
       const name = getField(row, 
-        'PROD_CAT_NAME', 'CAT_NAME', 'NAME', 'CATEGORY_NAME', 'TITLE',
-        'CategoryName', 'category_name', 'cat_name', 'name', 'title'
+        'PROD_CAT_NAME',         // DanDomain primary
+        'Name',                  // Common alternative
+        'CAT_NAME', 
+        'NAME', 
+        'CATEGORY_NAME', 
+        'TITLE',
+        'CategoryName', 
+        'category_name', 
+        'cat_name', 
+        'name', 
+        'title'
       );
       
       const parent = getField(row,
-        'PARENT_CAT_ID', 'PARENT_ID', 'PARENT_CATEGORY_ID',
-        'ParentCatId', 'parent_cat_id', 'parent_id'
+        'PROD_CAT_PARENT',       // DanDomain variation
+        'PARENT_CAT_ID', 
+        'PARENT_ID', 
+        'PARENT_CATEGORY_ID',
+        'ParentCatId', 
+        'parent_cat_id', 
+        'parent_id'
       );
       
       const slug = getField(row,
-        'PROD_CAT_UNIQUE_URL_NAME', 'CAT_SLUG', 'SLUG', 'URL', 'SEO_URL',
-        'CategorySlug', 'category_slug', 'slug', 'url'
+        'PROD_CAT_UNIQUE_URL_NAME', 
+        'UrlName',
+        'CAT_SLUG', 
+        'SLUG', 
+        'URL', 
+        'SEO_URL',
+        'CategorySlug', 
+        'category_slug', 
+        'slug', 
+        'url'
       );
+
+      // Debug log for first few rows
+      if (rows.indexOf(row) < 3) {
+        console.log('Category row parsed:', { external_id, name, parent, slug });
+      }
       
       return {
         external_id,
