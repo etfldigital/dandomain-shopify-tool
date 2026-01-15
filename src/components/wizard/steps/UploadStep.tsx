@@ -9,6 +9,12 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { 
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
+import { 
   Loader2, 
   CheckCircle2, 
   AlertCircle,
@@ -20,7 +26,10 @@ import {
   Play,
   Pause,
   RotateCcw,
-  FlaskConical
+  FlaskConical,
+  HelpCircle,
+  XCircle,
+  AlertTriangle
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -356,6 +365,118 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
               </div>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Error Explanation Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <HelpCircle className="w-5 h-5" />
+            Hvorfor opstår der fejl?
+          </CardTitle>
+          <CardDescription>
+            Forklaring på de mest almindelige fejl under upload
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="untitled">
+              <AccordionTrigger className="text-left">
+                <div className="flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-destructive" />
+                  <span>Produkter med "Untitled" eller manglende titel</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <p className="text-muted-foreground">
+                  Når CSV-filen ikke indeholder et produktnavn (PROD_NAME), oprettes produktet med titlen "Untitled". 
+                  Disse produkter ekskluderes automatisk, da de typisk er tomme rækker eller ufuldstændige data.
+                </p>
+                <p className="text-muted-foreground mt-2">
+                  <strong>Løsning:</strong> Tjek din eksport fra DanDomain og sikr at alle produkter har et navn.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="api-auth">
+              <AccordionTrigger className="text-left">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-destructive" />
+                  <span>401 - Invalid API key or access token</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <p className="text-muted-foreground">
+                  Denne fejl opstår når Shopify API-nøglen er forkert eller mangler de nødvendige tilladelser.
+                </p>
+                <ul className="list-disc list-inside text-muted-foreground mt-2 space-y-1">
+                  <li>Sørg for at bruge <strong>Admin API access token</strong> (starter med <code className="bg-muted px-1 rounded">shpat_</code>)</li>
+                  <li>Storefront API tokens (<code className="bg-muted px-1 rounded">shpss_</code>) virker IKKE</li>
+                  <li>Tjek at din app har de nødvendige scopes: write_products, write_customers, write_orders</li>
+                </ul>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="rate-limit">
+              <AccordionTrigger className="text-left">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  <span>429 - Rate limit exceeded</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <p className="text-muted-foreground">
+                  Shopify har en grænse på antal API-kald per minut. Når denne grænse nås, 
+                  returneres en 429-fejl. Systemet venter automatisk og prøver igen.
+                </p>
+                <p className="text-muted-foreground mt-2">
+                  <strong>Løsning:</strong> Vent et øjeblik og kør upload igen. Systemet håndterer dette automatisk.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="duplicate">
+              <AccordionTrigger className="text-left">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-500" />
+                  <span>Duplikerede kunder (samme email)</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <p className="text-muted-foreground">
+                  Shopify tillader kun én kunde per email-adresse. Hvis en kunde med samme email allerede eksisterer, 
+                  vil systemet forsøge at finde den eksisterende kunde i stedet for at oprette en ny.
+                </p>
+                <p className="text-muted-foreground mt-2">
+                  <strong>Bemærk:</strong> Dette er normalt og påvirker ikke migreringen negativt.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="missing-data">
+              <AccordionTrigger className="text-left">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  <span>Manglende eller ugyldige data</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <p className="text-muted-foreground">
+                  Nogle felter i DanDomain-eksporten kan mangle eller have ugyldige værdier:
+                </p>
+                <ul className="list-disc list-inside text-muted-foreground mt-2 space-y-1">
+                  <li>Pris = 0 (produkter uden pris)</li>
+                  <li>Manglende billeder</li>
+                  <li>Ugyldige kategori-ID'er</li>
+                  <li>Manglende kundeoplysninger (email, adresse)</li>
+                </ul>
+                <p className="text-muted-foreground mt-2">
+                  <strong>Løsning:</strong> Gennemgå fejlrapporten efter upload og ret manuelt i Shopify Admin.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </CardContent>
       </Card>
 
