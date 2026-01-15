@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -14,6 +14,23 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { 
   Loader2, 
   CheckCircle2, 
@@ -28,6 +45,7 @@ import {
   RotateCcw,
   FlaskConical,
   XCircle,
+  MoreVertical,
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -53,6 +71,12 @@ interface UploadProgress {
   errorDetails: ErrorDetail[];
 }
 
+interface StatusCounts {
+  pending: number;
+  uploaded: number;
+  failed: number;
+}
+
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
   { type: 'categories', icon: Folder, label: 'Collections' },
@@ -76,6 +100,70 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       errorDetails: [],
     }))
   );
+
+  // Status counts for each entity type
+  const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
+    products: { pending: 0, uploaded: 0, failed: 0 },
+    customers: { pending: 0, uploaded: 0, failed: 0 },
+    orders: { pending: 0, uploaded: 0, failed: 0 },
+    categories: { pending: 0, uploaded: 0, failed: 0 },
+    pages: { pending: 0, uploaded: 0, failed: 0 },
+  });
+
+  // Reset confirmation dialog state
+  const [resetDialog, setResetDialog] = useState<{
+    open: boolean;
+    entityType: EntityType | null;
+    scope: 'all' | 'failed' | 'uploaded' | null;
+    count: number;
+  }>({ open: false, entityType: null, scope: null, count: 0 });
+
+  // Fetch status counts for all entity types
+  const fetchStatusCounts = async () => {
+    const counts: Record<EntityType, StatusCounts> = {
+      products: { pending: 0, uploaded: 0, failed: 0 },
+      customers: { pending: 0, uploaded: 0, failed: 0 },
+      orders: { pending: 0, uploaded: 0, failed: 0 },
+      categories: { pending: 0, uploaded: 0, failed: 0 },
+      pages: { pending: 0, uploaded: 0, failed: 0 },
+    };
+
+    // Products
+    const { count: productPending } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
+    const { count: productUploaded } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
+    const { count: productFailed } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
+
+    // Customers
+    const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
+    const { count: customerUploaded } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
+    const { count: customerFailed } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    counts.customers = { pending: customerPending || 0, uploaded: customerUploaded || 0, failed: customerFailed || 0 };
+
+    // Orders
+    const { count: orderPending } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
+    const { count: orderUploaded } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
+    const { count: orderFailed } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    counts.orders = { pending: orderPending || 0, uploaded: orderUploaded || 0, failed: orderFailed || 0 };
+
+    // Categories
+    const { count: categoryPending } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
+    const { count: categoryUploaded } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
+    const { count: categoryFailed } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    counts.categories = { pending: categoryPending || 0, uploaded: categoryUploaded || 0, failed: categoryFailed || 0 };
+
+    // Pages
+    const { count: pagePending } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
+    const { count: pageUploaded } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
+    const { count: pageFailed } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    counts.pages = { pending: pagePending || 0, uploaded: pageUploaded || 0, failed: pageFailed || 0 };
+
+    setStatusCounts(counts);
+  };
+
+  useEffect(() => {
+    fetchStatusCounts();
+  }, [project.id]);
 
   const getCounts = async () => {
     const counts: Record<EntityType, number> = {
@@ -265,6 +353,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       await onUpdateProject({ status: 'completed' });
     }
     setUploading(false);
+    await fetchStatusCounts();
     toast.success(isTestMode ? 'Test upload gennemført!' : 'Upload til Shopify gennemført!');
   };
 
@@ -304,6 +393,55 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     handleStartUpload();
   };
 
+  const handleResetRequest = (entityType: EntityType, scope: 'all' | 'failed' | 'uploaded') => {
+    const counts = statusCounts[entityType];
+    let count = 0;
+    
+    if (scope === 'all') {
+      count = counts.pending + counts.uploaded + counts.failed;
+    } else if (scope === 'failed') {
+      count = counts.failed;
+    } else if (scope === 'uploaded') {
+      count = counts.uploaded;
+    }
+
+    if (count === 0) {
+      toast.info('Ingen elementer at nulstille');
+      return;
+    }
+
+    setResetDialog({ open: true, entityType, scope, count });
+  };
+
+  const handleResetConfirm = async () => {
+    if (!resetDialog.entityType || !resetDialog.scope) return;
+
+    try {
+      const response = await supabase.functions.invoke('reset-upload-status', {
+        body: {
+          projectId: project.id,
+          entityType: resetDialog.entityType,
+          resetScope: resetDialog.scope,
+        },
+      });
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const entityLabel = ENTITY_CONFIG.find(e => e.type === resetDialog.entityType)?.label || resetDialog.entityType;
+      toast.success(`${response.data.resetCount} ${entityLabel.toLowerCase()} nulstillet til pending`);
+      
+      // Refresh status counts
+      await fetchStatusCounts();
+    } catch (error) {
+      console.error('Reset error:', error);
+      toast.error(`Fejl ved nulstilling: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setResetDialog({ open: false, entityType: null, scope: null, count: 0 });
+    }
+  };
+
   const allCompleted = progress.every(p => p.status === 'completed');
   const hasFailed = progress.some(p => p.status === 'failed');
   const totalProcessed = progress.reduce((acc, p) => acc + p.processed, 0);
@@ -329,7 +467,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         <CardContent className="space-y-6">
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const p = progress.find(p => p.entityType === type)!;
+            const counts = statusCounts[type];
             const percent = p.total > 0 ? (p.processed / p.total) * 100 : 0;
+            const totalCount = counts.pending + counts.uploaded + counts.failed;
 
             return (
               <div key={type} className="space-y-2">
@@ -355,19 +495,65 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                         <Icon className="w-4 h-4 text-muted-foreground" />
                       )}
                     </div>
-                    <span className="font-medium">{label}</span>
+                    <div>
+                      <span className="font-medium">{label}</span>
+                      {!uploading && totalCount > 0 && (
+                        <div className="text-xs text-muted-foreground flex gap-2">
+                          {counts.pending > 0 && <span>{counts.pending} pending</span>}
+                          {counts.uploaded > 0 && <span className="text-green-600">{counts.uploaded} uploadet</span>}
+                          {counts.failed > 0 && <span className="text-destructive">{counts.failed} fejlet</span>}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-2">
                     {p.errors > 0 && (
-                      <span className="flex items-center gap-1 text-destructive">
+                      <span className="flex items-center gap-1 text-destructive text-sm">
                         <AlertCircle className="w-3 h-3" />
                         {p.errors} fejl
                       </span>
                     )}
-                    <span>{p.processed.toLocaleString('da-DK')} / {p.total.toLocaleString('da-DK')}</span>
+                    {uploading && (
+                      <span className="text-sm text-muted-foreground">
+                        {p.processed.toLocaleString('da-DK')} / {p.total.toLocaleString('da-DK')}
+                      </span>
+                    )}
+                    {!uploading && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-popover">
+                          <DropdownMenuItem 
+                            onClick={() => handleResetRequest(type, 'all')}
+                            disabled={totalCount === 0}
+                          >
+                            <RotateCcw className="w-4 h-4 mr-2" />
+                            Nulstil alle til pending
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem 
+                            onClick={() => handleResetRequest(type, 'failed')}
+                            disabled={counts.failed === 0}
+                          >
+                            <AlertCircle className="w-4 h-4 mr-2" />
+                            Nulstil fejlede ({counts.failed})
+                          </DropdownMenuItem>
+                          <DropdownMenuItem 
+                            onClick={() => handleResetRequest(type, 'uploaded')}
+                            disabled={counts.uploaded === 0}
+                          >
+                            <CheckCircle2 className="w-4 h-4 mr-2" />
+                            Nulstil uploadede ({counts.uploaded})
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </div>
                 </div>
-                <Progress value={percent} className="h-2" />
+                {uploading && <Progress value={percent} className="h-2" />}
               </div>
             );
           })}
@@ -495,7 +681,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                             </p>
                             <p className="text-xs text-muted-foreground">
                               {ids.length > 5 
-                                ? `ID'er: ${ids.slice(0, 5).join(', ')} og ${ids.length - 5} flere...`
+                                ? `ID'er: ${ids.slice(0, 5).join(', ')} og ${ids.length - 5} flere.`
                                 : `ID'er: ${ids.join(', ')}`
                               }
                             </p>
@@ -510,6 +696,31 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           </CardContent>
         </Card>
       )}
+
+      {/* Reset Confirmation Dialog */}
+      <AlertDialog open={resetDialog.open} onOpenChange={(open) => !open && setResetDialog({ open: false, entityType: null, scope: null, count: 0 })}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bekræft nulstilling</AlertDialogTitle>
+            <AlertDialogDescription>
+              Er du sikker på, at du vil nulstille {resetDialog.count.toLocaleString('da-DK')} {
+                ENTITY_CONFIG.find(e => e.type === resetDialog.entityType)?.label.toLowerCase() || 'elementer'
+              } til pending status?
+              {resetDialog.scope === 'uploaded' && (
+                <span className="block mt-2 text-amber-600">
+                  Bemærk: Dette vil fjerne Shopify ID'erne, så de vil blive uploadet igen som nye elementer.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuller</AlertDialogCancel>
+            <AlertDialogAction onClick={handleResetConfirm}>
+              Nulstil
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

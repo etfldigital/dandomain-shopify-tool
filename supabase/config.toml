@@ -2,3 +2,6 @@ project_id = "eascmxesmuadwlmooyik"
 
 [functions.shopify-upload]
 verify_jwt = false
+
+[functions.reset-upload-status]
+verify_jwt = false
