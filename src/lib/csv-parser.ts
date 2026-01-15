@@ -204,7 +204,23 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       weight: row['PROD_WEIGHT'] ? parseFloat(row['PROD_WEIGHT'].replace(',', '.')) : null,
       stock_quantity: parseInt(row['STOCK_COUNT'] || row['PROD_STOCK'] || row['stock'] || '0') || 0,
       active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
-      images: row['PROD_PHOTO'] || row['PROD_IMAGE'] ? [row['PROD_PHOTO'] || row['PROD_IMAGE']] : [],
+      images: (() => {
+        const raw = getField(
+          row,
+          'PROD_PHOTO',
+          'PROD_IMAGE',
+          'PROD_PHOTO_1',
+          'PROD_PHOTO1',
+          'PHOTO',
+          'IMAGE'
+        );
+        return raw
+          ? raw
+              .split(/[|,]/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [];
+      })(),
       tags: [],
       category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
       vendor: row['MANUFAC_ID'] || null,

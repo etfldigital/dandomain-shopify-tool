@@ -42,7 +42,9 @@ serve(async (req) => {
 
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
-    const dandomainBaseUrl = project.dandomain_base_url || '';
+    // Used to turn relative image paths (e.g. /images/x.webp) into full URLs.
+    // Fallback to the shop URL if base URL isn't configured.
+    const dandomainBaseUrl = String(project.dandomain_base_url || project.dandomain_shop_url || '').trim();
     const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
 
     let processed = 0;
@@ -165,7 +167,53 @@ function extractVariantOption(baseSku: string, fullSku: string): string {
   return suffix.replace(/^[-_]/, '').toUpperCase() || 'Default';
 }
 
-// Upload products with variant detection
+function normalizeImageUrl(raw: string, baseUrl: string): string {
+  const img = String(raw || '').trim();
+  if (!img) return '';
+
+  // Already absolute
+  if (/^https?:\/\//i.test(img)) return img;
+
+  // Protocol-relative URL
+  if (img.startsWith('//')) return `https:${img}`;
+
+  // No base to join with (will likely be rejected by Shopify)
+  const base = String(baseUrl || '').trim();
+  if (!base) return img;
+
+  const baseClean = base.replace(/\/$/, '');
+  if (img.startsWith('/')) return baseClean + img;
+  return baseClean + '/' + img;
+}
+
+async function setInventoryItemCost(
+  shopifyUrl: string,
+  token: string,
+  inventoryItemId: number | string,
+  cost: number
+): Promise<void> {
+  const id = Number(inventoryItemId);
+  if (!id || !Number.isFinite(cost)) return;
+
+  const response = await fetch(`${shopifyUrl}/inventory_items/${id}.json`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': token,
+    },
+    body: JSON.stringify({
+      inventory_item: {
+        id,
+        cost,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`InventoryItem cost update failed: ${response.status} - ${errorBody}`);
+  }
+}
 async function uploadProductsWithVariants(
   supabase: any,
   projectId: string,
@@ -293,16 +341,17 @@ async function uploadProductsWithVariants(
       const allImages: string[] = [];
       for (const item of items) {
         const imgs = item.data?.images || [];
-        for (const img of imgs) {
-          if (img && !allImages.includes(img)) {
-            // Build full URL if it's a relative path
-            let fullUrl = img;
-            if (img.startsWith('/') && dandomainBaseUrl) {
-              fullUrl = dandomainBaseUrl.replace(/\/$/, '') + img;
-            }
+        for (const rawImg of imgs) {
+          const fullUrl = normalizeImageUrl(rawImg, dandomainBaseUrl);
+          if (!fullUrl) continue;
+          if (!allImages.includes(fullUrl)) {
             allImages.push(fullUrl);
           }
         }
+      }
+
+      if (allImages.length > 0) {
+        console.log(`Product "${transformedTitle}" images:`, allImages.slice(0, 3));
       }
 
       const productPayload: any = {
@@ -341,6 +390,23 @@ async function uploadProductsWithVariants(
 
       const result = await response.json();
       const shopifyId = String(result.product.id);
+
+      // Update cost price (inventory cost) per variant via InventoryItem API
+      const createdVariants = result?.product?.variants || [];
+      for (const createdVariant of createdVariants) {
+        const sku = createdVariant?.sku;
+        const inventoryItemId = createdVariant?.inventory_item_id;
+        const source = items.find((it) => it.data?.sku === sku)?.data;
+        const cost = source?.cost_price;
+
+        if (cost != null && inventoryItemId) {
+          try {
+            await setInventoryItemCost(shopifyUrl, token, inventoryItemId, Number(cost));
+          } catch (e) {
+            console.log(`Could not set cost for SKU ${sku}:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
 
       // Update all items in this group as uploaded
       for (const item of items) {
