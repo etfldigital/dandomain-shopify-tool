@@ -3,7 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Loader2, ArrowRight, FileText } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Loader2, ArrowRight, FileText, ChevronLeft, ChevronRight, Shuffle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface ShopifyFieldPreviewProps {
@@ -27,23 +28,61 @@ interface ProductPreviewData {
   categoryNames: string[];
 }
 
+interface ProductRef {
+  id: string;
+  external_id: string;
+}
+
 export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
   const [product, setProduct] = useState<ProductPreviewData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [productIds, setProductIds] = useState<ProductRef[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
 
   useEffect(() => {
-    loadSampleProduct();
+    loadProductList();
   }, [projectId]);
 
-  const loadSampleProduct = async () => {
+  useEffect(() => {
+    if (productIds.length > 0) {
+      loadProduct(productIds[currentIndex].id);
+    }
+  }, [currentIndex, productIds]);
+
+  const loadProductList = async () => {
+    // Get total count
+    const { count } = await supabase
+      .from('canonical_products')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .neq('data->>title', 'Untitled');
+    
+    setTotalCount(count || 0);
+
+    // Get first batch of product IDs
+    const { data: products } = await supabase
+      .from('canonical_products')
+      .select('id, external_id')
+      .eq('project_id', projectId)
+      .neq('data->>title', 'Untitled')
+      .limit(100);
+
+    if (products && products.length > 0) {
+      setProductIds(products);
+      setCurrentIndex(0);
+    } else {
+      setLoading(false);
+    }
+  };
+
+  const loadProduct = async (productId: string) => {
     setLoading(true);
     
-    // Get a sample product with actual data
     const { data: products } = await supabase
       .from('canonical_products')
       .select('*')
-      .eq('project_id', projectId)
-      .neq('data->>title', 'Untitled')
+      .eq('id', productId)
       .limit(1);
 
     if (products && products.length > 0) {
@@ -99,6 +138,19 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
     }
     
     setLoading(false);
+  };
+
+  const handlePrevious = () => {
+    setCurrentIndex(prev => Math.max(0, prev - 1));
+  };
+
+  const handleNext = () => {
+    setCurrentIndex(prev => Math.min(productIds.length - 1, prev + 1));
+  };
+
+  const handleRandom = () => {
+    const randomIndex = Math.floor(Math.random() * productIds.length);
+    setCurrentIndex(randomIndex);
   };
 
   if (loading) {
@@ -336,6 +388,43 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Product Navigation */}
+      <div className="flex items-center justify-center gap-4 pt-4">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handlePrevious}
+          disabled={currentIndex === 0 || loading}
+        >
+          <ChevronLeft className="w-4 h-4 mr-1" />
+          Forrige
+        </Button>
+        
+        <div className="text-sm text-muted-foreground">
+          Produkt {currentIndex + 1} af {totalCount > 100 ? `${productIds.length}+` : totalCount}
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleNext}
+          disabled={currentIndex >= productIds.length - 1 || loading}
+        >
+          Næste
+          <ChevronRight className="w-4 h-4 ml-1" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleRandom}
+          disabled={loading || productIds.length <= 1}
+        >
+          <Shuffle className="w-4 h-4 mr-1" />
+          Tilfældig
+        </Button>
+      </div>
     </div>
   );
 }
