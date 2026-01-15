@@ -6,6 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 interface ShopifyUploadRequest {
   projectId: string;
   entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
