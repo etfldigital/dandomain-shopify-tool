@@ -8,6 +8,53 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Minimum delay between Shopify API calls to avoid rate limiting (Shopify allows ~2 calls/sec)
+const SHOPIFY_REQUEST_DELAY_MS = 550;
+let lastShopifyRequest = 0;
+
+/**
+ * Rate-limited fetch wrapper for Shopify API with automatic retry on 429.
+ * Returns { response, body } to avoid double-consuming the response body.
+ */
+async function shopifyFetch(
+  url: string,
+  options: RequestInit,
+  maxRetries = 3
+): Promise<{ response: Response; body: string }> {
+  // Enforce minimum delay between requests
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastShopifyRequest;
+  if (timeSinceLastRequest < SHOPIFY_REQUEST_DELAY_MS) {
+    await sleep(SHOPIFY_REQUEST_DELAY_MS - timeSinceLastRequest);
+  }
+  lastShopifyRequest = Date.now();
+
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    const response = await fetch(url, options);
+    const body = await response.text();
+
+    // Handle rate limiting
+    if (response.status === 429) {
+      attempt++;
+      // Check Retry-After header, default to exponential backoff
+      const retryAfter = response.headers.get('Retry-After');
+      const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(2000 * Math.pow(2, attempt), 30000);
+      console.log(`Rate limited (429), waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+      await sleep(waitTime);
+      continue;
+    }
+
+    return { response, body };
+  }
+
+  // Final attempt after all retries exhausted
+  lastShopifyRequest = Date.now();
+  const response = await fetch(url, options);
+  const body = await response.text();
+  return { response, body };
+}
+
 interface ShopifyUploadRequest {
   projectId: string;
   entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
@@ -224,7 +271,7 @@ async function setInventoryItemCost(
   const id = Number(inventoryItemId);
   if (!id || !Number.isFinite(cost)) return;
 
-  const response = await fetch(`${shopifyUrl}/inventory_items/${id}.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/inventory_items/${id}.json`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -239,8 +286,7 @@ async function setInventoryItemCost(
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`InventoryItem cost update failed: ${response.status} - ${errorBody}`);
+    throw new Error(`InventoryItem cost update failed: ${response.status} - ${body}`);
   }
 }
 async function uploadProductsWithVariants(
@@ -419,7 +465,7 @@ async function uploadProductsWithVariants(
 
       console.log(`Uploading product "${transformedTitle}" with ${variants.length} variant(s)`);
 
-      let response = await fetch(`${shopifyUrl}/products.json`, {
+      let { response, body: responseBody } = await shopifyFetch(`${shopifyUrl}/products.json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -430,13 +476,12 @@ async function uploadProductsWithVariants(
 
       // If image URL error, retry without images
       if (!response.ok) {
-        const errorBody = await response.text();
-        if (response.status === 422 && errorBody.includes('Image URL is invalid') && allImages.length > 0) {
+        if (response.status === 422 && responseBody.includes('Image URL is invalid') && allImages.length > 0) {
           console.log(`Retrying product "${transformedTitle}" without images due to invalid URL`);
           
           // Retry without images
           productPayload.product.images = [];
-          response = await fetch(`${shopifyUrl}/products.json`, {
+          const retryResult = await shopifyFetch(`${shopifyUrl}/products.json`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -444,15 +489,16 @@ async function uploadProductsWithVariants(
             },
             body: JSON.stringify(productPayload),
           });
+          response = retryResult.response;
+          responseBody = retryResult.body;
         }
       }
 
       if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+        throw new Error(`Shopify API error: ${response.status} - ${responseBody}`);
       }
 
-      const result = await response.json();
+      const result = JSON.parse(responseBody);
       const shopifyId = String(result.product.id);
 
       // Update cost price (inventory cost) per variant via InventoryItem API
@@ -601,7 +647,7 @@ async function uploadProduct(
     }
   };
 
-  const response = await fetch(`${shopifyUrl}/products.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/products.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -611,11 +657,10 @@ async function uploadProduct(
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+    throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(body);
   return String(result.product.id);
 }
 
@@ -749,7 +794,7 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
     },
   };
 
-  const response = await fetch(`${shopifyUrl}/customers.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/customers.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -759,27 +804,26 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
     // Check if customer already exists
-    if (response.status === 422 && errorBody.includes('email')) {
+    if (response.status === 422 && body.includes('email')) {
       // Try to find existing customer
-      const searchResponse = await fetch(
+      const { response: searchResponse, body: searchBody } = await shopifyFetch(
         `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(data.email)}`,
         {
           headers: { 'X-Shopify-Access-Token': token },
         }
       );
       if (searchResponse.ok) {
-        const searchResult = await searchResponse.json();
+        const searchResult = JSON.parse(searchBody);
         if (searchResult.customers && searchResult.customers.length > 0) {
           return String(searchResult.customers[0].id);
         }
       }
     }
-    throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+    throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(body);
   return String(result.customer.id);
 }
 
@@ -791,13 +835,13 @@ async function findShopifyCustomerIdByEmail(
   const normalized = String(email || '').trim();
   if (!normalized) return null;
 
-  const searchResponse = await fetch(
+  const { response: searchResponse, body: searchBody } = await shopifyFetch(
     `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(normalized)}`,
     { headers: { 'X-Shopify-Access-Token': token } }
   );
 
   if (!searchResponse.ok) return null;
-  const searchResult = await searchResponse.json();
+  const searchResult = JSON.parse(searchBody);
   const first = searchResult?.customers?.[0];
   return first?.id ? String(first.id) : null;
 }
@@ -898,13 +942,13 @@ async function uploadOrder(
 
     if (product?.shopify_id) {
       // Get variant ID from product
-      const variantResponse = await fetch(
+      const { response: variantResponse, body: variantBody } = await shopifyFetch(
         `${shopifyUrl}/products/${product.shopify_id}.json`,
         { headers: { 'X-Shopify-Access-Token': token } }
       );
 
       if (variantResponse.ok) {
-        const productData = await variantResponse.json();
+        const productData = JSON.parse(variantBody);
         const variant = productData.product?.variants?.[0];
         if (variant) {
           lineItems.push({
@@ -962,7 +1006,7 @@ async function uploadOrder(
     },
   };
 
-  const response = await fetch(`${shopifyUrl}/orders.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/orders.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -972,11 +1016,10 @@ async function uploadOrder(
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+    throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(body);
   return String(result.order.id);
 }
 
@@ -997,7 +1040,7 @@ async function uploadCollection(shopifyUrl: string, token: string, category: any
     }
   };
 
-  const response = await fetch(`${shopifyUrl}/smart_collections.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/smart_collections.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1007,11 +1050,10 @@ async function uploadCollection(shopifyUrl: string, token: string, category: any
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+    throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(body);
   return String(result.smart_collection.id);
 }
 
@@ -1025,7 +1067,7 @@ async function uploadPage(shopifyUrl: string, token: string, data: any): Promise
     }
   };
 
-  const response = await fetch(`${shopifyUrl}/pages.json`, {
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/pages.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1035,11 +1077,10 @@ async function uploadPage(shopifyUrl: string, token: string, data: any): Promise
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Shopify API error: ${response.status} - ${errorBody}`);
+    throw new Error(`Shopify API error: ${response.status} - ${body}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(body);
   return String(result.page.id);
 }
 
