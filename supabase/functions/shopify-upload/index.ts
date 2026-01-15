@@ -616,12 +616,14 @@ async function uploadOrder(
   supabase: any,
   projectId: string
 ): Promise<string> {
-  // Find Shopify customer ID
+  // Find Shopify customer ID and email for customer linking
   let shopifyCustomerId: string | null = null;
+  let customerEmail: string | null = null;
+  
   if (data.customer_external_id) {
     const { data: customer } = await supabase
       .from('canonical_customers')
-      .select('shopify_id')
+      .select('shopify_id, data')
       .eq('project_id', projectId)
       .eq('external_id', data.customer_external_id)
       .single();
@@ -629,11 +631,26 @@ async function uploadOrder(
     if (customer?.shopify_id) {
       shopifyCustomerId = customer.shopify_id;
     }
+    // Also get email for fallback customer linking
+    if (customer?.data?.email) {
+      customerEmail = customer.data.email;
+    }
   }
 
   // Map line items with Shopify variant IDs
   const lineItems = [];
-  for (const item of data.line_items || []) {
+  const sourceLineItems = data.line_items || [];
+  
+  // If no line items, create a fallback based on order total
+  if (sourceLineItems.length === 0 && data.total_price > 0) {
+    lineItems.push({
+      title: 'Ordre total',
+      quantity: 1,
+      price: String(data.total_price),
+    });
+  }
+  
+  for (const item of sourceLineItems) {
     // Try to find the product's Shopify variant ID
     const { data: product } = await supabase
       .from('canonical_products')
@@ -673,8 +690,9 @@ async function uploadOrder(
 
   const orderPayload = {
     order: {
+      // Link to customer - prefer Shopify ID, fallback to email
       customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
-      email: data.billing_address?.email || undefined,
+      email: customerEmail || data.billing_address?.email || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),

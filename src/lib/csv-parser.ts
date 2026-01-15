@@ -348,8 +348,16 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
       phone: null,
     };
 
-    // For now, we don't have line items in the order CSV
-    const lineItems: LineItem[] = [];
+    // DanDomain order exports don't include line items - create a fallback line item
+    // based on the order total so orders can still be imported with customer linking
+    const totalPrice = parsePrice(row['ORDER_TOTAL_PRICE'] || row['ORDER_SUBTOTAL'] || '0');
+    const lineItems: LineItem[] = totalPrice > 0 ? [{
+      product_external_id: '',  // No product link for fallback
+      title: 'Ordre total',
+      sku: `ORDER-${row['ORDER_ID'] || 'UNKNOWN'}`,
+      quantity: 1,
+      price: totalPrice,
+    }] : [];
 
     return {
       external_id: row['ORDER_ID'] || '',
