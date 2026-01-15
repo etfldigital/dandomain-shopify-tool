@@ -91,6 +91,18 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const [paused, setPaused] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const pausedRef = useRef(false);
+
+  const [activity, setActivity] = useState<string>('');
+  const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
+  const [uiNow, setUiNow] = useState<number>(() => Date.now());
+
+  const updateActivity = (msg: string) => {
+    setActivity(msg);
+    const t = Date.now();
+    setLastActivityAt(t);
+    setUiNow(t);
+  };
+
   const [progress, setProgress] = useState<UploadProgress[]>(
     ENTITY_CONFIG.map(e => ({
       entityType: e.type,
@@ -167,6 +179,13 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   useEffect(() => {
     fetchStatusCounts();
   }, [project.id]);
+
+  // Heartbeat while uploading, so the "sidst opdateret" timer keeps moving.
+  useEffect(() => {
+    if (!uploading) return;
+    const id = window.setInterval(() => setUiNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [uploading]);
 
   const getCounts = async () => {
     const counts: Record<EntityType, number> = {
@@ -246,9 +265,13 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     initialUploaded: number,
     isTestMode: boolean
   ) => {
+    const label = ENTITY_CONFIG.find(e => e.type === entityType)?.label ?? entityType;
+
     // Update status to running
     const displayTotal = isTestMode ? Math.min(pendingTotal, 3) : totalAll;
     const displayInitialUploaded = isTestMode ? 0 : Math.min(initialUploaded, displayTotal);
+
+    updateActivity(`${label}: starter… (${displayInitialUploaded.toLocaleString('da-DK')}/${displayTotal.toLocaleString('da-DK')})`);
 
     setProgress(prev => prev.map(p => 
       p.entityType === entityType
@@ -261,6 +284,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     let totalSkipped = 0;
     let allErrorDetails: ErrorDetail[] = [];
     let hasMore = true;
+    let batchIndex = 0;
 
     while (hasMore) {
       // Check if paused
@@ -269,6 +293,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       }
 
       try {
+        batchIndex += 1;
+        updateActivity(`${label}: uploader batch ${batchIndex}…`);
+
         const result = await uploadEntityBatch(entityType, isTestMode);
 
         // Anything processed or skipped ends up as "uploaded" in Shopify + database
@@ -294,11 +321,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             : p
         ));
 
-        // Refresh status counts after each batch for real-time updates
+        updateActivity(`${label}: opdaterer tællere…`);
         await fetchStatusCounts();
 
         // Small delay between batches to avoid rate limiting
         if (hasMore) {
+          updateActivity(`${label}: venter på næste batch…`);
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (error) {
@@ -310,6 +338,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             ? { ...p, status: 'failed' }
             : p
         ));
+        updateActivity(`${label}: fejlede`);
         return;
       }
     }
@@ -320,6 +349,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         ? { ...p, status: 'completed' }
         : p
     ));
+    updateActivity(`${label}: færdig`);
   };
 
   const handleStartUpload = async (isTestMode: boolean = false) => {
@@ -327,6 +357,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     setTestMode(isTestMode);
     pausedRef.current = false;
     setPaused(false);
+    updateActivity(isTestMode ? 'Forbereder test-upload…' : 'Forbereder upload…');
 
     // Update UI immediately with whatever counts we already have,
     // so it doesn't look like the app is stuck while we fetch fresh totals.
@@ -351,6 +382,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
     // Fetch both pending counts and current totals (uploaded/pending/failed) up front,
     // so the UI shows "already uploaded" progress.
+    updateActivity('Henter tællere…');
     const [pendingCounts, initialStatusCounts] = await Promise.all([
       getCounts(),
       fetchStatusCounts(),
@@ -400,12 +432,15 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     for (const entity of ENTITY_CONFIG) {
       const pending = effectivePendingCounts[entity.type];
 
+      updateActivity(`${entity.label}: forbereder…`);
+
       if (pending > 0) {
         const counts = initialStatusCounts[entity.type];
         const totalAll = isTestMode ? pending : (counts.pending + counts.uploaded + counts.failed);
         const initialUploaded = isTestMode ? 0 : counts.uploaded;
 
         await uploadEntity(entity.type, pending, totalAll, initialUploaded, isTestMode);
+      
 
         // In test mode, stop after processing 3
         if (isTestMode) {
@@ -434,6 +469,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const handlePauseToggle = () => {
     pausedRef.current = !pausedRef.current;
     setPaused(!paused);
+    updateActivity(pausedRef.current ? 'Paused' : 'Fortsætter…');
   };
 
   const handleRetry = async () => {
@@ -522,6 +558,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const totalItems = progress.reduce((acc, p) => acc + p.total, 0);
   const totalErrors = progress.reduce((acc, p) => acc + p.errors, 0);
   const totalSkipped = progress.reduce((acc, p) => acc + p.skipped, 0);
+  const secondsSinceUpdate = Math.max(0, Math.floor((uiNow - lastActivityAt) / 1000));
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -538,6 +575,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           <CardDescription>
             Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer
           </CardDescription>
+          {uploading && (
+            <div className="mt-2 text-sm text-muted-foreground">
+              Status: {activity || 'Arbejder…'} • Sidst opdateret for {secondsSinceUpdate}s siden
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-6">
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
