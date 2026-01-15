@@ -671,9 +671,28 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
   return String(result.customer.id);
 }
 
+async function findShopifyCustomerIdByEmail(
+  shopifyUrl: string,
+  token: string,
+  email: string
+): Promise<string | null> {
+  const normalized = String(email || '').trim();
+  if (!normalized) return null;
+
+  const searchResponse = await fetch(
+    `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(normalized)}`,
+    { headers: { 'X-Shopify-Access-Token': token } }
+  );
+
+  if (!searchResponse.ok) return null;
+  const searchResult = await searchResponse.json();
+  const first = searchResult?.customers?.[0];
+  return first?.id ? String(first.id) : null;
+}
+
 async function uploadOrder(
-  shopifyUrl: string, 
-  token: string, 
+  shopifyUrl: string,
+  token: string,
   data: any,
   supabase: any,
   projectId: string
@@ -681,28 +700,38 @@ async function uploadOrder(
   // Find Shopify customer ID and email for customer linking
   let shopifyCustomerId: string | null = null;
   let customerEmail: string | null = null;
-  
+
   if (data.customer_external_id) {
     const { data: customer } = await supabase
       .from('canonical_customers')
       .select('shopify_id, data')
       .eq('project_id', projectId)
       .eq('external_id', data.customer_external_id)
-      .single();
-    
+      .maybeSingle();
+
     if (customer?.shopify_id) {
       shopifyCustomerId = customer.shopify_id;
     }
     // Also get email for fallback customer linking
     if (customer?.data?.email) {
-      customerEmail = customer.data.email;
+      customerEmail = String(customer.data.email).trim();
     }
+  }
+
+  // Extra fallback: take customer email from the orders CSV (if present)
+  if (!customerEmail && data.customer_email) {
+    customerEmail = String(data.customer_email).trim();
+  }
+
+  // If we still don't have an ID, try to find the customer in Shopify by email
+  if (!shopifyCustomerId && customerEmail) {
+    shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail);
   }
 
   // Map line items with Shopify variant IDs
   const lineItems = [];
   const sourceLineItems = data.line_items || [];
-  
+
   // If no line items, create a fallback based on order total
   if (sourceLineItems.length === 0 && data.total_price > 0) {
     lineItems.push({
@@ -711,7 +740,7 @@ async function uploadOrder(
       price: String(data.total_price),
     });
   }
-  
+
   for (const item of sourceLineItems) {
     // Try to find the product's Shopify variant ID
     const { data: product } = await supabase
@@ -719,7 +748,7 @@ async function uploadOrder(
       .select('shopify_id')
       .eq('project_id', projectId)
       .eq('external_id', item.product_external_id)
-      .single();
+      .maybeSingle();
 
     if (product?.shopify_id) {
       // Get variant ID from product
@@ -727,7 +756,7 @@ async function uploadOrder(
         `${shopifyUrl}/products/${product.shopify_id}.json`,
         { headers: { 'X-Shopify-Access-Token': token } }
       );
-      
+
       if (variantResponse.ok) {
         const productData = await variantResponse.json();
         const variant = productData.product?.variants?.[0];
@@ -741,7 +770,7 @@ async function uploadOrder(
         }
       }
     }
-    
+
     // Fallback: create custom line item
     lineItems.push({
       title: item.title || item.sku,
@@ -753,13 +782,24 @@ async function uploadOrder(
   // Use the original order ID from DanDomain as the order name/number
   const orderName = data.external_id ? `#${data.external_id}` : undefined;
 
+  const customerObject = shopifyCustomerId
+    ? { id: Number(shopifyCustomerId) }
+    : customerEmail
+      ? {
+          email: customerEmail,
+          first_name: data.customer_first_name || undefined,
+          last_name: data.customer_last_name || undefined,
+          phone: data.customer_phone || data.billing_address?.phone || null,
+        }
+      : undefined;
+
   const orderPayload = {
     order: {
       // Set the order name/number to match the original system
       name: orderName,
-      // Link to customer - prefer Shopify ID, fallback to email
-      customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
-      email: customerEmail || data.billing_address?.email || undefined,
+      // Link to customer - prefer Shopify ID, otherwise create/link by email
+      customer: customerObject,
+      email: customerEmail || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
