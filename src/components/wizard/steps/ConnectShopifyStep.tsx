@@ -66,13 +66,15 @@ export function ConnectShopifyStep({ project, onUpdateProject, onNext }: Connect
           <div className="p-4 rounded-lg bg-secondary/50 space-y-2">
             <h4 className="font-medium text-sm">Sådan får du din Access Token:</h4>
             <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-              <li>Gå til Shopify Admin → Settings → Apps and sales channels</li>
-              <li>Klik på "Develop apps" → "Create an app"</li>
-              <li>Under "API credentials", vælg de nødvendige scopes</li>
-              <li>Installer appen og kopiér Admin API access token</li>
+              <li>Gå til Shopify Admin → Settings → Apps</li>
+              <li>Klik på "App and sales channel development"</li>
+              <li>Klik på "Create an app" og giv den et navn</li>
+              <li>Gå til "Configuration" og konfigurer Admin API scopes</li>
+              <li>Gå til "API credentials" og klik "Install app"</li>
+              <li>Kopiér din Admin API access token</li>
             </ol>
             <a 
-              href="https://shopify.dev/docs/apps/auth/admin-app-access-tokens" 
+              href="https://shopify.dev/docs/apps/build/authentication-authorization/access-token-types/generate-app-access-tokens-admin" 
               target="_blank" 
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-sm text-primary hover:underline mt-2"
