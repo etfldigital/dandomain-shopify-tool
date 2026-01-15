@@ -605,21 +605,30 @@ async function uploadProductsWithVariants(
       }
       
       // Handle "already exists" error gracefully - mark as skipped, not failed
-      if (!response.ok && response.status === 422 && responseBody.includes('already exists')) {
-        console.log(`Product "${transformedTitle}" already exists (race condition), marking as uploaded`);
+      // This catches both "Title already exists" and "The variant 'Default' already exists" errors
+      const isAlreadyExistsError = !response.ok && response.status === 422 && 
+        (responseBody.includes('already exists') || responseBody.includes('Default'));
+      
+      if (isAlreadyExistsError) {
+        console.log(`Product "${transformedTitle}" or variant already exists, marking as uploaded`);
         
-        // Try to find the existing product
+        // Try to find the existing product by title
         const { response: searchResp, body: searchBody } = await shopifyFetch(
-          `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}&limit=5`,
+          `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}&limit=10`,
           { headers: { 'X-Shopify-Access-Token': token } }
         );
         
         let existingId: string | null = null;
         if (searchResp.ok) {
           const searchResult = JSON.parse(searchBody);
-          const exactMatch = searchResult.products?.find((p: any) => p.title.toLowerCase() === titleLower);
-          if (exactMatch) {
-            existingId = String(exactMatch.id);
+          // Try exact match first
+          let matchedProduct = searchResult.products?.find((p: any) => p.title.toLowerCase() === titleLower);
+          // If no exact match, try partial match
+          if (!matchedProduct && searchResult.products?.length > 0) {
+            matchedProduct = searchResult.products[0];
+          }
+          if (matchedProduct) {
+            existingId = String(matchedProduct.id);
           }
         }
         
@@ -634,7 +643,9 @@ async function uploadProductsWithVariants(
             .eq('id', item.id);
         }
         skipped += items.length;
-        existingProducts.set(titleLower, existingId || 'unknown');
+        if (existingId) {
+          existingProducts.set(titleLower, existingId);
+        }
         continue;
       }
 
