@@ -111,6 +111,14 @@ serve(async (req) => {
       });
     }
     
+    // Special handling for categories - use dedicated function with caching
+    if (entityType === 'categories') {
+      const result = await uploadCategoriesWithCache(supabase, projectId, shopifyUrl, shopifyToken, batchSize);
+      return new Response(JSON.stringify(result), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+    
     const { data: items, error: fetchError } = await supabase
       .from(tableName)
       .select('*')
@@ -144,25 +152,17 @@ serve(async (req) => {
           case 'orders':
             shopifyId = await uploadOrder(shopifyUrl, shopifyToken, item.data, supabase, projectId);
             break;
-          case 'categories':
-            shopifyId = await uploadCollection(shopifyUrl, shopifyToken, item);
-            break;
           case 'pages':
             shopifyId = await uploadPage(shopifyUrl, shopifyToken, item.data);
             break;
         }
 
-        // Update status to uploaded (categories use shopify_collection_id, others use shopify_id)
+        // Update status to uploaded
         const updatePayload: Record<string, any> = {
           status: 'uploaded',
+          shopify_id: shopifyId,
           updated_at: new Date().toISOString(),
         };
-
-        if (entityType === 'categories') {
-          updatePayload.shopify_collection_id = shopifyId;
-        } else {
-          updatePayload.shopify_id = shopifyId;
-        }
 
         const { error: updateError } = await supabase
           .from(tableName)
@@ -608,6 +608,199 @@ async function uploadProductsWithVariants(
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
     .eq('status', 'pending');
+
+  return {
+    success: true,
+    processed,
+    errors,
+    hasMore: (remainingCount || 0) > 0,
+    errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
+  };
+}
+
+/**
+ * Upload categories with caching to avoid duplicate collections.
+ * Fetches all existing Shopify collections once, then only creates new ones.
+ */
+async function uploadCategoriesWithCache(
+  supabase: any,
+  projectId: string,
+  shopifyUrl: string,
+  token: string,
+  batchSize: number
+): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[] }> {
+  
+  // Get pending categories (only non-excluded)
+  const { data: pendingCategories, error: fetchError } = await supabase
+    .from('canonical_categories')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('status', 'pending')
+    .eq('exclude', false)
+    .limit(batchSize);
+
+  if (fetchError) {
+    throw new Error(`Failed to fetch categories: ${fetchError.message}`);
+  }
+
+  if (!pendingCategories || pendingCategories.length === 0) {
+    return { success: true, processed: 0, errors: 0, hasMore: false };
+  }
+
+  // Fetch ALL existing smart collections from Shopify (with pagination)
+  const existingCollections: Map<string, string> = new Map(); // title (lowercase) -> id
+  let pageInfo: string | null = null;
+  let hasMorePages = true;
+  
+  console.log('Fetching existing Shopify collections...');
+  
+  while (hasMorePages) {
+    const url = pageInfo 
+      ? `${shopifyUrl}/smart_collections.json?limit=250&page_info=${pageInfo}`
+      : `${shopifyUrl}/smart_collections.json?limit=250`;
+    
+    const { response, body } = await shopifyFetch(url, {
+      headers: { 'X-Shopify-Access-Token': token },
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch existing collections: ${response.status} - ${body}`);
+      break;
+    }
+    
+    const result = JSON.parse(body);
+    const collections = result.smart_collections || [];
+    
+    for (const collection of collections) {
+      existingCollections.set(collection.title.toLowerCase(), String(collection.id));
+    }
+    
+    // Check for pagination via Link header
+    const linkHeader = response.headers.get('Link');
+    if (linkHeader && linkHeader.includes('rel="next"')) {
+      const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
+      pageInfo = match ? match[1] : null;
+      hasMorePages = !!pageInfo;
+    } else {
+      hasMorePages = false;
+    }
+  }
+  
+  console.log(`Found ${existingCollections.size} existing Shopify collections`);
+
+  let processed = 0;
+  let errors = 0;
+  const errorDetails: { externalId: string; message: string }[] = [];
+
+  for (const category of pendingCategories) {
+    try {
+      const collectionTitle = category.name;
+      const titleLower = collectionTitle.toLowerCase();
+      
+      let shopifyId: string;
+      
+      // Check if collection already exists
+      if (existingCollections.has(titleLower)) {
+        shopifyId = existingCollections.get(titleLower)!;
+        console.log(`Collection "${collectionTitle}" already exists with ID ${shopifyId}, reusing`);
+      } else {
+        // Create new collection
+        const tag = category.shopify_tag || category.name;
+        
+        const collectionPayload = {
+          smart_collection: {
+            title: collectionTitle,
+            rules: [{
+              column: 'tag',
+              relation: 'equals',
+              condition: tag,
+            }],
+            published: true,
+          }
+        };
+
+        const { response, body } = await shopifyFetch(`${shopifyUrl}/smart_collections.json`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': token,
+          },
+          body: JSON.stringify(collectionPayload),
+        });
+
+        if (!response.ok) {
+          // Handle race condition where collection was created between check and creation
+          if (response.status === 422 && body.includes('already exists')) {
+            console.log(`Collection "${collectionTitle}" was created concurrently, fetching...`);
+            const { response: retrySearch, body: retryBody } = await shopifyFetch(
+              `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
+              { headers: { 'X-Shopify-Access-Token': token } }
+            );
+            if (retrySearch.ok) {
+              const retryResult = JSON.parse(retryBody);
+              const existing = retryResult.smart_collections?.find(
+                (c: any) => c.title.toLowerCase() === titleLower
+              );
+              if (existing) {
+                shopifyId = String(existing.id);
+                existingCollections.set(titleLower, shopifyId);
+              } else {
+                throw new Error(`Collection "${collectionTitle}" exists but could not be found`);
+              }
+            } else {
+              throw new Error(`Shopify API error: ${response.status} - ${body}`);
+            }
+          } else {
+            throw new Error(`Shopify API error: ${response.status} - ${body}`);
+          }
+        } else {
+          const result = JSON.parse(body);
+          shopifyId = String(result.smart_collection.id);
+          // Add to cache so we don't try to create it again
+          existingCollections.set(titleLower, shopifyId);
+          console.log(`Created collection "${collectionTitle}" with ID ${shopifyId}`);
+        }
+      }
+
+      // Update status to uploaded
+      const { error: updateError } = await supabase
+        .from('canonical_categories')
+        .update({
+          status: 'uploaded',
+          shopify_collection_id: shopifyId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', category.id);
+
+      if (updateError) {
+        throw new Error(`Failed to update category status: ${updateError.message}`);
+      }
+
+      processed++;
+
+    } catch (error) {
+      errors++;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      errorDetails.push({ externalId: category.external_id, message: errorMessage });
+
+      await supabase
+        .from('canonical_categories')
+        .update({
+          status: 'failed',
+          error_message: errorMessage,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', category.id);
+    }
+  }
+
+  // Check if there are more pending categories
+  const { count: remainingCount } = await supabase
+    .from('canonical_categories')
+    .select('*', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .eq('status', 'pending')
+    .eq('exclude', false);
 
   return {
     success: true,
@@ -1069,75 +1262,6 @@ async function uploadOrder(
 
   const result = JSON.parse(body);
   return String(result.order.id);
-}
-
-
-async function uploadCollection(shopifyUrl: string, token: string, category: any): Promise<string> {
-  // Create a Smart Collection with a tag rule
-  const tag = category.shopify_tag || category.name;
-  const collectionTitle = category.name;
-  
-  // First, check if a collection with this exact name already exists
-  const { response: searchResponse, body: searchBody } = await shopifyFetch(
-    `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
-    {
-      headers: { 'X-Shopify-Access-Token': token },
-    }
-  );
-  
-  if (searchResponse.ok) {
-    const searchResult = JSON.parse(searchBody);
-    const existing = searchResult.smart_collections?.find(
-      (c: any) => c.title.toLowerCase() === collectionTitle.toLowerCase()
-    );
-    if (existing) {
-      console.log(`Collection "${collectionTitle}" already exists with ID ${existing.id}, skipping creation`);
-      return String(existing.id);
-    }
-  }
-  
-  const collectionPayload = {
-    smart_collection: {
-      title: collectionTitle,
-      rules: [{
-        column: 'tag',
-        relation: 'equals',
-        condition: tag,
-      }],
-      published: true,
-    }
-  };
-
-  const { response, body } = await shopifyFetch(`${shopifyUrl}/smart_collections.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-    },
-    body: JSON.stringify(collectionPayload),
-  });
-
-  if (!response.ok) {
-    // Handle case where collection was created between our check and creation attempt
-    if (response.status === 422 && body.includes('already exists')) {
-      console.log(`Collection "${collectionTitle}" was created concurrently, fetching existing...`);
-      const { response: retrySearch, body: retryBody } = await shopifyFetch(
-        `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
-        { headers: { 'X-Shopify-Access-Token': token } }
-      );
-      if (retrySearch.ok) {
-        const retryResult = JSON.parse(retryBody);
-        const existing = retryResult.smart_collections?.find(
-          (c: any) => c.title.toLowerCase() === collectionTitle.toLowerCase()
-        );
-        if (existing) return String(existing.id);
-      }
-    }
-    throw new Error(`Shopify API error: ${response.status} - ${body}`);
-  }
-
-  const result = JSON.parse(body);
-  return String(result.smart_collection.id);
 }
 
 async function uploadPage(shopifyUrl: string, token: string, data: any): Promise<string> {
