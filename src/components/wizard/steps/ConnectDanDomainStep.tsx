@@ -15,6 +15,7 @@ interface ConnectDanDomainStepProps {
 export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: ConnectDanDomainStepProps) {
   const [shopUrl, setShopUrl] = useState(project.dandomain_shop_url || '');
   const [apiKey, setApiKey] = useState(project.dandomain_api_key_encrypted || '');
+  const [baseUrl, setBaseUrl] = useState((project as any).dandomain_base_url || '');
   
   // If we already have saved credentials, show success state
   const hasExistingConnection = project.dandomain_shop_url && project.dandomain_api_key_encrypted;
@@ -35,8 +36,9 @@ export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: Conne
       await onUpdateProject({
         dandomain_shop_url: shopUrl,
         dandomain_api_key_encrypted: apiKey, // In production, encrypt this
+        dandomain_base_url: baseUrl || null,
         status: 'connected',
-      });
+      } as any);
       
       setTestResult('success');
     } catch (error) {
@@ -50,8 +52,9 @@ export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: Conne
   const handleSkipToCSV = async () => {
     await onUpdateProject({
       dandomain_shop_url: shopUrl || 'CSV Import',
+      dandomain_base_url: baseUrl || null,
       status: 'connected',
-    });
+    } as any);
     onNext();
   };
 
@@ -83,6 +86,19 @@ export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: Conne
               value={shopUrl}
               onChange={(e) => setShopUrl(e.target.value)}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="baseUrl">Base URL til billeder</Label>
+            <Input
+              id="baseUrl"
+              placeholder="https://minshop.dk"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Bruges til at bygge fulde billed-URLs fra relative stier (f.eks. /images/produkt.webp)
+            </p>
           </div>
 
           <div className="space-y-2">

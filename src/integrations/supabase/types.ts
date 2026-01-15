@@ -464,6 +464,7 @@ export type Database = {
           created_at: string
           customer_count: number | null
           dandomain_api_key_encrypted: string | null
+          dandomain_base_url: string | null
           dandomain_shop_url: string | null
           id: string
           name: string
@@ -481,6 +482,7 @@ export type Database = {
           created_at?: string
           customer_count?: number | null
           dandomain_api_key_encrypted?: string | null
+          dandomain_base_url?: string | null
           dandomain_shop_url?: string | null
           id?: string
           name: string
@@ -498,6 +500,7 @@ export type Database = {
           created_at?: string
           customer_count?: number | null
           dandomain_api_key_encrypted?: string | null
+          dandomain_base_url?: string | null
           dandomain_shop_url?: string | null
           id?: string
           name?: string

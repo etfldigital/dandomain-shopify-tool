@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
-import { Loader2, ArrowRight, FileText, ChevronLeft, ChevronRight, Shuffle } from 'lucide-react';
+import { Loader2, ArrowRight, FileText, ChevronLeft, ChevronRight, Shuffle, ImageIcon, Weight } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
 interface ShopifyFieldPreviewProps {
@@ -19,6 +19,8 @@ interface ProductPreviewData {
     price: number;
     cost_price: number | null;
     stock_quantity: number;
+    weight: number | null;
+    images: string[];
     vendor: string | null;
     category_ids: string[];
   };
@@ -128,6 +130,8 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
           price: data.price || 0,
           cost_price: data.cost_price || null,
           stock_quantity: data.stock_quantity || 0,
+          weight: data.weight || null,
+          images: data.images || [],
           vendor: data.vendor,
           category_ids: categoryIds,
         },
@@ -359,6 +363,51 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               </p>
             </CardContent>
           </Card>
+
+          {/* Weight */}
+          <Card>
+            <CardContent className="pt-4">
+              <label className="text-xs text-muted-foreground mb-1 block">Vægt</label>
+              <div className="flex items-center gap-2">
+                <Input 
+                  value={product.original.weight !== null ? product.original.weight.toString() : '0'} 
+                  readOnly 
+                  className="bg-background h-9 font-mono text-sm w-24"
+                />
+                <span className="text-muted-foreground text-sm">kg</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Fra: PROD_WEIGHT
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Product Image */}
+          <Card>
+            <CardContent className="pt-4">
+              <label className="text-xs text-muted-foreground mb-1 block">Produktbillede</label>
+              {product.original.images.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="border rounded-md p-2 bg-background">
+                    <p className="text-xs font-mono text-muted-foreground break-all">
+                      {product.original.images[0]}
+                    </p>
+                  </div>
+                  <p className="text-xs text-amber-600">
+                    ⚠️ Relativ sti - kræver base-URL for at virke
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-3 border rounded-md bg-background text-muted-foreground">
+                  <ImageIcon className="w-4 h-4" />
+                  <span className="text-sm">Intet billede</span>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Fra: PROD_PHOTO
+              </p>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
@@ -406,6 +455,16 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               <Badge variant="outline" className="font-mono">STOCK_COUNT</Badge>
               <ArrowRight className="w-3 h-3 text-muted-foreground" />
               <span>Lagerbeholdning</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono">PROD_WEIGHT</Badge>
+              <ArrowRight className="w-3 h-3 text-muted-foreground" />
+              <span>Vægt</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono">PROD_PHOTO</Badge>
+              <ArrowRight className="w-3 h-3 text-muted-foreground" />
+              <span>Billeder</span>
             </div>
           </div>
         </CardContent>
