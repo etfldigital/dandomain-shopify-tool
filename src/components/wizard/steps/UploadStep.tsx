@@ -530,7 +530,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     )}
                     {uploading && (
                       <span className="text-sm text-muted-foreground">
-                        {p.processed.toLocaleString('da-DK')} / {p.total.toLocaleString('da-DK')}
+                        <span className="text-green-600 font-medium">{counts.uploaded.toLocaleString('da-DK')}</span>
+                        {' / '}
+                        <span>{totalCount.toLocaleString('da-DK')}</span>
                       </span>
                     )}
                     {!uploading && (
