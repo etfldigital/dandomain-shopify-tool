@@ -192,23 +192,42 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       .filter((s) => s && !s.includes('#'));
   };
   
-  return rows.map(row => ({
-    title: row['PROD_NAME'] || row['title'] || 'Untitled',
-    body_html: row['PROD_DESCRIPTION'] || row['description'] || '',
-    short_description: row['PROD_SHORT_DESCRIPTION'] || '',
-    sku: row['PROD_NUM'] || row['sku'] || `SKU-${Date.now()}`,
-    price: parsePrice(row['PROD_PRICE'] || row['price']),
-    compare_at_price: row['PROD_PRICE_OFFER'] ? parsePrice(row['PROD_PRICE_OFFER']) : null,
-    weight: row['PROD_WEIGHT'] ? parseFloat(row['PROD_WEIGHT'].replace(',', '.')) : null,
-    stock_quantity: parseInt(row['PROD_STOCK'] || row['stock'] || '0') || 0,
-    active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
-    images: row['PROD_IMAGE'] ? [row['PROD_IMAGE']] : [],
-    tags: [],
-    category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
-    vendor: row['MANUFAC_ID'] || null,
-    vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
-    language: row['LANGUAGE_ID'] || 'da',
-  }));
+  return rows
+    .map(row => ({
+      title: row['PROD_NAME'] || row['title'] || '',
+      body_html: row['PROD_DESCRIPTION'] || row['description'] || '',
+      short_description: row['PROD_SHORT_DESCRIPTION'] || '',
+      sku: row['PROD_NUM'] || row['sku'] || '',
+      price: parsePrice(row['PROD_PRICE'] || row['price']),
+      compare_at_price: row['PROD_PRICE_OFFER'] ? parsePrice(row['PROD_PRICE_OFFER']) : null,
+      weight: row['PROD_WEIGHT'] ? parseFloat(row['PROD_WEIGHT'].replace(',', '.')) : null,
+      stock_quantity: parseInt(row['PROD_STOCK'] || row['stock'] || '0') || 0,
+      active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
+      images: row['PROD_IMAGE'] ? [row['PROD_IMAGE']] : [],
+      tags: [],
+      category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
+      vendor: row['MANUFAC_ID'] || null,
+      vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
+      language: row['LANGUAGE_ID'] || 'da',
+    }))
+    // Filter out empty rows - must have at least a title OR a SKU
+    .filter(product => {
+      const hasTitle = product.title && product.title.trim() !== '';
+      const hasSku = product.sku && product.sku.trim() !== '';
+      
+      if (!hasTitle && !hasSku) {
+        console.log('Skipping empty product row - no title or SKU');
+        return false;
+      }
+      
+      // If no title but has SKU, log a warning
+      if (!hasTitle && hasSku) {
+        console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
+        return false;
+      }
+      
+      return true;
+    });
 }
 
 /**
