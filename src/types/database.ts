@@ -143,6 +143,14 @@ export interface CanonicalOrder {
 
 export interface OrderData {
   customer_external_id: string;
+  /**
+   * Optional customer info from the Orders CSV.
+   * Used as fallback for linking/creating customers when customer_external_id mapping is missing.
+   */
+  customer_email?: string;
+  customer_first_name?: string;
+  customer_last_name?: string;
+  customer_phone?: string;
   order_date: string;
   currency: string;
   subtotal_price: number;

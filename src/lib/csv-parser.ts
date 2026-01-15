@@ -349,15 +349,35 @@ export function parseCustomersCSV(csvText: string): (CustomerData & { external_i
  */
 export function parseOrdersCSV(csvText: string): (OrderData & { external_id: string })[] {
   const rows = parseCSV(csvText);
-  
+
+  const getCI = (row: Record<string, string>, ...names: string[]) => {
+    for (const name of names) {
+      if (row[name] != null && row[name] !== '') return row[name];
+      const lower = name.toLowerCase();
+      const key = Object.keys(row).find((k) => k.toLowerCase() === lower);
+      if (key && row[key] !== '') return row[key];
+    }
+    return '';
+  };
+
   return rows.map(row => {
+    const customerExternalId = getCI(row, 'CUST_ID', 'CUST_NUM', 'CUSTOMER_ID', 'CUSTOMER_NO', 'CUSTOMER_NUMBER');
+
+    const customerEmail = getCI(row, 'EMAIL', 'CUSTOMER_EMAIL', 'CUST_EMAIL', 'BILL_EMAIL', 'INVOICE_EMAIL', 'DELIVERY_EMAIL').trim();
+    const customerPhone = getCI(row, 'PHONE', 'CUSTOMER_PHONE', 'CUST_PHONE', 'BILL_PHONE', 'INVOICE_PHONE', 'DELIVERY_PHONE').trim();
+
+    const fullName = getCI(row, 'NAME', 'CUSTOMER_NAME', 'BILL_NAME', 'INVOICE_NAME', 'DELIVERY_NAME').trim();
+    const nameParts = fullName ? fullName.split(' ') : [];
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
     const shippingAddress: Address = {
-      address1: row['DELIVERY_ADDRESS'] || '',
+      address1: row['DELIVERY_ADDRESS'] || getCI(row, 'DELIVERY_ADDRESS1', 'DELIVERY_ADDR') || '',
       address2: null,
-      city: row['DELIVERY_CITY'] || '',
-      zip: row['DELIVERY_ZIP'] || '',
-      country: row['DELIVERY_COUNTRY'] || 'DK',
-      phone: null,
+      city: row['DELIVERY_CITY'] || getCI(row, 'DELIVERY_TOWN', 'DELIVERY_CITYNAME') || '',
+      zip: row['DELIVERY_ZIP'] || getCI(row, 'DELIVERY_ZIP_CODE', 'DELIVERY_POSTCODE') || '',
+      country: row['DELIVERY_COUNTRY'] || getCI(row, 'COUNTRY', 'DELIVERY_COUNTRY_CODE') || 'DK',
+      phone: customerPhone || null,
     };
 
     // DanDomain order exports don't include line items - create a fallback line item
@@ -373,7 +393,11 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
 
     return {
       external_id: row['ORDER_ID'] || '',
-      customer_external_id: row['CUST_ID'] || '',
+      customer_external_id: customerExternalId || '',
+      customer_email: customerEmail || undefined,
+      customer_first_name: firstName || undefined,
+      customer_last_name: lastName || undefined,
+      customer_phone: customerPhone || undefined,
       order_date: parseDate(row['DATE']),
       currency: row['CURRENCY_CODE'] || 'DKK',
       subtotal_price: parsePrice(row['ORDER_TOTAL_PRICE']) - parsePrice(row['ORDER_VAT_AMOUNT']),
