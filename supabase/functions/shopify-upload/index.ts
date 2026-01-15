@@ -168,22 +168,49 @@ function extractVariantOption(baseSku: string, fullSku: string): string {
 }
 
 function normalizeImageUrl(raw: string, baseUrl: string): string {
-  const img = String(raw || '').trim();
+  let img = String(raw || '').trim();
   if (!img) return '';
 
   // Already absolute
-  if (/^https?:\/\//i.test(img)) return img;
+  if (/^https?:\/\//i.test(img)) {
+    // URL-encode spaces and other special characters in the path
+    try {
+      const url = new URL(img);
+      url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
+      return url.toString();
+    } catch {
+      // If URL parsing fails, just encode spaces
+      return img.replace(/ /g, '%20');
+    }
+  }
 
   // Protocol-relative URL
-  if (img.startsWith('//')) return `https:${img}`;
+  if (img.startsWith('//')) {
+    img = `https:${img}`;
+    try {
+      const url = new URL(img);
+      url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
+      return url.toString();
+    } catch {
+      return img.replace(/ /g, '%20');
+    }
+  }
 
   // No base to join with (will likely be rejected by Shopify)
   const base = String(baseUrl || '').trim();
-  if (!base) return img;
+  if (!base) return img.replace(/ /g, '%20');
 
   const baseClean = base.replace(/\/$/, '');
-  if (img.startsWith('/')) return baseClean + img;
-  return baseClean + '/' + img;
+  let fullUrl = img.startsWith('/') ? baseClean + img : baseClean + '/' + img;
+  
+  // URL-encode spaces and special characters
+  try {
+    const url = new URL(fullUrl);
+    url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
+    return url.toString();
+  } catch {
+    return fullUrl.replace(/ /g, '%20');
+  }
 }
 
 async function setInventoryItemCost(
@@ -338,22 +365,38 @@ async function uploadProductsWithVariants(
       const hasVariants = items.length > 1;
       
       // Collect all unique images from variants and build full URLs
-      const allImages: string[] = [];
-      for (const item of items) {
-        const imgs = item.data?.images || [];
+      // Use first product's images as primary, then add unique variant images
+      const primaryImages: string[] = [];
+      const variantImages: string[] = [];
+      
+      for (let i = 0; i < items.length; i++) {
+        const imgs = items[i].data?.images || [];
         for (const rawImg of imgs) {
           const fullUrl = normalizeImageUrl(rawImg, dandomainBaseUrl);
           if (!fullUrl) continue;
-          if (!allImages.includes(fullUrl)) {
-            allImages.push(fullUrl);
+          
+          if (i === 0) {
+            // First product's images are primary
+            if (!primaryImages.includes(fullUrl)) {
+              primaryImages.push(fullUrl);
+            }
+          } else {
+            // Other variants' images - only add if not already in primary
+            if (!primaryImages.includes(fullUrl) && !variantImages.includes(fullUrl)) {
+              variantImages.push(fullUrl);
+            }
           }
         }
       }
+      
+      // Combine: primary images first, then variant images
+      const allImages = [...primaryImages, ...variantImages];
 
       if (allImages.length > 0) {
         console.log(`Product "${transformedTitle}" images:`, allImages.slice(0, 3));
       }
 
+      // Build product payload - try without images first if we have problematic URLs
       const productPayload: any = {
         product: {
           title: transformedTitle,
@@ -374,7 +417,7 @@ async function uploadProductsWithVariants(
 
       console.log(`Uploading product "${transformedTitle}" with ${variants.length} variant(s)`);
 
-      const response = await fetch(`${shopifyUrl}/products.json`, {
+      let response = await fetch(`${shopifyUrl}/products.json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -382,6 +425,25 @@ async function uploadProductsWithVariants(
         },
         body: JSON.stringify(productPayload),
       });
+
+      // If image URL error, retry without images
+      if (!response.ok) {
+        const errorBody = await response.text();
+        if (response.status === 422 && errorBody.includes('Image URL is invalid') && allImages.length > 0) {
+          console.log(`Retrying product "${transformedTitle}" without images due to invalid URL`);
+          
+          // Retry without images
+          productPayload.product.images = [];
+          response = await fetch(`${shopifyUrl}/products.json`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Shopify-Access-Token': token,
+            },
+            body: JSON.stringify(productPayload),
+          });
+        }
+      }
 
       if (!response.ok) {
         const errorBody = await response.text();
