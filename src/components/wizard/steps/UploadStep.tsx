@@ -68,6 +68,7 @@ interface UploadProgress {
   processed: number;
   total: number;
   errors: number;
+  skipped: number;
   errorDetails: ErrorDetail[];
 }
 
@@ -97,6 +98,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       processed: 0,
       total: 0,
       errors: 0,
+      skipped: 0,
       errorDetails: [],
     }))
   );
@@ -213,7 +215,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return counts;
   };
 
-  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; hasMore: boolean; errorDetails?: ErrorDetail[] }> => {
+  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: ErrorDetail[] }> => {
     const response = await supabase.functions.invoke('shopify-upload', {
       body: {
         projectId: project.id,
@@ -229,6 +231,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return {
       processed: response.data.processed || 0,
       errors: response.data.errors || 0,
+      skipped: response.data.skipped || 0,
       // In test mode, never fetch more
       hasMore: isTestMode ? false : (response.data.hasMore || false),
       errorDetails: response.data.errorDetails || [],
@@ -239,11 +242,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     // Update status to running
     const displayTotal = isTestMode ? Math.min(total, 3) : total;
     setProgress(prev => prev.map(p => 
-      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal, errorDetails: [] } : p
+      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal, errorDetails: [], skipped: 0 } : p
     ));
 
     let totalProcessed = 0;
     let totalErrors = 0;
+    let totalSkipped = 0;
     let allErrorDetails: ErrorDetail[] = [];
     let hasMore = true;
 
@@ -257,6 +261,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         const result = await uploadEntityBatch(entityType, isTestMode);
         totalProcessed += result.processed;
         totalErrors += result.errors;
+        totalSkipped += result.skipped;
         hasMore = result.hasMore;
         
         // Collect error details from the batch
@@ -268,7 +273,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         const cappedProcessed = Math.min(totalProcessed, displayTotal);
         setProgress(prev => prev.map(p => 
           p.entityType === entityType 
-            ? { ...p, processed: cappedProcessed, errors: totalErrors, errorDetails: allErrorDetails } 
+            ? { ...p, processed: cappedProcessed, errors: totalErrors, skipped: totalSkipped, errorDetails: allErrorDetails } 
             : p
         ));
 
@@ -323,6 +328,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       total: effectiveCounts[p.entityType],
       processed: 0,
       errors: 0,
+      skipped: 0,
       status: 'pending',
       errorDetails: [],
     })));
@@ -450,6 +456,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const totalProcessed = progress.reduce((acc, p) => acc + p.processed, 0);
   const totalItems = progress.reduce((acc, p) => acc + p.total, 0);
   const totalErrors = progress.reduce((acc, p) => acc + p.errors, 0);
+  const totalSkipped = progress.reduce((acc, p) => acc + p.skipped, 0);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -510,6 +517,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {p.skipped > 0 && (
+                      <span className="flex items-center gap-1 text-amber-600 text-sm">
+                        {p.skipped} skipped
+                      </span>
+                    )}
                     {p.errors > 0 && (
                       <span className="flex items-center gap-1 text-destructive text-sm">
                         <AlertCircle className="w-3 h-3" />
@@ -567,9 +579,14 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                 <span className="text-muted-foreground">
                   Total: {totalProcessed.toLocaleString('da-DK')} / {totalItems.toLocaleString('da-DK')}
                 </span>
-                {totalErrors > 0 && (
-                  <span className="text-destructive">{totalErrors} fejl i alt</span>
-                )}
+                <div className="flex items-center gap-3">
+                  {totalSkipped > 0 && (
+                    <span className="text-amber-600">{totalSkipped} eksisterende (skipped)</span>
+                  )}
+                  {totalErrors > 0 && (
+                    <span className="text-destructive">{totalErrors} fejl</span>
+                  )}
+                </div>
               </div>
             </div>
           )}
