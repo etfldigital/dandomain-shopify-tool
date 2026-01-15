@@ -151,6 +151,10 @@ export interface OrderData {
   customer_first_name?: string;
   customer_last_name?: string;
   customer_phone?: string;
+  customer_address?: string;
+  customer_zip?: string;
+  customer_city?: string;
+  customer_country?: string;
   order_date: string;
   currency: string;
   subtotal_price: number;
