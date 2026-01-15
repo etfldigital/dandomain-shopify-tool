@@ -162,7 +162,7 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-2">
-                Fra: PROD_DESCRIPTION
+                Fra: DESC_LONG
               </p>
             </CardContent>
           </Card>
@@ -304,7 +304,7 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               <span>Titel</span>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="font-mono">PROD_DESCRIPTION</Badge>
+              <Badge variant="outline" className="font-mono">DESC_LONG</Badge>
               <ArrowRight className="w-3 h-3 text-muted-foreground" />
               <span>Beskrivelse</span>
             </div>
