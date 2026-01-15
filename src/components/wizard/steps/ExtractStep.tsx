@@ -95,11 +95,20 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         switch (uploadedFile.type) {
           case 'products':
             parsedData = parseProductsCSV(text);
-            productCount = parsedData.length;
             
-            // Insert into canonical_products
-            for (let i = 0; i < parsedData.length; i += 100) {
-              const batch = parsedData.slice(i, i + 100).map(product => ({
+            // Deduplicate by SKU - keep last occurrence
+            const productMap = new Map<string, typeof parsedData[0]>();
+            parsedData.forEach(product => {
+              if (product.sku) {
+                productMap.set(product.sku, product);
+              }
+            });
+            const uniqueProducts = Array.from(productMap.values());
+            productCount = uniqueProducts.length;
+            
+            // Insert into canonical_products in batches
+            for (let i = 0; i < uniqueProducts.length; i += 100) {
+              const batch = uniqueProducts.slice(i, i + 100).map(product => ({
                 project_id: project.id,
                 external_id: product.sku,
                 data: product,
@@ -115,14 +124,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
             // Extract categories from products
             const categories = new Set<string>();
-            parsedData.forEach(p => {
+            uniqueProducts.forEach(p => {
               if (p.category_external_ids) {
                 p.category_external_ids.forEach((c: string) => categories.add(c));
               }
             });
-            categoryCount = categories.size;
 
-            // Insert categories
+            // Insert categories (already unique via Set)
             const categoryData = Array.from(categories).map(cat => ({
               project_id: project.id,
               external_id: cat,
@@ -142,10 +150,20 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'customers':
             parsedData = parseCustomersCSV(text);
-            customerCount = parsedData.length;
             
-            for (let i = 0; i < parsedData.length; i += 100) {
-              const batch = parsedData.slice(i, i + 100).map(customer => ({
+            // Deduplicate by email - keep last occurrence
+            const customerMap = new Map<string, typeof parsedData[0]>();
+            parsedData.forEach(customer => {
+              const key = customer.external_id || customer.email;
+              if (key) {
+                customerMap.set(key, customer);
+              }
+            });
+            const uniqueCustomers = Array.from(customerMap.values());
+            customerCount = uniqueCustomers.length;
+            
+            for (let i = 0; i < uniqueCustomers.length; i += 100) {
+              const batch = uniqueCustomers.slice(i, i + 100).map(customer => ({
                 project_id: project.id,
                 external_id: customer.external_id || customer.email,
                 data: customer,
@@ -162,10 +180,19 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'orders':
             parsedData = parseOrdersCSV(text);
-            orderCount = parsedData.length;
             
-            for (let i = 0; i < parsedData.length; i += 100) {
-              const batch = parsedData.slice(i, i + 100).map(order => ({
+            // Deduplicate by order ID - keep last occurrence
+            const orderMap = new Map<string, typeof parsedData[0]>();
+            parsedData.forEach(order => {
+              if (order.external_id) {
+                orderMap.set(order.external_id, order);
+              }
+            });
+            const uniqueOrders = Array.from(orderMap.values());
+            orderCount = uniqueOrders.length;
+            
+            for (let i = 0; i < uniqueOrders.length; i += 100) {
+              const batch = uniqueOrders.slice(i, i + 100).map(order => ({
                 project_id: project.id,
                 external_id: order.external_id,
                 data: order,
@@ -182,10 +209,19 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'categories':
             parsedData = parseCategoriesCSV(text);
-            categoryCount = parsedData.length;
             
-            for (let i = 0; i < parsedData.length; i += 100) {
-              const batch = parsedData.slice(i, i + 100).map(category => ({
+            // Deduplicate by category ID - keep last occurrence
+            const catMap = new Map<string, typeof parsedData[0]>();
+            parsedData.forEach(category => {
+              if (category.external_id) {
+                catMap.set(category.external_id, category);
+              }
+            });
+            const uniqueCategories = Array.from(catMap.values());
+            categoryCount = uniqueCategories.length;
+            
+            for (let i = 0; i < uniqueCategories.length; i += 100) {
+              const batch = uniqueCategories.slice(i, i + 100).map(category => ({
                 project_id: project.id,
                 external_id: category.external_id,
                 name: category.name,
@@ -206,13 +242,14 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         setUploadedFiles(prev =>
           prev.map(f => f.type === uploadedFile.type ? { ...f, status: 'success', count: parsedData.length } : f)
         );
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error processing file:', error);
+        const errorMessage = error?.message || error?.hint || 'Ukendt fejl ved behandling af fil';
         setUploadedFiles(prev => 
           prev.map(f => f.type === uploadedFile.type ? { 
             ...f, 
             status: 'error', 
-            error: error instanceof Error ? error.message : 'Ukendt fejl' 
+            error: errorMessage
           } : f)
         );
       }
