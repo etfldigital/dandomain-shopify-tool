@@ -42,6 +42,7 @@ serve(async (req) => {
 
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
+    const dandomainBaseUrl = project.dandomain_base_url || '';
     const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
 
     let processed = 0;
@@ -53,7 +54,7 @@ serve(async (req) => {
     
     // Special handling for products - group by title to create variants
     if (entityType === 'products') {
-      const result = await uploadProductsWithVariants(supabase, projectId, shopifyUrl, shopifyToken, batchSize);
+      const result = await uploadProductsWithVariants(supabase, projectId, shopifyUrl, shopifyToken, batchSize, dandomainBaseUrl);
       return new Response(JSON.stringify(result), { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
@@ -170,7 +171,8 @@ async function uploadProductsWithVariants(
   projectId: string,
   shopifyUrl: string,
   token: string,
-  batchSize: number
+  batchSize: number,
+  dandomainBaseUrl: string
 ): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[] }> {
   
   // Get all pending products
@@ -280,13 +282,18 @@ async function uploadProductsWithVariants(
       // Determine if we need variant options
       const hasVariants = items.length > 1;
       
-      // Collect all unique images from variants
+      // Collect all unique images from variants and build full URLs
       const allImages: string[] = [];
       for (const item of items) {
         const imgs = item.data?.images || [];
         for (const img of imgs) {
           if (img && !allImages.includes(img)) {
-            allImages.push(img);
+            // Build full URL if it's a relative path
+            let fullUrl = img;
+            if (img.startsWith('/') && dandomainBaseUrl) {
+              fullUrl = dandomainBaseUrl.replace(/\/$/, '') + img;
+            }
+            allImages.push(fullUrl);
           }
         }
       }
