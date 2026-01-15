@@ -266,7 +266,7 @@ async function uploadProductsWithVariants(
         const variantData = item.data;
         const option = extractVariantOption(baseSku, variantData?.sku || '');
         
-        return {
+        const variant: any = {
           sku: variantData?.sku || '',
           price: String(variantData?.price || 0),
           compare_at_price: variantData?.compare_at_price ? String(variantData.compare_at_price) : null,
@@ -277,6 +277,13 @@ async function uploadProductsWithVariants(
           option1: option,
           position: index + 1,
         };
+        
+        // Shopify uses 'cost' for inventory cost (cost price)
+        if (variantData?.cost_price) {
+          variant.cost = String(variantData.cost_price);
+        }
+        
+        return variant;
       });
 
       // Determine if we need variant options
@@ -436,6 +443,21 @@ async function uploadProduct(
     }
   }
 
+  const variant: any = {
+    sku: data.sku || '',
+    price: String(data.price || 0),
+    compare_at_price: data.compare_at_price ? String(data.compare_at_price) : null,
+    inventory_quantity: data.stock_quantity || 0,
+    weight: data.weight || 0,
+    weight_unit: 'kg',
+    inventory_management: 'shopify',
+  };
+  
+  // Shopify uses 'cost' for inventory cost (cost price)
+  if (data.cost_price) {
+    variant.cost = String(data.cost_price);
+  }
+
   const productPayload = {
     product: {
       title: transformedTitle,
@@ -444,15 +466,7 @@ async function uploadProduct(
       product_type: '',
       tags: [...new Set(tags)].join(', '),
       status: data.active ? 'active' : 'draft',
-      variants: [{
-        sku: data.sku || '',
-        price: String(data.price || 0),
-        compare_at_price: data.compare_at_price ? String(data.compare_at_price) : null,
-        inventory_quantity: data.stock_quantity || 0,
-        weight: data.weight || 0,
-        weight_unit: 'kg',
-        inventory_management: 'shopify',
-      }],
+      variants: [variant],
       images: (data.images || []).map((url: string) => ({ src: url })),
     }
   };
