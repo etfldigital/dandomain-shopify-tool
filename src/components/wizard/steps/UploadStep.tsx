@@ -346,7 +346,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                       ) : p.status === 'failed' ? (
                         <AlertCircle className="w-4 h-4 text-destructive" />
                       ) : p.status === 'running' ? (
-                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                        paused ? (
+                          <Pause className="w-4 h-4 text-primary" />
+                        ) : (
+                          <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                        )
                       ) : (
                         <Icon className="w-4 h-4 text-muted-foreground" />
                       )}

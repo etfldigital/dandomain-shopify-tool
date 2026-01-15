@@ -513,6 +513,41 @@ async function uploadProductsWithVariants(
 
       console.log(`Uploading product "${transformedTitle}" with ${variants.length} variant(s)`);
 
+      // First, check if a product with same SKU or title already exists
+      const lookupSku = items[0].data?.sku || '';
+      const { response: searchResp, body: searchBody } = await shopifyFetch(
+        `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}`,
+        {
+          headers: { 'X-Shopify-Access-Token': token },
+        }
+      );
+      
+      let existingProductId: string | null = null;
+      if (searchResp.ok) {
+        const searchResult = JSON.parse(searchBody);
+        const existingProducts = searchResult.products || [];
+        // Find exact title match
+        const exactMatch = existingProducts.find((p: any) => p.title === transformedTitle);
+        if (exactMatch) {
+          existingProductId = String(exactMatch.id);
+          console.log(`Product "${transformedTitle}" already exists with ID ${existingProductId}, skipping creation`);
+          
+          // Mark all items as uploaded with existing ID
+          for (const item of items) {
+            await supabase
+              .from('canonical_products')
+              .update({
+                status: 'uploaded',
+                shopify_id: existingProductId,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', item.id);
+          }
+          processed += items.length;
+          continue; // Skip to next product group
+        }
+      }
+
       let { response, body: responseBody } = await shopifyFetch(`${shopifyUrl}/products.json`, {
         method: 'POST',
         headers: {
