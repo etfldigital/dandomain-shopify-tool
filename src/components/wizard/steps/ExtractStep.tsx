@@ -79,13 +79,20 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       }
 
       if (data && data.length > 0) {
-        const files: UploadedFile[] = data.map((pf: ProjectFile) => ({
-          type: pf.entity_type as EntityType,
-          file: new File([], pf.file_name),
-          storagePath: pf.storage_path,
-          status: pf.status === 'processed' ? 'success' : 'pending' as const,
-          count: pf.row_count || undefined,
-        }));
+        const files: UploadedFile[] = data.map((pf: ProjectFile) => {
+          const rowCount = pf.row_count ?? 0;
+          const success = pf.status === 'processed' && rowCount > 0;
+
+          return {
+            type: pf.entity_type as EntityType,
+            // Placeholder file (we download from storage on process)
+            file: new File([], pf.file_name),
+            storagePath: pf.storage_path,
+            status: success ? 'success' : (pf.status === 'error' ? 'error' : 'pending'),
+            count: success ? rowCount : undefined,
+            error: pf.status === 'error' ? 'Kunne ikke læse filen (klik Start udtræk igen)' : undefined,
+          };
+        });
         setUploadedFiles(files);
       }
     } catch (err) {
@@ -363,18 +370,27 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             break;
         }
 
+        // Guard: if we parsed 0 records, treat as an error so it's visible
+        if (recordCount === 0) {
+          throw new Error(
+            `0 rækker fundet i ${uploadedFile.type}-CSV. ` +
+            `Tjek separator (ofte ; eller ,) og at header-felter matcher DanDomain eksport.`
+          );
+        }
+
         // Update file record with row count
         await supabase
           .from('project_files')
-          .update({ 
+          .update({
             row_count: recordCount,
-            status: 'processed' 
+            status: 'processed',
+            error_message: null,
           })
           .eq('project_id', project.id)
           .eq('entity_type', uploadedFile.type);
 
         setUploadedFiles(prev =>
-          prev.map(f => f.type === uploadedFile.type ? { ...f, status: 'success', count: recordCount } : f)
+          prev.map(f => f.type === uploadedFile.type ? { ...f, status: 'success', count: recordCount, error: undefined } : f)
         );
       } catch (error: any) {
         console.error('Error processing file:', error);
