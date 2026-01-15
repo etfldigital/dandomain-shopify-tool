@@ -944,6 +944,7 @@ async function uploadOrder(
       // Link to customer (by id)
       customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
       email: customerEmail || undefined,
+      phone: customerPhone || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
