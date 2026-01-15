@@ -121,7 +121,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   }>({ open: false, entityType: null, scope: null, count: 0 });
 
   // Fetch status counts for all entity types
-  const fetchStatusCounts = async () => {
+  const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
     const counts: Record<EntityType, StatusCounts> = {
       products: { pending: 0, uploaded: 0, failed: 0 },
       customers: { pending: 0, uploaded: 0, failed: 0 },
@@ -161,6 +161,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     counts.pages = { pending: pagePending || 0, uploaded: pageUploaded || 0, failed: pageFailed || 0 };
 
     setStatusCounts(counts);
+    return counts;
   };
 
   useEffect(() => {
@@ -238,14 +239,24 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     };
   };
 
-  const uploadEntity = async (entityType: EntityType, total: number, isTestMode: boolean) => {
+  const uploadEntity = async (
+    entityType: EntityType,
+    pendingTotal: number,
+    totalAll: number,
+    initialUploaded: number,
+    isTestMode: boolean
+  ) => {
     // Update status to running
-    const displayTotal = isTestMode ? Math.min(total, 3) : total;
+    const displayTotal = isTestMode ? Math.min(pendingTotal, 3) : totalAll;
+    const displayInitialUploaded = isTestMode ? 0 : Math.min(initialUploaded, displayTotal);
+
     setProgress(prev => prev.map(p => 
-      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal, errorDetails: [], skipped: 0 } : p
+      p.entityType === entityType
+        ? { ...p, status: 'running', total: displayTotal, processed: displayInitialUploaded, errors: 0, skipped: 0, errorDetails: [] }
+        : p
     ));
 
-    let totalProcessed = 0;
+    let uploadedSoFar = displayInitialUploaded;
     let totalErrors = 0;
     let totalSkipped = 0;
     let allErrorDetails: ErrorDetail[] = [];
@@ -259,21 +270,27 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
       try {
         const result = await uploadEntityBatch(entityType, isTestMode);
-        totalProcessed += result.processed;
+
+        // Anything processed or skipped ends up as "uploaded" in Shopify + database
+        uploadedSoFar += (result.processed + result.skipped);
         totalErrors += result.errors;
         totalSkipped += result.skipped;
         hasMore = result.hasMore;
-        
+
         // Collect error details from the batch
         if (result.errorDetails && result.errorDetails.length > 0) {
           allErrorDetails = [...allErrorDetails, ...result.errorDetails];
         }
 
-        // Ensure processed count never exceeds total
-        const cappedProcessed = Math.min(totalProcessed, displayTotal);
-        setProgress(prev => prev.map(p => 
-          p.entityType === entityType 
-            ? { ...p, processed: cappedProcessed, errors: totalErrors, skipped: totalSkipped, errorDetails: allErrorDetails } 
+        setProgress(prev => prev.map(p =>
+          p.entityType === entityType
+            ? {
+                ...p,
+                processed: Math.min(uploadedSoFar, displayTotal),
+                errors: totalErrors,
+                skipped: totalSkipped,
+                errorDetails: allErrorDetails,
+              }
             : p
         ));
 
@@ -287,10 +304,10 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       } catch (error) {
         console.error(`Error uploading ${entityType}:`, error);
         toast.error(`Fejl ved upload af ${entityType}: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
-        
-        setProgress(prev => prev.map(p => 
-          p.entityType === entityType 
-            ? { ...p, status: 'failed' } 
+
+        setProgress(prev => prev.map(p =>
+          p.entityType === entityType
+            ? { ...p, status: 'failed' }
             : p
         ));
         return;
@@ -298,9 +315,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     }
 
     // Mark as completed
-    setProgress(prev => prev.map(p => 
-      p.entityType === entityType 
-        ? { ...p, status: totalErrors > 0 ? 'completed' : 'completed' } 
+    setProgress(prev => prev.map(p =>
+      p.entityType === entityType
+        ? { ...p, status: 'completed' }
         : p
     ));
   };
@@ -310,28 +327,70 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     setTestMode(isTestMode);
     pausedRef.current = false;
     setPaused(false);
-    
-    await onUpdateProject({ status: 'migrating' });
 
-    const counts = await getCounts();
+    // Update UI immediately with whatever counts we already have,
+    // so it doesn't look like the app is stuck while we fetch fresh totals.
+    if (!isTestMode) {
+      setProgress(prev => prev.map(p => {
+        const c = statusCounts[p.entityType];
+        const totalAll = c.pending + c.uploaded + c.failed;
+        return {
+          ...p,
+          total: totalAll,
+          processed: c.uploaded,
+          errors: 0,
+          skipped: 0,
+          status: 'pending',
+          errorDetails: [],
+        };
+      }));
+    }
 
-    // In test mode, limit to 3 of each type
-    const effectiveCounts = isTestMode 
+    // Don't block UI on this
+    void onUpdateProject({ status: 'migrating' });
+
+    // Fetch both pending counts and current totals (uploaded/pending/failed) up front,
+    // so the UI shows "already uploaded" progress.
+    const [pendingCounts, initialStatusCounts] = await Promise.all([
+      getCounts(),
+      fetchStatusCounts(),
+    ]);
+
+    // In test mode, limit to 3 pending of each type
+    const effectivePendingCounts = isTestMode
       ? Object.fromEntries(
-          Object.entries(counts).map(([key, value]) => [key, Math.min(value, 3)])
+          Object.entries(pendingCounts).map(([key, value]) => [key, Math.min(value, 3)])
         ) as Record<EntityType, number>
-      : counts;
+      : pendingCounts;
 
-    // Update totals
-    setProgress(prev => prev.map(p => ({
-      ...p,
-      total: effectiveCounts[p.entityType],
-      processed: 0,
-      errors: 0,
-      skipped: 0,
-      status: 'pending',
-      errorDetails: [],
-    })));
+    // Initialize UI totals as FULL totals (uploaded + pending + failed)
+    // and start the "processed" counter at already-uploaded.
+    setProgress(prev => prev.map(p => {
+      if (isTestMode) {
+        return {
+          ...p,
+          total: effectivePendingCounts[p.entityType],
+          processed: 0,
+          errors: 0,
+          skipped: 0,
+          status: 'pending',
+          errorDetails: [],
+        };
+      }
+
+      const counts = initialStatusCounts[p.entityType];
+      const totalAll = counts.pending + counts.uploaded + counts.failed;
+
+      return {
+        ...p,
+        total: totalAll,
+        processed: counts.uploaded,
+        errors: 0,
+        skipped: 0,
+        status: 'pending',
+        errorDetails: [],
+      };
+    }));
 
     if (isTestMode) {
       toast.info('Test-tilstand: Uploader kun 3 af hver type');
@@ -339,20 +398,26 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
     // Process in order: Pages → Collections → Products → Customers → Orders
     for (const entity of ENTITY_CONFIG) {
-      if (effectiveCounts[entity.type] > 0) {
-        await uploadEntity(entity.type, effectiveCounts[entity.type], isTestMode);
-        
+      const pending = effectivePendingCounts[entity.type];
+
+      if (pending > 0) {
+        const counts = initialStatusCounts[entity.type];
+        const totalAll = isTestMode ? pending : (counts.pending + counts.uploaded + counts.failed);
+        const initialUploaded = isTestMode ? 0 : counts.uploaded;
+
+        await uploadEntity(entity.type, pending, totalAll, initialUploaded, isTestMode);
+
         // In test mode, stop after processing 3
         if (isTestMode) {
-          // The uploadEntityBatch already handles limiting, but we update the display
-          setProgress(prev => prev.map(p => 
-            p.entityType === entity.type 
-              ? { ...p, status: 'completed', processed: Math.min(p.processed, 3) } 
+          setProgress(prev => prev.map(p =>
+            p.entityType === entity.type
+              ? { ...p, status: 'completed', processed: Math.min(p.processed, 3), total: 3 }
               : p
           ));
         }
       } else {
-        setProgress(prev => prev.map(p => 
+        // No pending work for this entity - mark completed, but keep already-uploaded counts visible
+        setProgress(prev => prev.map(p =>
           p.entityType === entity.type ? { ...p, status: 'completed' } : p
         ));
       }
@@ -479,8 +544,8 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             const p = progress.find(p => p.entityType === type)!;
             const counts = statusCounts[type];
             const totalCount = counts.pending + counts.uploaded + counts.failed;
-            // Progress bar shows uploaded out of total (not pending)
-            const percent = totalCount > 0 ? (counts.uploaded / totalCount) * 100 : 0;
+            // Progress bar shows uploaded (already + newly) out of total
+            const percent = p.total > 0 ? (p.processed / p.total) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">
@@ -531,9 +596,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     )}
                     {uploading && (
                       <span className="text-sm text-muted-foreground">
-                        <span className="text-green-600 font-medium">{counts.uploaded.toLocaleString('da-DK')}</span>
+                        <span className="text-green-600 font-medium">{p.processed.toLocaleString('da-DK')}</span>
                         {' / '}
-                        <span>{totalCount.toLocaleString('da-DK')}</span>
+                        <span>{p.total.toLocaleString('da-DK')}</span>
+                        {p.skipped > 0 && (
+                          <span className="ml-2 text-amber-600">({p.skipped.toLocaleString('da-DK')} eksisterende)</span>
+                        )}
                       </span>
                     )}
                     {!uploading && (
