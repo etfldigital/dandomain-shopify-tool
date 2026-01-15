@@ -617,6 +617,33 @@ async function uploadProduct(
   return String(result.product.id);
 }
 
+// Normalize phone number for Shopify:
+// - Strip Danish country codes (45, +45, 0045) from the beginning
+// - Return null if the result is empty or invalid
+function normalizePhoneNumber(raw: unknown): string | undefined {
+  let phone = String(raw ?? '').trim();
+  if (!phone) return undefined;
+
+  // Remove all spaces, dashes, parentheses
+  phone = phone.replace(/[\s\-\(\)]/g, '');
+
+  // Strip Danish country codes from the beginning
+  // Order matters: check longer patterns first
+  if (phone.startsWith('+45')) {
+    phone = phone.substring(3);
+  } else if (phone.startsWith('0045')) {
+    phone = phone.substring(4);
+  } else if (phone.startsWith('45') && phone.length > 8) {
+    // Only strip "45" if phone is longer than 8 digits (Danish numbers are 8 digits)
+    phone = phone.substring(2);
+  }
+
+  // If empty or too short, return undefined
+  if (!phone || phone.length < 6) return undefined;
+
+  return phone;
+}
+
 function normalizeCountryForShopify(raw: unknown): { country?: string; country_code?: string } {
   const value = String(raw ?? '').trim();
   if (!value) return { country: 'Denmark', country_code: 'DK' };
@@ -643,7 +670,8 @@ function buildShopifyAddress(
   const address2 = source?.address2 ?? fallback?.address2 ?? null;
   const city = source?.city || fallback?.city || '';
   const zip = source?.zip || fallback?.zip || '';
-  const phone = person.phone ?? source?.phone ?? fallback?.phone ?? null;
+  const rawPhone = person.phone ?? source?.phone ?? fallback?.phone ?? null;
+  const phone = normalizePhoneNumber(rawPhone);
   const company = person.company ?? source?.company ?? fallback?.company ?? null;
   const countryRaw = source?.country ?? fallback?.country ?? 'DK';
   const { country, country_code } = normalizeCountryForShopify(countryRaw);
@@ -677,6 +705,7 @@ function hasMeaningfulAddress(addr: any): boolean {
 async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<string> {
   const firstName = String(data.first_name || '').trim();
   const lastName = String(data.last_name || '').trim();
+  const customerPhone = normalizePhoneNumber(data.phone);
 
   const addresses = (data.addresses || []).map((addr: any) =>
     buildShopifyAddress(
@@ -696,7 +725,7 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
       email: data.email,
       first_name: firstName,
       last_name: lastName,
-      phone: data.phone || null,
+      phone: customerPhone,
       verified_email: true,
       accepts_marketing: data.accepts_marketing || false,
       addresses,
@@ -796,7 +825,8 @@ async function uploadOrder(
 
   const customerFirstName = String(data.customer_first_name || '').trim();
   const customerLastName = String(data.customer_last_name || '').trim();
-  const customerPhone = data.customer_phone || data.billing_address?.phone || data.shipping_address?.phone || null;
+  const rawPhone = data.customer_phone || data.billing_address?.phone || data.shipping_address?.phone || null;
+  const customerPhone = normalizePhoneNumber(rawPhone);
 
   // Build a customer address from order data (used both for customer + order)
   const rawCustomerAddress = {
