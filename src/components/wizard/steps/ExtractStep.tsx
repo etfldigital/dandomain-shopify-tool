@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsCSV, parseCustomersCSV, parseOrdersCSV } from '@/lib/csv-parser';
+import { parseProductsCSV, parseCustomersCSV, parseOrdersCSV, parseCategoriesCSV } from '@/lib/csv-parser';
 
 interface ExtractStepProps {
   project: Project;
@@ -35,9 +35,9 @@ interface UploadedFile {
 
 const ENTITY_CONFIG: Record<EntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
   products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'products.csv' },
+  categories: { icon: Folder, label: 'Produktgrupper / Kategorier', acceptedLabel: 'categories.csv' },
   customers: { icon: Users, label: 'Kunder', acceptedLabel: 'customers.csv' },
   orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'orders.csv' },
-  categories: { icon: Folder, label: 'Kategorier', acceptedLabel: 'categories.csv' },
   pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'pages.csv' },
 };
 
@@ -179,9 +179,31 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               if (error) throw error;
             }
             break;
+
+          case 'categories':
+            parsedData = parseCategoriesCSV(text);
+            categoryCount = parsedData.length;
+            
+            for (let i = 0; i < parsedData.length; i += 100) {
+              const batch = parsedData.slice(i, i + 100).map(category => ({
+                project_id: project.id,
+                external_id: category.external_id,
+                name: category.name,
+                parent_external_id: category.parent_external_id || null,
+                shopify_tag: category.name,
+                status: 'pending' as const,
+              }));
+
+              const { error } = await supabase
+                .from('canonical_categories')
+                .upsert(batch, { onConflict: 'project_id,external_id' });
+              
+              if (error) throw error;
+            }
+            break;
         }
 
-        setUploadedFiles(prev => 
+        setUploadedFiles(prev =>
           prev.map(f => f.type === uploadedFile.type ? { ...f, status: 'success', count: parsedData.length } : f)
         );
       } catch (error) {
@@ -230,7 +252,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       />
 
       <div className="grid gap-4">
-        {(['products', 'customers', 'orders'] as EntityType[]).map((entityType) => {
+        {(['products', 'categories', 'customers', 'orders'] as EntityType[]).map((entityType) => {
           const config = ENTITY_CONFIG[entityType];
           const Icon = config.icon;
           const uploadedFile = uploadedFiles.find(f => f.type === entityType);

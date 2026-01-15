@@ -145,3 +145,24 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
     };
   });
 }
+
+/**
+ * Parse categories CSV from DanDomain
+ */
+export interface CategoryData {
+  external_id: string;
+  name: string;
+  parent_external_id: string | null;
+  slug: string | null;
+}
+
+export function parseCategoriesCSV(csvText: string): CategoryData[] {
+  const rows = parseCSV(csvText);
+  
+  return rows.map(row => ({
+    external_id: row['CAT_ID'] || row['PROD_CAT_ID'] || row['ID'] || '',
+    name: row['CAT_NAME'] || row['NAME'] || row['CATEGORY_NAME'] || '',
+    parent_external_id: row['PARENT_CAT_ID'] || row['PARENT_ID'] || null,
+    slug: row['CAT_SLUG'] || row['SLUG'] || null,
+  }));
+}
