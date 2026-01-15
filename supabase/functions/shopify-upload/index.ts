@@ -617,24 +617,90 @@ async function uploadProduct(
   return String(result.product.id);
 }
 
+function normalizeCountryForShopify(raw: unknown): { country?: string; country_code?: string } {
+  const value = String(raw ?? '').trim();
+  if (!value) return { country: 'Denmark', country_code: 'DK' };
+
+  const lower = value.toLowerCase();
+  if (lower === 'dk' || lower === 'dnk' || lower === 'danmark' || lower === 'denmark') {
+    return { country: 'Denmark', country_code: 'DK' };
+  }
+
+  // If it looks like an ISO country code, send it as country_code
+  if (/^[a-z]{2}$/i.test(value)) {
+    return { country_code: value.toUpperCase() };
+  }
+
+  return { country: value };
+}
+
+function buildShopifyAddress(
+  source: any,
+  fallback: any,
+  person: { first_name?: string; last_name?: string; phone?: string; company?: string }
+) {
+  const address1 = source?.address1 || fallback?.address1 || '';
+  const address2 = source?.address2 ?? fallback?.address2 ?? null;
+  const city = source?.city || fallback?.city || '';
+  const zip = source?.zip || fallback?.zip || '';
+  const phone = person.phone ?? source?.phone ?? fallback?.phone ?? null;
+  const company = person.company ?? source?.company ?? fallback?.company ?? null;
+  const countryRaw = source?.country ?? fallback?.country ?? 'DK';
+  const { country, country_code } = normalizeCountryForShopify(countryRaw);
+
+  const address: Record<string, any> = {
+    first_name: person.first_name || '',
+    last_name: person.last_name || '',
+    company,
+    address1,
+    address2,
+    city,
+    zip,
+    phone,
+  };
+
+  if (country) address.country = country;
+  if (country_code) address.country_code = country_code;
+
+  return address;
+}
+
+function hasMeaningfulAddress(addr: any): boolean {
+  if (!addr) return false;
+  return Boolean(
+    String(addr.address1 || '').trim() ||
+      String(addr.city || '').trim() ||
+      String(addr.zip || '').trim()
+  );
+}
+
 async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<string> {
+  const firstName = String(data.first_name || '').trim();
+  const lastName = String(data.last_name || '').trim();
+
+  const addresses = (data.addresses || []).map((addr: any) =>
+    buildShopifyAddress(
+      addr,
+      null,
+      {
+        first_name: addr?.first_name ?? firstName,
+        last_name: addr?.last_name ?? lastName,
+        phone: addr?.phone ?? data.phone ?? null,
+        company: addr?.company ?? data.company ?? null,
+      }
+    )
+  );
+
   const customerPayload = {
     customer: {
       email: data.email,
-      first_name: data.first_name || '',
-      last_name: data.last_name || '',
+      first_name: firstName,
+      last_name: lastName,
       phone: data.phone || null,
       verified_email: true,
       accepts_marketing: data.accepts_marketing || false,
-      addresses: (data.addresses || []).map((addr: any) => ({
-        address1: addr.address1 || '',
-        address2: addr.address2 || null,
-        city: addr.city || '',
-        zip: addr.zip || '',
-        country: addr.country || 'DK',
-        phone: addr.phone || null,
-      })),
-    }
+      addresses,
+    },
   };
 
   const response = await fetch(`${shopifyUrl}/customers.json`, {
@@ -728,6 +794,39 @@ async function uploadOrder(
     shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail);
   }
 
+  const customerFirstName = String(data.customer_first_name || '').trim();
+  const customerLastName = String(data.customer_last_name || '').trim();
+  const customerPhone = data.customer_phone || data.billing_address?.phone || data.shipping_address?.phone || null;
+
+  // Build a customer address from order data (used both for customer + order)
+  const rawCustomerAddress = {
+    address1: data.customer_address || data.billing_address?.address1 || data.shipping_address?.address1 || '',
+    address2: data.billing_address?.address2 || data.shipping_address?.address2 || null,
+    city: data.customer_city || data.billing_address?.city || data.shipping_address?.city || '',
+    zip: data.customer_zip || data.billing_address?.zip || data.shipping_address?.zip || '',
+    country: data.customer_country || data.billing_address?.country || data.shipping_address?.country || 'DK',
+    phone: customerPhone,
+  };
+
+  // IMPORTANT: Shopify doesn't reliably persist address data when you create a customer via order payload.
+  // So we create/find the customer first, then create the order linked to the customer id.
+  if (!shopifyCustomerId && customerEmail) {
+    shopifyCustomerId = await uploadCustomer(shopifyUrl, token, {
+      email: customerEmail,
+      first_name: customerFirstName,
+      last_name: customerLastName,
+      phone: customerPhone,
+      accepts_marketing: false,
+      addresses: [
+        {
+          ...rawCustomerAddress,
+          first_name: customerFirstName,
+          last_name: customerLastName,
+        },
+      ],
+    });
+  }
+
   // Map line items with Shopify variant IDs
   const lineItems = [];
   const sourceLineItems = data.line_items || [];
@@ -782,62 +881,38 @@ async function uploadOrder(
   // Use the original order ID from DanDomain as the order name/number
   const orderName = data.external_id ? `#${data.external_id}` : undefined;
 
-  // Build customer address from order data
-  const customerAddress = {
-    address1: data.customer_address || data.billing_address?.address1 || '',
-    address2: data.billing_address?.address2 || null,
-    city: data.customer_city || data.billing_address?.city || '',
-    zip: data.customer_zip || data.billing_address?.zip || '',
-    country: data.customer_country || data.billing_address?.country || 'DK',
-    phone: data.customer_phone || data.billing_address?.phone || null,
-  };
-
-  const customerObject = shopifyCustomerId
-    ? { id: Number(shopifyCustomerId) }
-    : customerEmail
-      ? {
-          email: customerEmail,
-          first_name: data.customer_first_name || undefined,
-          last_name: data.customer_last_name || undefined,
-          phone: data.customer_phone || data.billing_address?.phone || null,
-          default_address: customerAddress,
-        }
-      : undefined;
+  const billingAddressPayload = buildShopifyAddress(
+    data.billing_address,
+    rawCustomerAddress,
+    { first_name: customerFirstName, last_name: customerLastName, phone: customerPhone }
+  );
+  const shippingAddressPayload = buildShopifyAddress(
+    data.shipping_address,
+    rawCustomerAddress,
+    { first_name: customerFirstName, last_name: customerLastName, phone: customerPhone }
+  );
 
   const orderPayload = {
     order: {
       // Set the order name/number to match the original system
       name: orderName,
-      // Link to customer - prefer Shopify ID, otherwise create/link by email
-      customer: customerObject,
+      // Link to customer (by id)
+      customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
       email: customerEmail || undefined,
+      phone: customerPhone || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
       currency: data.currency || 'DKK',
-      billing_address: data.billing_address ? {
-        address1: data.billing_address.address1 || '',
-        address2: data.billing_address.address2 || null,
-        city: data.billing_address.city || '',
-        zip: data.billing_address.zip || '',
-        country: data.billing_address.country || 'DK',
-        phone: data.billing_address.phone || null,
-      } : undefined,
-      shipping_address: data.shipping_address ? {
-        address1: data.shipping_address.address1 || '',
-        address2: data.shipping_address.address2 || null,
-        city: data.shipping_address.city || '',
-        zip: data.shipping_address.zip || '',
-        country: data.shipping_address.country || 'DK',
-        phone: data.shipping_address.phone || null,
-      } : undefined,
+      billing_address: hasMeaningfulAddress(billingAddressPayload) ? billingAddressPayload : undefined,
+      shipping_address: hasMeaningfulAddress(shippingAddressPayload) ? shippingAddressPayload : undefined,
       created_at: data.order_date,
       transactions: [{
         kind: 'sale',
         status: 'success',
         amount: String(data.total_price || 0),
       }],
-    }
+    },
   };
 
   const response = await fetch(`${shopifyUrl}/orders.json`, {
@@ -857,6 +932,7 @@ async function uploadOrder(
   const result = await response.json();
   return String(result.order.id);
 }
+
 
 async function uploadCollection(shopifyUrl: string, token: string, category: any): Promise<string> {
   // Create a Smart Collection with a tag rule
