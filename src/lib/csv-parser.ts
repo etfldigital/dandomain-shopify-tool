@@ -195,7 +195,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
   return rows
     .map(row => ({
       title: row['PROD_NAME'] || row['title'] || '',
-      body_html: row['PROD_DESCRIPTION'] || row['description'] || '',
+      body_html: row['DESC_LONG'] || row['PROD_DESCRIPTION'] || row['description'] || '',
       short_description: row['PROD_SHORT_DESCRIPTION'] || '',
       sku: row['PROD_NUM'] || row['sku'] || '',
       price: parsePrice(row['UNIT_PRICE'] || row['PROD_PRICE'] || row['price']),
