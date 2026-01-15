@@ -141,7 +141,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
               <p className="text-sm">Kategorier udtrækkes automatisk fra produkternes PROD_CAT_ID</p>
             </div>
           ) : (
-            <div className="border rounded-lg">
+            <div className="border rounded-lg overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -151,6 +151,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
                         onCheckedChange={toggleSelectAll}
                       />
                     </TableHead>
+                    <TableHead className="w-20">ID</TableHead>
                     <TableHead>DanDomain Kategori</TableHead>
                     <TableHead>Shopify Tag</TableHead>
                     <TableHead className="w-24">Status</TableHead>
@@ -167,6 +168,11 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
                           checked={selectedIds.has(category.id)}
                           onCheckedChange={() => toggleSelect(category.id)}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {category.external_id}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
