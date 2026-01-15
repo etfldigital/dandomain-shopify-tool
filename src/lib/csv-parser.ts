@@ -1,29 +1,87 @@
 import { ProductData, CustomerData, OrderData, Address, LineItem } from '@/types/database';
 
 /**
- * Parse semicolon-separated CSV (DanDomain format)
+ * Parse delimiter-separated CSV (DanDomain exports are often semicolon-separated).
+ * This parser:
+ * - Detects delimiter (; , \t) from the header row
+ * - Handles quoted values ("...") and escaped quotes ("")
+ * - Handles Windows newlines (\r\n) and BOM
  */
 function parseCSV(csvText: string): Record<string, string>[] {
-  const lines = csvText.trim().split('\n');
+  const normalized = (csvText || '')
+    .replace(/^\uFEFF/, '') // BOM
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+
+  if (!normalized) return [];
+
+  const lines = normalized.split('\n').filter(Boolean);
   if (lines.length < 2) return [];
 
-  // Parse header
-  const headers = lines[0].split(';').map(h => h.trim().replace(/"/g, ''));
-  
-  // Parse rows
+  const headerLine = lines[0];
+  const delimiter = detectDelimiter(headerLine);
+
+  const headers = splitDelimitedLine(headerLine, delimiter).map((h) => cleanCell(h));
+
   const rows: Record<string, string>[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(';').map(v => v.trim().replace(/"/g, ''));
+    const values = splitDelimitedLine(lines[i], delimiter).map((v) => cleanCell(v));
     const row: Record<string, string> = {};
-    
+
     headers.forEach((header, index) => {
-      row[header] = values[index] || '';
+      row[header] = values[index] ?? '';
     });
-    
+
     rows.push(row);
   }
 
   return rows;
+}
+
+function detectDelimiter(line: string): ';' | ',' | '\t' {
+  const candidates: Array<';' | ',' | '\t'> = [';', ',', '\t'];
+  const counts = candidates.map((d) => ({ d, n: (line.split(d).length - 1) }));
+  counts.sort((a, b) => b.n - a.n);
+  // Default to semicolon if uncertain
+  if (counts[0].n === 0) return ';';
+  return counts[0].d;
+}
+
+function splitDelimitedLine(line: string, delimiter: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      // Escaped quote inside quotes
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (!inQuotes && ch === delimiter) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  out.push(current);
+  return out;
+}
+
+function cleanCell(value: string): string {
+  return (value ?? '').trim();
 }
 
 /**
