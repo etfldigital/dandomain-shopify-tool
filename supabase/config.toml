@@ -1,1 +1,4 @@
 project_id = "eascmxesmuadwlmooyik"
+
+[functions.shopify-upload]
+verify_jwt = false
