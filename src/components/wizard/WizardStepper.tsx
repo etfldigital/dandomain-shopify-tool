@@ -15,10 +15,11 @@ export function WizardStepper({ currentStep, completedSteps, onStepClick }: Wiza
     <nav className="w-full">
       <ol className="flex items-center justify-between">
         {WIZARD_STEPS.map((step, index) => {
-          const isCompleted = completedSteps.includes(step.id);
+          // Only show as completed if it's before the current step
+          const isCompleted = completedSteps.includes(step.id) && index < currentIndex;
           const isCurrent = step.id === currentStep;
           const isPast = index < currentIndex;
-          const isClickable = isCompleted || isPast;
+          const isClickable = isPast;
 
           return (
             <li key={step.id} className="flex-1 relative">
