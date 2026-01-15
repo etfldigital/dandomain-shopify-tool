@@ -478,8 +478,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const p = progress.find(p => p.entityType === type)!;
             const counts = statusCounts[type];
-            const percent = p.total > 0 ? (p.processed / p.total) * 100 : 0;
             const totalCount = counts.pending + counts.uploaded + counts.failed;
+            // Progress bar shows uploaded out of total (not pending)
+            const percent = totalCount > 0 ? (counts.uploaded / totalCount) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">

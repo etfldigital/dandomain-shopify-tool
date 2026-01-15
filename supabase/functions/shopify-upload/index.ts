@@ -357,46 +357,27 @@ async function uploadProductsWithVariants(
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // First, fetch ALL existing products from Shopify to avoid per-product lookups
-  const existingProducts: Map<string, string> = new Map(); // title (lowercase) -> id
-  let pageInfo: string | null = null;
-  let hasMorePages = true;
+  // Build cache of existing products from our database (already uploaded products)
+  // This is MUCH faster than fetching from Shopify API
+  const existingProducts: Map<string, string> = new Map(); // title (lowercase) -> shopify_id
   
-  console.log('Fetching existing Shopify products...');
+  const { data: uploadedProducts } = await supabase
+    .from('canonical_products')
+    .select('data, shopify_id')
+    .eq('project_id', projectId)
+    .eq('status', 'uploaded')
+    .not('shopify_id', 'is', null);
   
-  while (hasMorePages) {
-    const url = pageInfo 
-      ? `${shopifyUrl}/products.json?limit=250&page_info=${pageInfo}`
-      : `${shopifyUrl}/products.json?limit=250&fields=id,title`;
-    
-    const { response, body } = await shopifyFetch(url, {
-      headers: { 'X-Shopify-Access-Token': token },
-    });
-    
-    if (!response.ok) {
-      console.error(`Failed to fetch existing products: ${response.status} - ${body}`);
-      break;
-    }
-    
-    const result = JSON.parse(body);
-    const products = result.products || [];
-    
-    for (const product of products) {
-      existingProducts.set(product.title.toLowerCase(), String(product.id));
-    }
-    
-    // Check for pagination via Link header
-    const linkHeader = response.headers.get('Link');
-    if (linkHeader && linkHeader.includes('rel="next"')) {
-      const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
-      pageInfo = match ? match[1] : null;
-      hasMorePages = !!pageInfo;
-    } else {
-      hasMorePages = false;
+  if (uploadedProducts) {
+    for (const p of uploadedProducts) {
+      const title = p.data?.title?.toLowerCase();
+      if (title && p.shopify_id) {
+        existingProducts.set(title, p.shopify_id);
+      }
     }
   }
   
-  console.log(`Found ${existingProducts.size} existing Shopify products`);
+  console.log(`Found ${existingProducts.size} already uploaded products in database`);
 
   // Group products by BASE SKU (same base SKU = variants of same product)
   const productGroups: Map<string, any[]> = new Map();
