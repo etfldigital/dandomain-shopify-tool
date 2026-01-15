@@ -368,6 +368,69 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         </CardContent>
       </Card>
 
+      {/* Action Buttons - between progress and error explanation */}
+      <div className="flex justify-end gap-3">
+        {!uploading && !allCompleted && !hasFailed && (
+          <>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" onClick={() => handleStartUpload(true)}>
+                    <FlaskConical className="w-4 h-4 mr-2" />
+                    Test
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="font-medium mb-1">Test upload</p>
+                  <p className="text-sm text-muted-foreground">
+                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt:
+                  </p>
+                  <ul className="text-sm text-muted-foreground mt-1 list-disc list-inside">
+                    <li>3 produkter</li>
+                    <li>3 collections</li>
+                    <li>3 kunder</li>
+                    <li>3 ordrer</li>
+                  </ul>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <Button onClick={() => handleStartUpload(false)}>
+              <Play className="w-4 h-4 mr-2" />
+              Start upload
+            </Button>
+          </>
+        )}
+
+        {hasFailed && !uploading && (
+          <Button onClick={handleRetry} variant="outline">
+            <RotateCcw className="w-4 h-4 mr-2" />
+            Prøv igen
+          </Button>
+        )}
+
+        {uploading && (
+          <Button variant="outline" onClick={handlePauseToggle}>
+            {paused ? (
+              <>
+                <Play className="w-4 h-4 mr-2" />
+                Fortsæt
+              </>
+            ) : (
+              <>
+                <Pause className="w-4 h-4 mr-2" />
+                Pause
+              </>
+            )}
+          </Button>
+        )}
+
+        {allCompleted && (
+          <Button onClick={onNext}>
+            Se rapport
+          </Button>
+        )}
+      </div>
+
       {/* Error Explanation Section */}
       <Card>
         <CardHeader>
@@ -479,68 +542,6 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           </Accordion>
         </CardContent>
       </Card>
-
-      <div className="flex justify-end gap-3 pt-4">
-        {!uploading && !allCompleted && !hasFailed && (
-          <>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="outline" onClick={() => handleStartUpload(true)}>
-                    <FlaskConical className="w-4 h-4 mr-2" />
-                    Test
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  <p className="font-medium mb-1">Test upload</p>
-                  <p className="text-sm text-muted-foreground">
-                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt:
-                  </p>
-                  <ul className="text-sm text-muted-foreground mt-1 list-disc list-inside">
-                    <li>3 produkter</li>
-                    <li>3 collections</li>
-                    <li>3 kunder</li>
-                    <li>3 ordrer</li>
-                  </ul>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            <Button onClick={() => handleStartUpload(false)}>
-              <Play className="w-4 h-4 mr-2" />
-              Start upload
-            </Button>
-          </>
-        )}
-
-        {hasFailed && !uploading && (
-          <Button onClick={handleRetry} variant="outline">
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Prøv igen
-          </Button>
-        )}
-
-        {uploading && (
-          <Button variant="outline" onClick={handlePauseToggle}>
-            {paused ? (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                Fortsæt
-              </>
-            ) : (
-              <>
-                <Pause className="w-4 h-4 mr-2" />
-                Pause
-              </>
-            )}
-          </Button>
-        )}
-
-        {allCompleted && (
-          <Button onClick={onNext}>
-            Se rapport
-          </Button>
-        )}
-      </div>
     </div>
   );
 }
