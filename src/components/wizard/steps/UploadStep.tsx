@@ -3,6 +3,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { 
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { 
   Loader2, 
   CheckCircle2, 
   AlertCircle,
@@ -13,7 +19,8 @@ import {
   FileSpreadsheet,
   Play,
   Pause,
-  RotateCcw
+  RotateCcw,
+  FlaskConical
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -44,6 +51,7 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
 export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps) {
   const [uploading, setUploading] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [testMode, setTestMode] = useState(false);
   const pausedRef = useRef(false);
   const [progress, setProgress] = useState<UploadProgress[]>(
     ENTITY_CONFIG.map(e => ({
@@ -103,12 +111,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return counts;
   };
 
-  const uploadEntityBatch = async (entityType: EntityType): Promise<{ processed: number; errors: number; hasMore: boolean }> => {
+  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; hasMore: boolean }> => {
     const response = await supabase.functions.invoke('shopify-upload', {
       body: {
         projectId: project.id,
         entityType,
-        batchSize: 50,
+        batchSize: isTestMode ? 3 : 50,
       },
     });
 
@@ -119,14 +127,16 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return {
       processed: response.data.processed || 0,
       errors: response.data.errors || 0,
-      hasMore: response.data.hasMore || false,
+      // In test mode, never fetch more
+      hasMore: isTestMode ? false : (response.data.hasMore || false),
     };
   };
 
-  const uploadEntity = async (entityType: EntityType, total: number) => {
+  const uploadEntity = async (entityType: EntityType, total: number, isTestMode: boolean) => {
     // Update status to running
+    const displayTotal = isTestMode ? Math.min(total, 3) : total;
     setProgress(prev => prev.map(p => 
-      p.entityType === entityType ? { ...p, status: 'running', total } : p
+      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal } : p
     ));
 
     let totalProcessed = 0;
@@ -140,7 +150,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       }
 
       try {
-        const result = await uploadEntityBatch(entityType);
+        const result = await uploadEntityBatch(entityType, isTestMode);
         totalProcessed += result.processed;
         totalErrors += result.errors;
         hasMore = result.hasMore;
@@ -176,8 +186,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     ));
   };
 
-  const handleStartUpload = async () => {
+  const handleStartUpload = async (isTestMode: boolean = false) => {
     setUploading(true);
+    setTestMode(isTestMode);
     pausedRef.current = false;
     setPaused(false);
     
@@ -185,19 +196,40 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
     const counts = await getCounts();
 
+    // In test mode, limit to 3 of each type
+    const effectiveCounts = isTestMode 
+      ? Object.fromEntries(
+          Object.entries(counts).map(([key, value]) => [key, Math.min(value, 3)])
+        ) as Record<EntityType, number>
+      : counts;
+
     // Update totals
     setProgress(prev => prev.map(p => ({
       ...p,
-      total: counts[p.entityType],
+      total: effectiveCounts[p.entityType],
       processed: 0,
       errors: 0,
       status: 'pending',
     })));
 
+    if (isTestMode) {
+      toast.info('Test-tilstand: Uploader kun 3 af hver type');
+    }
+
     // Process in order: Pages → Collections → Products → Customers → Orders
     for (const entity of ENTITY_CONFIG) {
-      if (counts[entity.type] > 0) {
-        await uploadEntity(entity.type, counts[entity.type]);
+      if (effectiveCounts[entity.type] > 0) {
+        await uploadEntity(entity.type, effectiveCounts[entity.type], isTestMode);
+        
+        // In test mode, stop after processing 3
+        if (isTestMode) {
+          // The uploadEntityBatch already handles limiting, but we update the display
+          setProgress(prev => prev.map(p => 
+            p.entityType === entity.type 
+              ? { ...p, status: 'completed', processed: Math.min(p.processed, 3) } 
+              : p
+          ));
+        }
       } else {
         setProgress(prev => prev.map(p => 
           p.entityType === entity.type ? { ...p, status: 'completed' } : p
@@ -205,9 +237,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       }
     }
 
-    await onUpdateProject({ status: 'completed' });
+    if (!isTestMode) {
+      await onUpdateProject({ status: 'completed' });
+    }
     setUploading(false);
-    toast.success('Upload til Shopify gennemført!');
+    toast.success(isTestMode ? 'Test upload gennemført!' : 'Upload til Shopify gennemført!');
   };
 
   const handlePauseToggle = () => {
@@ -327,10 +361,34 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
       <div className="flex justify-end gap-3 pt-4">
         {!uploading && !allCompleted && !hasFailed && (
-          <Button onClick={handleStartUpload}>
-            <Play className="w-4 h-4 mr-2" />
-            Start upload
-          </Button>
+          <>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" onClick={() => handleStartUpload(true)}>
+                    <FlaskConical className="w-4 h-4 mr-2" />
+                    Test
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="font-medium mb-1">Test upload</p>
+                  <p className="text-sm text-muted-foreground">
+                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt:
+                  </p>
+                  <ul className="text-sm text-muted-foreground mt-1 list-disc list-inside">
+                    <li>3 produkter</li>
+                    <li>3 collections</li>
+                    <li>3 kunder</li>
+                    <li>3 ordrer</li>
+                  </ul>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <Button onClick={() => handleStartUpload(false)}>
+              <Play className="w-4 h-4 mr-2" />
+              Start upload
+            </Button>
+          </>
         )}
 
         {hasFailed && !uploading && (
