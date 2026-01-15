@@ -181,24 +181,53 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     setProcessing(true);
     setProgress(0);
 
-    // Clear old canonical data before re-importing
-    // This ensures we don't have stale/corrupted data from previous imports
-    const entityTypesToClear = uploadedFiles.map(f => f.type);
-    
+    const hasCategoriesFile = uploadedFiles.some((f) => f.type === 'categories');
+
+    // Clear old data before re-importing so "Kør udtræk igen" always starts fresh
+    // (Upsert updates rows but does NOT delete stale rows)
+    const { error: mappingClearError } = await supabase
+      .from('mapping_profiles')
+      .delete()
+      .eq('project_id', project.id);
+
+    if (mappingClearError) {
+      console.error('Error clearing mapping profiles:', mappingClearError);
+      setProcessing(false);
+      return;
+    }
+
+    const entityTypesToClear = uploadedFiles.map((f) => f.type);
+
     for (const entityType of entityTypesToClear) {
+      let error: any = null;
+
       switch (entityType) {
-        case 'products':
-          await supabase.from('canonical_products').delete().eq('project_id', project.id);
+        case 'products': {
+          const res = await supabase.from('canonical_products').delete().eq('project_id', project.id);
+          error = res.error;
           break;
-        case 'customers':
-          await supabase.from('canonical_customers').delete().eq('project_id', project.id);
+        }
+        case 'customers': {
+          const res = await supabase.from('canonical_customers').delete().eq('project_id', project.id);
+          error = res.error;
           break;
-        case 'orders':
-          await supabase.from('canonical_orders').delete().eq('project_id', project.id);
+        }
+        case 'orders': {
+          const res = await supabase.from('canonical_orders').delete().eq('project_id', project.id);
+          error = res.error;
           break;
-        case 'categories':
-          await supabase.from('canonical_categories').delete().eq('project_id', project.id);
+        }
+        case 'categories': {
+          const res = await supabase.from('canonical_categories').delete().eq('project_id', project.id);
+          error = res.error;
           break;
+        }
+      }
+
+      if (error) {
+        console.error('Error clearing canonical data for', entityType, error);
+        setProcessing(false);
+        return;
       }
     }
 
@@ -264,29 +293,35 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               if (error) throw error;
             }
 
-            // Extract categories from products
-            const categories = new Set<string>();
-            uniqueProducts.forEach(p => {
-              if (p.category_external_ids) {
-                p.category_external_ids.forEach((c: string) => categories.add(c));
+            // Extract categories from products ONLY if no category CSV was uploaded.
+            // Otherwise we rely on PRODUCTCATEGORIES (gives correct ID + name).
+            if (!hasCategoriesFile) {
+              const categories = new Set<string>();
+              uniqueProducts.forEach(p => {
+                if (p.category_external_ids) {
+                  p.category_external_ids.forEach((c: string) => {
+                    if (c && !c.includes('#')) categories.add(c);
+                  });
+                }
+              });
+
+              const categoryData = Array.from(categories)
+                .filter(cat => cat)
+                .map(cat => ({
+                  project_id: project.id,
+                  external_id: cat,
+                  name: cat,
+                  shopify_tag: cat,
+                  status: 'pending' as const,
+                }));
+
+              if (categoryData.length > 0) {
+                const { error } = await supabase
+                  .from('canonical_categories')
+                  .upsert(categoryData, { onConflict: 'project_id,external_id' });
+
+                if (error) throw error;
               }
-            });
-
-            // Insert categories (already unique via Set)
-            const categoryData = Array.from(categories).filter(cat => cat).map(cat => ({
-              project_id: project.id,
-              external_id: cat,
-              name: cat,
-              shopify_tag: cat,
-              status: 'pending' as const,
-            }));
-
-            if (categoryData.length > 0) {
-              const { error } = await supabase
-                .from('canonical_categories')
-                .upsert(categoryData, { onConflict: 'project_id,external_id' });
-              
-              if (error) throw error;
             }
             break;
 

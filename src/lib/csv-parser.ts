@@ -179,6 +179,18 @@ function parseDate(dateStr: string): string {
  */
 export function parseProductsCSV(csvText: string): ProductData[] {
   const rows = parseCSV(csvText);
+
+  const parseCategoryIds = (raw: string | undefined): string[] => {
+    const value = (raw || '').trim();
+    if (!value) return [];
+
+    // DanDomain sometimes provides multiple category ids in one field separated by '#'
+    // e.g. "166#6#97" -> ["166","6","97"]
+    return value
+      .split('#')
+      .map((s) => s.trim())
+      .filter((s) => s && !s.includes('#'));
+  };
   
   return rows.map(row => ({
     title: row['PROD_NAME'] || row['title'] || 'Untitled',
@@ -192,7 +204,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
     active: row['PROD_ACTIVE'] !== '0' && row['PROD_ACTIVE']?.toLowerCase() !== 'false',
     images: row['PROD_IMAGE'] ? [row['PROD_IMAGE']] : [],
     tags: [],
-    category_external_ids: row['PROD_CAT_ID'] ? [row['PROD_CAT_ID']] : [],
+    category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
     vendor: row['MANUFAC_ID'] || null,
     vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
     language: row['LANGUAGE_ID'] || 'da',
@@ -379,5 +391,5 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
         slug: slug || null,
       };
     })
-    .filter(cat => cat.external_id); // Filter out rows without an ID
+    .filter((cat) => cat.external_id && !cat.external_id.includes('#') && !cat.name.includes('#'));
 }
