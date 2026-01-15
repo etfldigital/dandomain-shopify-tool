@@ -688,8 +688,13 @@ async function uploadOrder(
     });
   }
 
+  // Use the original order ID from DanDomain as the order name/number
+  const orderName = data.external_id ? `#${data.external_id}` : undefined;
+
   const orderPayload = {
     order: {
+      // Set the order name/number to match the original system
+      name: orderName,
       // Link to customer - prefer Shopify ID, fallback to email
       customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
       email: customerEmail || data.billing_address?.email || undefined,
