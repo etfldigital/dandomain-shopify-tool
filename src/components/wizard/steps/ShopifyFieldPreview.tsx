@@ -16,6 +16,7 @@ interface ProductPreviewData {
     body_html: string;
     sku: string;
     price: number;
+    cost_price: number | null;
     vendor: string | null;
     category_ids: string[];
   };
@@ -85,6 +86,7 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
           body_html: data.body_html || '',
           sku: data.sku || '',
           price: data.price || 0,
+          cost_price: data.cost_price || null,
           vendor: data.vendor,
           category_ids: categoryIds,
         },
@@ -178,7 +180,25 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
                 <span className="text-muted-foreground">kr.</span>
               </div>
               <p className="text-xs text-muted-foreground mt-2">
-                Fra: PROD_PRICE
+                Fra: UNIT_PRICE
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Cost Price Field */}
+          <Card>
+            <CardContent className="pt-4">
+              <label className="text-sm font-medium text-foreground mb-2 block">Kostpris</label>
+              <div className="flex items-center gap-2">
+                <Input 
+                  value={product.original.cost_price?.toFixed(2) || '0.00'} 
+                  readOnly 
+                  className="w-32 bg-background"
+                />
+                <span className="text-muted-foreground">kr.</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                Fra: PROD_COST_PRICE
               </p>
             </CardContent>
           </Card>
@@ -289,9 +309,14 @@ export function ShopifyFieldPreview({ projectId }: ShopifyFieldPreviewProps) {
               <span>Beskrivelse</span>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="font-mono">PROD_PRICE</Badge>
+              <Badge variant="outline" className="font-mono">UNIT_PRICE</Badge>
               <ArrowRight className="w-3 h-3 text-muted-foreground" />
               <span>Pris</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono">PROD_COST_PRICE</Badge>
+              <ArrowRight className="w-3 h-3 text-muted-foreground" />
+              <span>Kostpris</span>
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="font-mono">MANUFAC_ID</Badge>
