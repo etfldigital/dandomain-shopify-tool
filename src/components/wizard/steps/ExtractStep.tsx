@@ -531,26 +531,46 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         </div>
       )}
 
-      <div className="flex justify-end gap-3 pt-4">
-        {!allFilesProcessed ? (
-          <Button
-            onClick={handleProcessFiles}
-            disabled={uploadedFiles.length === 0 || processing}
-          >
-            {processing ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Behandler...
-              </>
-            ) : (
-              'Start udtræk'
-            )}
-          </Button>
-        ) : (
-          <Button onClick={onNext}>
-            Fortsæt til mapping
-          </Button>
-        )}
+      <div className="flex justify-between gap-3 pt-4">
+        <div>
+          {allFilesProcessed && (
+            <Button
+              variant="outline"
+              onClick={handleProcessFiles}
+              disabled={uploadedFiles.length === 0 || processing}
+            >
+              {processing ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Behandler...
+                </>
+              ) : (
+                'Kør udtræk igen'
+              )}
+            </Button>
+          )}
+        </div>
+        <div className="flex gap-3">
+          {!allFilesProcessed ? (
+            <Button
+              onClick={handleProcessFiles}
+              disabled={uploadedFiles.length === 0 || processing}
+            >
+              {processing ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Behandler...
+                </>
+              ) : (
+                'Start udtræk'
+              )}
+            </Button>
+          ) : (
+            <Button onClick={onNext}>
+              Fortsæt til mapping
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );
