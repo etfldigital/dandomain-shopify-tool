@@ -260,13 +260,15 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
   
   return rows
     .map(row => {
+      // DanDomain uses PROD_CAT_ID for category ID
       const external_id = getField(row, 
-        'CAT_ID', 'PROD_CAT_ID', 'ID', 'CATEGORY_ID', 
+        'PROD_CAT_ID', 'CAT_ID', 'ID', 'CATEGORY_ID', 
         'CategoryId', 'category_id', 'cat_id', 'id'
       );
       
+      // DanDomain uses PROD_CAT_NAME for category name
       const name = getField(row, 
-        'CAT_NAME', 'NAME', 'CATEGORY_NAME', 'TITLE',
+        'PROD_CAT_NAME', 'CAT_NAME', 'NAME', 'CATEGORY_NAME', 'TITLE',
         'CategoryName', 'category_name', 'cat_name', 'name', 'title'
       );
       
@@ -276,7 +278,7 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
       );
       
       const slug = getField(row,
-        'CAT_SLUG', 'SLUG', 'URL', 'SEO_URL',
+        'PROD_CAT_UNIQUE_URL_NAME', 'CAT_SLUG', 'SLUG', 'URL', 'SEO_URL',
         'CategorySlug', 'category_slug', 'slug', 'url'
       );
       
