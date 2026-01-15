@@ -16,24 +16,27 @@ function parseCSV(csvText: string): Record<string, string>[] {
 
   if (!normalized) return [];
 
-  let lines = normalized.split('\n').filter(Boolean);
-  if (lines.length < 2) return [];
+  // Parse CSV handling multiline quoted fields
+  // DanDomain exports have HTML content with newlines inside quoted fields
+  const logicalLines = splitIntoLogicalLines(normalized);
+  
+  if (logicalLines.length < 2) return [];
 
   // DanDomain exports often have a single-word entity name on the first line
   // e.g. "PRODUCTS", "CUSTOMERS", "ORDERS", "PRODUCTCATEGORIES"
-  // Check if first line looks like just an entity name (single word, no delimiter)
-  const firstLineDelimiter = detectDelimiter(lines[0]);
-  const firstLineParts = splitDelimitedLine(lines[0], firstLineDelimiter);
+  let startLine = 0;
+  const firstLineDelimiter = detectDelimiter(logicalLines[0]);
+  const firstLineParts = splitDelimitedLine(logicalLines[0], firstLineDelimiter);
   
   // If first line has only one part and it looks like an entity name, skip it
   if (firstLineParts.length === 1 && /^[A-Z_]+$/i.test(cleanCell(firstLineParts[0]))) {
-    console.log('Skipping entity name line:', lines[0]);
-    lines = lines.slice(1);
+    console.log('Skipping entity name line:', logicalLines[0]);
+    startLine = 1;
   }
 
-  if (lines.length < 2) return [];
+  if (logicalLines.length - startLine < 2) return [];
 
-  const headerLine = lines[0];
+  const headerLine = logicalLines[startLine];
   const delimiter = detectDelimiter(headerLine);
 
   const headers = splitDelimitedLine(headerLine, delimiter).map((h) => cleanCell(h));
@@ -41,18 +44,68 @@ function parseCSV(csvText: string): Record<string, string>[] {
   console.log('CSV parsing - headers detected:', headers.slice(0, 5), '... total:', headers.length);
 
   const rows: Record<string, string>[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = splitDelimitedLine(lines[i], delimiter).map((v) => cleanCell(v));
+  for (let i = startLine + 1; i < logicalLines.length; i++) {
+    const line = logicalLines[i];
+    if (!line.trim()) continue;
+    
+    const values = splitDelimitedLine(line, delimiter).map((v) => cleanCell(v));
     const row: Record<string, string> = {};
 
     headers.forEach((header, index) => {
       row[header] = values[index] ?? '';
     });
 
-    rows.push(row);
+    // Only add rows that have at least one non-empty value
+    if (Object.values(row).some(v => v !== '')) {
+      rows.push(row);
+    }
   }
 
   return rows;
+}
+
+/**
+ * Split CSV text into logical lines, respecting quoted fields that span multiple lines
+ * DanDomain exports have HTML content with embedded newlines inside quoted fields
+ */
+function splitIntoLogicalLines(text: string): string[] {
+  const lines: string[] = [];
+  let currentLine = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    
+    if (ch === '"') {
+      // Check for escaped quote ""
+      if (inQuotes && text[i + 1] === '"') {
+        currentLine += '""';
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      currentLine += ch;
+      continue;
+    }
+    
+    if (ch === '\n' && !inQuotes) {
+      // End of logical line
+      if (currentLine.trim()) {
+        lines.push(currentLine);
+      }
+      currentLine = '';
+      continue;
+    }
+    
+    currentLine += ch;
+  }
+  
+  // Don't forget the last line
+  if (currentLine.trim()) {
+    lines.push(currentLine);
+  }
+  
+  return lines;
 }
 
 function detectDelimiter(line: string): ';' | ',' | '\t' {
