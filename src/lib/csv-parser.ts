@@ -148,6 +148,7 @@ export function parseOrdersCSV(csvText: string): (OrderData & { external_id: str
 
 /**
  * Parse categories CSV from DanDomain
+ * Supports multiple field naming conventions
  */
 export interface CategoryData {
   external_id: string;
@@ -156,13 +157,61 @@ export interface CategoryData {
   slug: string | null;
 }
 
+// Helper to find a value from multiple possible field names (case-insensitive)
+function getField(row: Record<string, string>, ...fieldNames: string[]): string {
+  for (const fieldName of fieldNames) {
+    // Try exact match first
+    if (row[fieldName] !== undefined && row[fieldName] !== '') {
+      return row[fieldName];
+    }
+    // Try case-insensitive match
+    const lowerField = fieldName.toLowerCase();
+    for (const key of Object.keys(row)) {
+      if (key.toLowerCase() === lowerField && row[key] !== undefined && row[key] !== '') {
+        return row[key];
+      }
+    }
+  }
+  return '';
+}
+
 export function parseCategoriesCSV(csvText: string): CategoryData[] {
   const rows = parseCSV(csvText);
   
-  return rows.map(row => ({
-    external_id: row['CAT_ID'] || row['PROD_CAT_ID'] || row['ID'] || '',
-    name: row['CAT_NAME'] || row['NAME'] || row['CATEGORY_NAME'] || '',
-    parent_external_id: row['PARENT_CAT_ID'] || row['PARENT_ID'] || null,
-    slug: row['CAT_SLUG'] || row['SLUG'] || null,
-  }));
+  // Log available headers for debugging
+  if (rows.length > 0) {
+    console.log('Category CSV headers:', Object.keys(rows[0]));
+    console.log('First row:', rows[0]);
+  }
+  
+  return rows
+    .map(row => {
+      const external_id = getField(row, 
+        'CAT_ID', 'PROD_CAT_ID', 'ID', 'CATEGORY_ID', 
+        'CategoryId', 'category_id', 'cat_id', 'id'
+      );
+      
+      const name = getField(row, 
+        'CAT_NAME', 'NAME', 'CATEGORY_NAME', 'TITLE',
+        'CategoryName', 'category_name', 'cat_name', 'name', 'title'
+      );
+      
+      const parent = getField(row,
+        'PARENT_CAT_ID', 'PARENT_ID', 'PARENT_CATEGORY_ID',
+        'ParentCatId', 'parent_cat_id', 'parent_id'
+      );
+      
+      const slug = getField(row,
+        'CAT_SLUG', 'SLUG', 'URL', 'SEO_URL',
+        'CategorySlug', 'category_slug', 'slug', 'url'
+      );
+      
+      return {
+        external_id,
+        name: name || external_id, // Use ID as name fallback
+        parent_external_id: parent || null,
+        slug: slug || null,
+      };
+    })
+    .filter(cat => cat.external_id); // Filter out rows without an ID
 }
