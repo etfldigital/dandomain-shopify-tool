@@ -41,6 +41,7 @@ interface ProjectFile {
   storage_path: string;
   row_count: number | null;
   status: string;
+  error_message?: string | null;
 }
 
 const ENTITY_CONFIG: Record<EntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
@@ -81,7 +82,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       if (data && data.length > 0) {
         const files: UploadedFile[] = data.map((pf: ProjectFile) => {
           const rowCount = pf.row_count ?? 0;
-          const success = pf.status === 'processed' && rowCount > 0;
+          const success = pf.status === 'processed';
 
           return {
             type: pf.entity_type as EntityType,
@@ -90,7 +91,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             storagePath: pf.storage_path,
             status: success ? 'success' : (pf.status === 'error' ? 'error' : 'pending'),
             count: success ? rowCount : undefined,
-            error: pf.status === 'error' ? 'Kunne ikke læse filen (klik Start udtræk igen)' : undefined,
+            error: pf.status === 'error' ? (pf.error_message || 'Kunne ikke læse filen (klik Start udtræk igen)') : undefined,
           };
         });
         setUploadedFiles(files);
@@ -370,14 +371,8 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             break;
         }
 
-        // Guard: if we parsed 0 records, treat as an error so it's visible
-        if (recordCount === 0) {
-          throw new Error(
-            `0 rækker fundet i ${uploadedFile.type}-CSV. ` +
-            `Tjek separator (ofte ; eller ,) og at header-felter matcher DanDomain eksport.`
-          );
-        }
-
+        // Note: 0 rækker er tilladt (fx hvis CSV'en er tom / filtreret), vi gemmer stadig status.
+        // UI viser antal rækker, så det er tydeligt hvis noget er 0.
         // Update file record with row count
         await supabase
           .from('project_files')
