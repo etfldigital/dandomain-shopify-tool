@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Save, ArrowRight, Folder, Tag } from 'lucide-react';
+import { Loader2, Save, ArrowRight, Folder, Tag, RefreshCw } from 'lucide-react';
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -20,9 +20,10 @@ interface MappingStepProps {
   project: Project;
   onUpdateProject: (updates: Partial<Project>) => Promise<void>;
   onNext: () => void;
+  onBack?: () => void;
 }
 
-export function MappingStep({ project, onUpdateProject, onNext }: MappingStepProps) {
+export function MappingStep({ project, onUpdateProject, onNext, onBack }: MappingStepProps) {
   const [categories, setCategories] = useState<CanonicalCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -208,7 +209,14 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </CardContent>
       </Card>
 
-      <div className="flex justify-end gap-3 pt-4">
+      <div className="flex justify-between gap-3 pt-4">
+        {onBack && (
+          <Button variant="outline" onClick={onBack}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Gå tilbage og udtræk igen
+          </Button>
+        )}
+        <div className="flex-1" />
         <Button onClick={handleSaveAndContinue} disabled={saving}>
           {saving ? (
             <>

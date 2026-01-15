@@ -139,6 +139,7 @@ export default function ProjectWizard() {
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}
+              onBack={() => setCurrentStep('extract')}
             />
           )}
           {currentStep === 'connect-shopify' && (
