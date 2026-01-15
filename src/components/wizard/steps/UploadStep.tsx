@@ -272,6 +272,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             : p
         ));
 
+        // Refresh status counts after each batch for real-time updates
+        await fetchStatusCounts();
+
         // Small delay between batches to avoid rate limiting
         if (hasMore) {
           await new Promise(resolve => setTimeout(resolve, 500));
