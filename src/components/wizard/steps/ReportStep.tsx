@@ -244,15 +244,12 @@ export function ReportStep({ project }: ReportStepProps) {
           Tilbage til projekter
         </Button>
         {project.shopify_store_domain && (
-          <Button className="flex-1" asChild>
-            <a 
-              href={`https://${project.shopify_store_domain}/admin`} 
-              target="_blank" 
-              rel="noopener noreferrer"
-            >
-              Åbn Shopify Admin
-              <ExternalLink className="w-4 h-4 ml-2" />
-            </a>
+          <Button 
+            className="flex-1" 
+            onClick={() => window.open(`https://${project.shopify_store_domain}/admin`, '_blank')}
+          >
+            Åbn Shopify Admin
+            <ExternalLink className="w-4 h-4 ml-2" />
           </Button>
         )}
       </div>
