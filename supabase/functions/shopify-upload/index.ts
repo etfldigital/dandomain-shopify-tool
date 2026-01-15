@@ -152,15 +152,26 @@ serve(async (req) => {
             break;
         }
 
-        // Update status to uploaded
-        await supabase
+        // Update status to uploaded (categories use shopify_collection_id, others use shopify_id)
+        const updatePayload: Record<string, any> = {
+          status: 'uploaded',
+          updated_at: new Date().toISOString(),
+        };
+
+        if (entityType === 'categories') {
+          updatePayload.shopify_collection_id = shopifyId;
+        } else {
+          updatePayload.shopify_id = shopifyId;
+        }
+
+        const { error: updateError } = await supabase
           .from(tableName)
-          .update({
-            status: 'uploaded', 
-            shopify_id: shopifyId,
-            updated_at: new Date().toISOString()
-          })
+          .update(updatePayload)
           .eq('id', item.id);
+
+        if (updateError) {
+          throw new Error(`Failed to update ${entityType} row status: ${updateError.message}`);
+        }
 
         processed++;
       } catch (error) {
