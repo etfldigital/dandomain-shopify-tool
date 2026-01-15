@@ -157,6 +157,26 @@ async function uploadProduct(
   supabase: any,
   projectId: string
 ): Promise<string> {
+  // Skip untitled/empty products
+  if (!data.title || data.title === 'Untitled') {
+    throw new Error('Produktet har ingen titel og blev sprunget over');
+  }
+
+  // Transform title: strip vendor from title if present
+  let transformedTitle = data.title;
+  const vendor = data.vendor || '';
+  
+  if (vendor && transformedTitle.includes(vendor)) {
+    // Common separators
+    const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+    for (const sep of separators) {
+      if (transformedTitle.startsWith(vendor + sep)) {
+        transformedTitle = transformedTitle.substring(vendor.length + sep.length).trim();
+        break;
+      }
+    }
+  }
+
   // Get tags from categories
   const tags: string[] = [...(data.tags || [])];
   
@@ -181,9 +201,9 @@ async function uploadProduct(
 
   const productPayload = {
     product: {
-      title: data.title,
+      title: transformedTitle,
       body_html: data.body_html || '',
-      vendor: data.vendor || '',
+      vendor: vendor,
       product_type: '',
       tags: [...new Set(tags)].join(', '),
       status: data.active ? 'active' : 'draft',
