@@ -27,9 +27,7 @@ import {
   Pause,
   RotateCcw,
   FlaskConical,
-  HelpCircle,
   XCircle,
-  AlertTriangle
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -41,12 +39,18 @@ interface UploadStepProps {
   onNext: () => void;
 }
 
+interface ErrorDetail {
+  externalId: string;
+  message: string;
+}
+
 interface UploadProgress {
   entityType: EntityType;
   status: 'pending' | 'running' | 'completed' | 'failed';
   processed: number;
   total: number;
   errors: number;
+  errorDetails: ErrorDetail[];
 }
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
@@ -69,6 +73,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       processed: 0,
       total: 0,
       errors: 0,
+      errorDetails: [],
     }))
   );
 
@@ -120,7 +125,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return counts;
   };
 
-  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; hasMore: boolean }> => {
+  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; hasMore: boolean; errorDetails?: ErrorDetail[] }> => {
     const response = await supabase.functions.invoke('shopify-upload', {
       body: {
         projectId: project.id,
@@ -138,6 +143,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       errors: response.data.errors || 0,
       // In test mode, never fetch more
       hasMore: isTestMode ? false : (response.data.hasMore || false),
+      errorDetails: response.data.errorDetails || [],
     };
   };
 
@@ -145,11 +151,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     // Update status to running
     const displayTotal = isTestMode ? Math.min(total, 3) : total;
     setProgress(prev => prev.map(p => 
-      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal } : p
+      p.entityType === entityType ? { ...p, status: 'running', total: displayTotal, errorDetails: [] } : p
     ));
 
     let totalProcessed = 0;
     let totalErrors = 0;
+    let allErrorDetails: ErrorDetail[] = [];
     let hasMore = true;
 
     while (hasMore) {
@@ -163,10 +170,15 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         totalProcessed += result.processed;
         totalErrors += result.errors;
         hasMore = result.hasMore;
+        
+        // Collect error details from the batch
+        if (result.errorDetails && result.errorDetails.length > 0) {
+          allErrorDetails = [...allErrorDetails, ...result.errorDetails];
+        }
 
         setProgress(prev => prev.map(p => 
           p.entityType === entityType 
-            ? { ...p, processed: totalProcessed, errors: totalErrors } 
+            ? { ...p, processed: totalProcessed, errors: totalErrors, errorDetails: allErrorDetails } 
             : p
         ));
 
@@ -219,6 +231,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       processed: 0,
       errors: 0,
       status: 'pending',
+      errorDetails: [],
     })));
 
     if (isTestMode) {
@@ -431,117 +444,66 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         )}
       </div>
 
-      {/* Error Explanation Section */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <HelpCircle className="w-5 h-5" />
-            Hvorfor opstår der fejl?
-          </CardTitle>
-          <CardDescription>
-            Forklaring på de mest almindelige fejl under upload
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Accordion type="single" collapsible className="w-full">
-            <AccordionItem value="untitled">
-              <AccordionTrigger className="text-left">
-                <div className="flex items-center gap-2">
-                  <XCircle className="w-4 h-4 text-destructive" />
-                  <span>Produkter med "Untitled" eller manglende titel</span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent>
-                <p className="text-muted-foreground">
-                  Når CSV-filen ikke indeholder et produktnavn (PROD_NAME), oprettes produktet med titlen "Untitled". 
-                  Disse produkter ekskluderes automatisk, da de typisk er tomme rækker eller ufuldstændige data.
-                </p>
-                <p className="text-muted-foreground mt-2">
-                  <strong>Løsning:</strong> Tjek din eksport fra DanDomain og sikr at alle produkter har et navn.
-                </p>
-              </AccordionContent>
-            </AccordionItem>
+      {/* Error Details Section - Only show if there are actual errors */}
+      {totalErrors > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-destructive" />
+              Fejl under upload ({totalErrors})
+            </CardTitle>
+            <CardDescription>
+              Disse elementer kunne ikke uploades til Shopify
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Accordion type="multiple" className="w-full">
+              {ENTITY_CONFIG.map(({ type, label }) => {
+                const p = progress.find(p => p.entityType === type)!;
+                if (p.errorDetails.length === 0) return null;
 
-            <AccordionItem value="api-auth">
-              <AccordionTrigger className="text-left">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-destructive" />
-                  <span>401 - Invalid API key or access token</span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent>
-                <p className="text-muted-foreground">
-                  Denne fejl opstår når Shopify API-nøglen er forkert eller mangler de nødvendige tilladelser.
-                </p>
-                <ul className="list-disc list-inside text-muted-foreground mt-2 space-y-1">
-                  <li>Sørg for at bruge <strong>Admin API access token</strong> (starter med <code className="bg-muted px-1 rounded">shpat_</code>)</li>
-                  <li>Storefront API tokens (<code className="bg-muted px-1 rounded">shpss_</code>) virker IKKE</li>
-                  <li>Tjek at din app har de nødvendige scopes: write_products, write_customers, write_orders</li>
-                </ul>
-              </AccordionContent>
-            </AccordionItem>
+                // Group errors by message
+                const groupedErrors = p.errorDetails.reduce((acc, err) => {
+                  const key = err.message;
+                  if (!acc[key]) {
+                    acc[key] = [];
+                  }
+                  acc[key].push(err.externalId);
+                  return acc;
+                }, {} as Record<string, string[]>);
 
-            <AccordionItem value="rate-limit">
-              <AccordionTrigger className="text-left">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" />
-                  <span>429 - Rate limit exceeded</span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent>
-                <p className="text-muted-foreground">
-                  Shopify har en grænse på antal API-kald per minut. Når denne grænse nås, 
-                  returneres en 429-fejl. Systemet venter automatisk og prøver igen.
-                </p>
-                <p className="text-muted-foreground mt-2">
-                  <strong>Løsning:</strong> Vent et øjeblik og kør upload igen. Systemet håndterer dette automatisk.
-                </p>
-              </AccordionContent>
-            </AccordionItem>
-
-            <AccordionItem value="duplicate">
-              <AccordionTrigger className="text-left">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-amber-500" />
-                  <span>Duplikerede kunder (samme email)</span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent>
-                <p className="text-muted-foreground">
-                  Shopify tillader kun én kunde per email-adresse. Hvis en kunde med samme email allerede eksisterer, 
-                  vil systemet forsøge at finde den eksisterende kunde i stedet for at oprette en ny.
-                </p>
-                <p className="text-muted-foreground mt-2">
-                  <strong>Bemærk:</strong> Dette er normalt og påvirker ikke migreringen negativt.
-                </p>
-              </AccordionContent>
-            </AccordionItem>
-
-            <AccordionItem value="missing-data">
-              <AccordionTrigger className="text-left">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" />
-                  <span>Manglende eller ugyldige data</span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent>
-                <p className="text-muted-foreground">
-                  Nogle felter i DanDomain-eksporten kan mangle eller have ugyldige værdier:
-                </p>
-                <ul className="list-disc list-inside text-muted-foreground mt-2 space-y-1">
-                  <li>Pris = 0 (produkter uden pris)</li>
-                  <li>Manglende billeder</li>
-                  <li>Ugyldige kategori-ID'er</li>
-                  <li>Manglende kundeoplysninger (email, adresse)</li>
-                </ul>
-                <p className="text-muted-foreground mt-2">
-                  <strong>Løsning:</strong> Gennemgå fejlrapporten efter upload og ret manuelt i Shopify Admin.
-                </p>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
-        </CardContent>
-      </Card>
+                return (
+                  <AccordionItem key={type} value={type}>
+                    <AccordionTrigger className="text-left">
+                      <div className="flex items-center gap-2">
+                        <XCircle className="w-4 h-4 text-destructive" />
+                        <span>{label}: {p.errorDetails.length} fejl</span>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-4">
+                        {Object.entries(groupedErrors).map(([message, ids]) => (
+                          <div key={message} className="border-l-2 border-destructive/30 pl-3">
+                            <p className="text-sm font-medium text-destructive mb-1">
+                              {message}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {ids.length > 5 
+                                ? `ID'er: ${ids.slice(0, 5).join(', ')} og ${ids.length - 5} flere...`
+                                : `ID'er: ${ids.join(', ')}`
+                              }
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
