@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -46,6 +46,8 @@ import {
   FlaskConical,
   XCircle,
   MoreVertical,
+  Cloud,
+  CloudOff,
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -62,14 +64,23 @@ interface ErrorDetail {
   message: string;
 }
 
-interface UploadProgress {
-  entityType: EntityType;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  processed: number;
-  total: number;
-  errors: number;
-  skipped: number;
-  errorDetails: ErrorDetail[];
+interface UploadJob {
+  id: string;
+  project_id: string;
+  entity_type: EntityType;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  total_count: number;
+  processed_count: number;
+  error_count: number;
+  skipped_count: number;
+  items_per_minute: number | null;
+  error_details: ErrorDetail[] | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  current_batch: number;
+  last_heartbeat_at: string | null;
+  is_test_mode: boolean;
 }
 
 interface StatusCounts {
@@ -87,42 +98,11 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
 ];
 
 export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps) {
-  const [uploading, setUploading] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [testMode, setTestMode] = useState(false);
-  const pausedRef = useRef(false);
-
-  const [activity, setActivity] = useState<string>('');
-  const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
+  const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const [isStarting, setIsStarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
 
-  const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
-  const [baselineProcessed, setBaselineProcessed] = useState<number>(0);
-
-  // Track per-entity timing for accurate ETA
-  const [currentEntityStartedAt, setCurrentEntityStartedAt] = useState<number | null>(null);
-  const [currentEntityBaseline, setCurrentEntityBaseline] = useState<number>(0);
-
-  const updateActivity = (msg: string) => {
-    setActivity(msg);
-    const t = Date.now();
-    setLastActivityAt(t);
-    setUiNow(t);
-  };
-
-  const [progress, setProgress] = useState<UploadProgress[]>(
-    ENTITY_CONFIG.map(e => ({
-      entityType: e.type,
-      status: 'pending',
-      processed: 0,
-      total: 0,
-      errors: 0,
-      skipped: 0,
-      errorDetails: [],
-    }))
-  );
-
-  // Status counts for each entity type
+  // Status counts for each entity type (for the menu)
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
     products: { pending: 0, uploaded: 0, failed: 0 },
     customers: { pending: 0, uploaded: 0, failed: 0 },
@@ -183,342 +163,147 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return counts;
   };
 
+  // Subscribe to job updates via realtime
   useEffect(() => {
+    // Initial fetch
+    fetchJobs();
     fetchStatusCounts();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel(`upload_jobs_${project.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'upload_jobs',
+          filter: `project_id=eq.${project.id}`,
+        },
+        (payload) => {
+          console.log('Job update:', payload);
+          if (payload.eventType === 'INSERT') {
+            setJobs(prev => [...prev, payload.new as UploadJob]);
+          } else if (payload.eventType === 'UPDATE') {
+            setJobs(prev => prev.map(j => j.id === payload.new.id ? payload.new as UploadJob : j));
+          } else if (payload.eventType === 'DELETE') {
+            setJobs(prev => prev.filter(j => j.id !== payload.old.id));
+          }
+          // Also refresh status counts periodically
+          fetchStatusCounts();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [project.id]);
 
-  // Heartbeat while uploading, so the "sidst opdateret" timer keeps moving.
+  // Heartbeat timer for UI updates
   useEffect(() => {
-    if (!uploading) return;
+    const hasActiveJobs = jobs.some(j => j.status === 'running' || j.status === 'paused');
+    if (!hasActiveJobs) return;
+    
     const id = window.setInterval(() => setUiNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [uploading]);
+  }, [jobs]);
 
-  const getCounts = async () => {
-    const counts: Record<EntityType, number> = {
-      products: 0,
-      customers: 0,
-      orders: 0,
-      categories: 0,
-      pages: 0,
-    };
-
-    const { count: productCount } = await supabase
-      .from('canonical_products')
-      .select('*', { count: 'exact', head: true })
+  const fetchJobs = async () => {
+    const { data } = await supabase
+      .from('upload_jobs')
+      .select('*')
       .eq('project_id', project.id)
-      .eq('status', 'pending');
-    counts.products = productCount || 0;
-
-    const { count: customerCount } = await supabase
-      .from('canonical_customers')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending');
-    counts.customers = customerCount || 0;
-
-    const { count: orderCount } = await supabase
-      .from('canonical_orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending');
-    counts.orders = orderCount || 0;
-
-    const { count: categoryCount } = await supabase
-      .from('canonical_categories')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending')
-      .eq('exclude', false);
-    counts.categories = categoryCount || 0;
-
-    const { count: pageCount } = await supabase
-      .from('canonical_pages')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending');
-    counts.pages = pageCount || 0;
-
-    return counts;
-  };
-
-  const uploadEntityBatch = async (entityType: EntityType, isTestMode: boolean): Promise<{ processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: ErrorDetail[] }> => {
-    const response = await supabase.functions.invoke('shopify-upload', {
-      body: {
-        projectId: project.id,
-        entityType,
-        batchSize: isTestMode ? 3 : 50,
-      },
-    });
-
-    if (response.error) {
-      throw new Error(response.error.message || 'Upload failed');
+      .order('created_at', { ascending: true });
+    
+    if (data) {
+      setJobs(data as unknown as UploadJob[]);
     }
-
-    return {
-      processed: response.data.processed || 0,
-      errors: response.data.errors || 0,
-      skipped: response.data.skipped || 0,
-      // In test mode, never fetch more
-      hasMore: isTestMode ? false : (response.data.hasMore || false),
-      errorDetails: response.data.errorDetails || [],
-    };
-  };
-
-  const uploadEntity = async (
-    entityType: EntityType,
-    pendingTotal: number,
-    totalAll: number,
-    initialUploaded: number,
-    isTestMode: boolean
-  ) => {
-    const label = ENTITY_CONFIG.find(e => e.type === entityType)?.label ?? entityType;
-
-    // Update status to running
-    const displayTotal = isTestMode ? Math.min(pendingTotal, 3) : totalAll;
-    const displayInitialUploaded = isTestMode ? 0 : Math.min(initialUploaded, displayTotal);
-
-    updateActivity(`${label}: starter… (${displayInitialUploaded.toLocaleString('da-DK')}/${displayTotal.toLocaleString('da-DK')})`);
-
-    // Reset per-entity timing when starting a new entity
-    setCurrentEntityStartedAt(Date.now());
-    setCurrentEntityBaseline(displayInitialUploaded);
-
-    setProgress(prev => prev.map(p => 
-      p.entityType === entityType
-        ? { ...p, status: 'running', total: displayTotal, processed: displayInitialUploaded, errors: 0, skipped: 0, errorDetails: [] }
-        : p
-    ));
-
-    let uploadedSoFar = displayInitialUploaded;
-    let totalErrors = 0;
-    let totalSkipped = 0;
-    let allErrorDetails: ErrorDetail[] = [];
-    let hasMore = true;
-    let batchIndex = 0;
-
-    while (hasMore) {
-      // Check if paused
-      while (pausedRef.current) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-
-      try {
-        batchIndex += 1;
-        updateActivity(`${label}: uploader batch ${batchIndex}…`);
-
-        const result = await uploadEntityBatch(entityType, isTestMode);
-
-        // Anything processed or skipped ends up as "uploaded" in Shopify + database
-        uploadedSoFar += (result.processed + result.skipped);
-        totalErrors += result.errors;
-        totalSkipped += result.skipped;
-        hasMore = result.hasMore;
-
-        // Collect error details from the batch
-        if (result.errorDetails && result.errorDetails.length > 0) {
-          allErrorDetails = [...allErrorDetails, ...result.errorDetails];
-        }
-
-        setProgress(prev => prev.map(p =>
-          p.entityType === entityType
-            ? {
-                ...p,
-                processed: Math.min(uploadedSoFar, displayTotal),
-                errors: totalErrors,
-                skipped: totalSkipped,
-                errorDetails: allErrorDetails,
-              }
-            : p
-        ));
-
-        updateActivity(`${label}: opdaterer tællere…`);
-        await fetchStatusCounts();
-
-        // Small delay between batches to avoid rate limiting
-        if (hasMore) {
-          updateActivity(`${label}: venter på næste batch…`);
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      } catch (error) {
-        console.error(`Error uploading ${entityType}:`, error);
-        toast.error(`Fejl ved upload af ${entityType}: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
-
-        setProgress(prev => prev.map(p =>
-          p.entityType === entityType
-            ? { ...p, status: 'failed' }
-            : p
-        ));
-        updateActivity(`${label}: fejlede`);
-        return;
-      }
-    }
-
-    // Mark as completed
-    setProgress(prev => prev.map(p =>
-      p.entityType === entityType
-        ? { ...p, status: 'completed' }
-        : p
-    ));
-    updateActivity(`${label}: færdig`);
   };
 
   const handleStartUpload = async (isTestMode: boolean = false) => {
-    setUploading(true);
-    setTestMode(isTestMode);
-    pausedRef.current = false;
-    setPaused(false);
-    updateActivity(isTestMode ? 'Forbereder test-upload…' : 'Forbereder upload…');
+    setIsStarting(true);
+    try {
+      const response = await supabase.functions.invoke('upload-worker', {
+        body: {
+          projectId: project.id,
+          action: 'start',
+          isTestMode,
+        },
+      });
 
-    // Update UI immediately with whatever counts we already have,
-    // so it doesn't look like the app is stuck while we fetch fresh totals.
-    if (!isTestMode) {
-      setProgress(prev => prev.map(p => {
-        const c = statusCounts[p.entityType];
-        const totalAll = c.pending + c.uploaded + c.failed;
-        return {
-          ...p,
-          total: totalAll,
-          processed: c.uploaded,
-          errors: 0,
-          skipped: 0,
-          status: 'pending',
-          errorDetails: [],
-        };
-      }));
-    }
-
-    // Don't block UI on this
-    void onUpdateProject({ status: 'migrating' });
-
-    // Fetch both pending counts and current totals (uploaded/pending/failed) up front,
-    // so the UI shows "already uploaded" progress.
-    updateActivity('Henter tællere…');
-    const [pendingCounts, initialStatusCounts] = await Promise.all([
-      getCounts(),
-      fetchStatusCounts(),
-    ]);
-
-    if (!isTestMode) {
-      setUploadStartedAt(Date.now());
-      setBaselineProcessed(
-        Object.values(initialStatusCounts).reduce((acc, c) => acc + c.uploaded, 0)
-      );
-    }
-
-    // In test mode, limit to 3 pending of each type
-    const effectivePendingCounts = isTestMode
-      ? Object.fromEntries(
-          Object.entries(pendingCounts).map(([key, value]) => [key, Math.min(value, 3)])
-        ) as Record<EntityType, number>
-      : pendingCounts;
-
-    // Initialize UI totals as FULL totals (uploaded + pending + failed)
-    // and start the "processed" counter at already-uploaded.
-    setProgress(prev => prev.map(p => {
-      if (isTestMode) {
-        return {
-          ...p,
-          total: effectivePendingCounts[p.entityType],
-          processed: 0,
-          errors: 0,
-          skipped: 0,
-          status: 'pending',
-          errorDetails: [],
-        };
+      if (response.error) {
+        throw new Error(response.error.message);
       }
 
-      const counts = initialStatusCounts[p.entityType];
-      const totalAll = counts.pending + counts.uploaded + counts.failed;
-
-      return {
-        ...p,
-        total: totalAll,
-        processed: counts.uploaded,
-        errors: 0,
-        skipped: 0,
-        status: 'pending',
-        errorDetails: [],
-      };
-    }));
-
-    if (isTestMode) {
-      toast.info('Test-tilstand: Uploader kun 3 af hver type');
-    }
-
-    // Process in order: Pages → Collections → Products → Customers → Orders
-    for (const entity of ENTITY_CONFIG) {
-      const pending = effectivePendingCounts[entity.type];
-
-      updateActivity(`${entity.label}: forbereder…`);
-
-      if (pending > 0) {
-        const counts = initialStatusCounts[entity.type];
-        const totalAll = isTestMode ? pending : (counts.pending + counts.uploaded + counts.failed);
-        const initialUploaded = isTestMode ? 0 : counts.uploaded;
-
-        await uploadEntity(entity.type, pending, totalAll, initialUploaded, isTestMode);
+      toast.success(isTestMode 
+        ? 'Test-upload startet i baggrunden' 
+        : 'Upload startet i baggrunden - du kan lukke browseren');
       
-
-        // In test mode, stop after processing 3
-        if (isTestMode) {
-          setProgress(prev => prev.map(p =>
-            p.entityType === entity.type
-              ? { ...p, status: 'completed', processed: Math.min(p.processed, 3), total: 3 }
-              : p
-          ));
-        }
-      } else {
-        // No pending work for this entity - mark completed, but keep already-uploaded counts visible
-        setProgress(prev => prev.map(p =>
-          p.entityType === entity.type ? { ...p, status: 'completed' } : p
-        ));
-      }
+      // Refresh jobs
+      await fetchJobs();
+    } catch (error) {
+      console.error('Failed to start upload:', error);
+      toast.error(`Kunne ikke starte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setIsStarting(false);
     }
-
-    if (!isTestMode) {
-      await onUpdateProject({ status: 'completed' });
-    }
-    setUploading(false);
-    await fetchStatusCounts();
-    toast.success(isTestMode ? 'Test upload gennemført!' : 'Upload til Shopify gennemført!');
   };
 
-  const handlePauseToggle = () => {
-    pausedRef.current = !pausedRef.current;
-    setPaused(!paused);
-    updateActivity(pausedRef.current ? 'Paused' : 'Fortsætter…');
+  const handlePauseResume = async () => {
+    const runningJob = jobs.find(j => j.status === 'running');
+    const pausedJob = jobs.find(j => j.status === 'paused');
+
+    try {
+      if (runningJob) {
+        await supabase.functions.invoke('upload-worker', {
+          body: { projectId: project.id, action: 'pause' },
+        });
+        toast.info('Upload sat på pause');
+      } else if (pausedJob) {
+        await supabase.functions.invoke('upload-worker', {
+          body: { projectId: project.id, action: 'resume' },
+        });
+        toast.success('Upload genoptaget');
+      }
+      await fetchJobs();
+    } catch (error) {
+      toast.error('Kunne ikke pause/genoptage upload');
+    }
+  };
+
+  const handleCancel = async () => {
+    try {
+      await supabase.functions.invoke('upload-worker', {
+        body: { projectId: project.id, action: 'cancel' },
+      });
+      toast.info('Upload annulleret');
+      await fetchJobs();
+    } catch (error) {
+      toast.error('Kunne ikke annullere upload');
+    }
   };
 
   const handleRetry = async () => {
     // Reset failed items to pending for each entity type
-    const failedEntities = progress.filter(p => p.status === 'failed');
+    const entityTypes: EntityType[] = ['products', 'customers', 'orders', 'categories', 'pages'];
     
-    for (const entity of failedEntities) {
-      const updates = { status: 'pending' as const, error_message: null };
-      const filters = { project_id: project.id, status: 'failed' as const };
-      
-      switch (entity.entityType) {
-        case 'products':
-          await supabase.from('canonical_products').update(updates).match(filters);
-          break;
-        case 'customers':
-          await supabase.from('canonical_customers').update(updates).match(filters);
-          break;
-        case 'orders':
-          await supabase.from('canonical_orders').update(updates).match(filters);
-          break;
-        case 'categories':
-          await supabase.from('canonical_categories').update(updates).match(filters);
-          break;
-        case 'pages':
-          await supabase.from('canonical_pages').update(updates).match(filters);
-          break;
+    for (const entityType of entityTypes) {
+      if (entityType === 'products') {
+        await supabase.from('canonical_products').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+      } else if (entityType === 'customers') {
+        await supabase.from('canonical_customers').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+      } else if (entityType === 'orders') {
+        await supabase.from('canonical_orders').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+      } else if (entityType === 'categories') {
+        await supabase.from('canonical_categories').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+      } else if (entityType === 'pages') {
+        await supabase.from('canonical_pages').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
       }
     }
 
-    // Restart upload
-    handleStartUpload();
+    await fetchStatusCounts();
+    await handleStartUpload(false);
   };
 
   const handleResetRequest = (entityType: EntityType, scope: 'all' | 'failed' | 'uploaded') => {
@@ -560,7 +345,6 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       const entityLabel = ENTITY_CONFIG.find(e => e.type === resetDialog.entityType)?.label || resetDialog.entityType;
       toast.success(`${response.data.resetCount} ${entityLabel.toLowerCase()} nulstillet til pending`);
       
-      // Refresh status counts
       await fetchStatusCounts();
     } catch (error) {
       console.error('Reset error:', error);
@@ -570,37 +354,44 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     }
   };
 
-  const allCompleted = progress.every(p => p.status === 'completed');
-  const hasFailed = progress.some(p => p.status === 'failed');
-  const totalProcessed = progress.reduce((acc, p) => acc + p.processed, 0);
-  const totalItems = progress.reduce((acc, p) => acc + p.total, 0);
-  const totalErrors = progress.reduce((acc, p) => acc + p.errors, 0);
-  const totalSkipped = progress.reduce((acc, p) => acc + p.skipped, 0);
-  const secondsSinceUpdate = Math.max(0, Math.floor((uiNow - lastActivityAt) / 1000));
+  // Compute UI state from jobs
+  const isUploading = jobs.some(j => j.status === 'running' || j.status === 'paused');
+  const isPaused = jobs.some(j => j.status === 'paused');
+  const allCompleted = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
+  const hasFailed = jobs.some(j => j.error_count > 0);
+  
+  const runningJob = jobs.find(j => j.status === 'running');
+  const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
+    ? Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000)
+    : 0;
 
-  // Calculate ETA based on CURRENT entity only (not total across all entities)
-  const runningEntity = progress.find(p => p.status === 'running');
-  const currentEntityElapsedMs = currentEntityStartedAt ? Math.max(0, uiNow - currentEntityStartedAt) : 0;
-  const currentEntityNewlyProcessed = runningEntity 
-    ? Math.max(0, runningEntity.processed - currentEntityBaseline) 
-    : 0;
-  const currentEntityPerMinute = currentEntityElapsedMs > 15_000 
-    ? currentEntityNewlyProcessed / (currentEntityElapsedMs / 60_000) 
-    : 0;
-  const currentEntityRemaining = runningEntity 
-    ? Math.max(0, runningEntity.total - runningEntity.processed) 
-    : 0;
-  const etaMinutes = currentEntityPerMinute > 0 
-    ? Math.ceil(currentEntityRemaining / currentEntityPerMinute) 
-    : null;
+  const totalProcessed = jobs.reduce((acc, j) => acc + j.processed_count, 0);
+  const totalItems = jobs.reduce((acc, j) => acc + j.total_count, 0);
+  const totalErrors = jobs.reduce((acc, j) => acc + j.error_count, 0);
+  const totalSkipped = jobs.reduce((acc, j) => acc + j.skipped_count, 0);
 
-  // Format ETA nicely: show hours if > 90 min, otherwise minutes
+  // Get progress for each entity type
+  const getJobForEntity = (entityType: EntityType) => jobs.find(j => j.entity_type === entityType);
+
+  // Calculate ETA for running job
+  const currentSpeed = runningJob?.items_per_minute || 0;
+  const currentRemaining = runningJob ? runningJob.total_count - runningJob.processed_count : 0;
+  const etaMinutes = currentSpeed > 0 ? Math.ceil(currentRemaining / currentSpeed) : null;
+
   const formatEta = (minutes: number) => {
     if (minutes >= 90) {
       const hours = minutes / 60;
       return `${hours.toFixed(1).replace('.', ',')} timer`;
     }
     return `${minutes.toLocaleString('da-DK')} min`;
+  };
+
+  // Get current activity message
+  const getActivityMessage = () => {
+    if (isStarting) return 'Starter upload…';
+    if (!runningJob) return isPaused ? 'Paused' : '';
+    const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
+    return `${label}: uploader batch ${runningJob.current_batch || 1}…`;
   };
 
   return (
@@ -612,26 +403,43 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         </p>
       </div>
 
+      {/* Background processing info banner */}
+      {isUploading && (
+        <Card className="border-primary/50 bg-primary/5">
+          <CardContent className="pt-4">
+            <div className="flex items-start gap-3">
+              <Cloud className="w-5 h-5 text-primary mt-0.5" />
+              <div>
+                <p className="font-medium text-foreground">Upload kører i baggrunden</p>
+                <p className="text-sm text-muted-foreground">
+                  Du kan trygt lukke browseren – upload fortsætter automatisk på serveren.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Upload Progress</CardTitle>
           <CardDescription>
             Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer
           </CardDescription>
-          {uploading && (
+          {(isUploading || isStarting) && (
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               <div className="flex items-center gap-2">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                <span className="font-medium text-foreground">{activity || 'Arbejder…'}</span>
+                <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
                 <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                  {secondsSinceUpdate}s siden
+                  <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
+                  {secondsSinceHeartbeat}s siden
                 </span>
-                {currentEntityPerMinute > 0 && (
+                {currentSpeed > 0 && (
                   <span className="text-primary font-medium">
-                    {currentEntityPerMinute.toFixed(1).replace('.', ',')} / min
+                    {currentSpeed.toFixed(1).replace('.', ',')} / min
                   </span>
                 )}
                 {etaMinutes != null && (
@@ -645,39 +453,45 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         </CardHeader>
         <CardContent className="space-y-6">
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
-            const p = progress.find(p => p.entityType === type)!;
+            const job = getJobForEntity(type);
             const counts = statusCounts[type];
             const totalCount = counts.pending + counts.uploaded + counts.failed;
-            // Progress bar shows uploaded (already + newly) out of total
-            const percent = p.total > 0 ? (p.processed / p.total) * 100 : 0;
+            
+            // Use job data if available, otherwise show status counts
+            const processed = job?.processed_count || counts.uploaded;
+            const total = job?.total_count || totalCount;
+            const errors = job?.error_count || 0;
+            const skipped = job?.skipped_count || 0;
+            const status = job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
+            
+            const percent = total > 0 ? (processed / total) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      p.status === 'completed' ? 'bg-green-100 dark:bg-green-900' :
-                      p.status === 'failed' ? 'bg-destructive/10' :
-                      p.status === 'running' ? 'bg-primary/10' :
+                      status === 'completed' ? 'bg-green-100 dark:bg-green-900' :
+                      status === 'failed' ? 'bg-destructive/10' :
+                      status === 'running' ? 'bg-primary/10' :
+                      status === 'paused' ? 'bg-amber-100 dark:bg-amber-900' :
                       'bg-muted'
                     }`}>
-                      {p.status === 'completed' ? (
+                      {status === 'completed' ? (
                         <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400" />
-                      ) : p.status === 'failed' ? (
+                      ) : status === 'failed' ? (
                         <AlertCircle className="w-4 h-4 text-destructive" />
-                      ) : p.status === 'running' ? (
-                        paused ? (
-                          <Pause className="w-4 h-4 text-primary" />
-                        ) : (
-                          <Loader2 className="w-4 h-4 text-primary animate-spin" />
-                        )
+                      ) : status === 'running' ? (
+                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                      ) : status === 'paused' ? (
+                        <Pause className="w-4 h-4 text-amber-600" />
                       ) : (
                         <Icon className="w-4 h-4 text-muted-foreground" />
                       )}
                     </div>
                     <div>
                       <span className="font-medium">{label}</span>
-                      {!uploading && totalCount > 0 && (
+                      {!isUploading && totalCount > 0 && (
                         <div className="text-xs text-muted-foreground flex gap-2">
                           {counts.pending > 0 && <span>{counts.pending} pending</span>}
                           {counts.uploaded > 0 && <span className="text-green-600">{counts.uploaded} uploadet</span>}
@@ -687,28 +501,25 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {p.skipped > 0 && (
+                    {skipped > 0 && (
                       <span className="flex items-center gap-1 text-amber-600 text-sm">
-                        {p.skipped} skipped
+                        {skipped} skipped
                       </span>
                     )}
-                    {p.errors > 0 && (
+                    {errors > 0 && (
                       <span className="flex items-center gap-1 text-destructive text-sm">
                         <AlertCircle className="w-3 h-3" />
-                        {p.errors} fejl
+                        {errors} fejl
                       </span>
                     )}
-                    {uploading && (
+                    {isUploading && job && (
                       <span className="text-sm text-muted-foreground">
-                        <span className="text-green-600 font-medium">{p.processed.toLocaleString('da-DK')}</span>
+                        <span className="text-green-600 font-medium">{processed.toLocaleString('da-DK')}</span>
                         {' / '}
-                        <span>{p.total.toLocaleString('da-DK')}</span>
-                        {p.skipped > 0 && (
-                          <span className="ml-2 text-amber-600">({p.skipped.toLocaleString('da-DK')} eksisterende)</span>
-                        )}
+                        <span>{total.toLocaleString('da-DK')}</span>
                       </span>
                     )}
-                    {!uploading && (
+                    {!isUploading && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-8 w-8">
@@ -743,12 +554,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     )}
                   </div>
                 </div>
-                {uploading && <Progress value={percent} className="h-2" />}
+                {(isUploading || job) && <Progress value={percent} className="h-2" />}
               </div>
             );
           })}
 
-          {uploading && (
+          {isUploading && (
             <div className="pt-4 border-t">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">
@@ -768,14 +579,14 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         </CardContent>
       </Card>
 
-      {/* Action Buttons - between progress and error explanation */}
+      {/* Action Buttons */}
       <div className="flex justify-end gap-3">
-        {!uploading && !allCompleted && !hasFailed && (
+        {!isUploading && !allCompleted && !hasFailed && (
           <>
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="outline" onClick={() => handleStartUpload(true)}>
+                  <Button variant="outline" onClick={() => handleStartUpload(true)} disabled={isStarting}>
                     <FlaskConical className="w-4 h-4 mr-2" />
                     Test
                   </Button>
@@ -783,45 +594,49 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                 <TooltipContent className="max-w-xs">
                   <p className="font-medium mb-1">Test upload</p>
                   <p className="text-sm text-muted-foreground">
-                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt:
+                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt
                   </p>
-                  <ul className="text-sm text-muted-foreground mt-1 list-disc list-inside">
-                    <li>3 produkter</li>
-                    <li>3 collections</li>
-                    <li>3 kunder</li>
-                    <li>3 ordrer</li>
-                  </ul>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            <Button onClick={() => handleStartUpload(false)}>
-              <Play className="w-4 h-4 mr-2" />
+            <Button onClick={() => handleStartUpload(false)} disabled={isStarting}>
+              {isStarting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4 mr-2" />
+              )}
               Start upload
             </Button>
           </>
         )}
 
-        {hasFailed && !uploading && (
+        {hasFailed && !isUploading && (
           <Button onClick={handleRetry} variant="outline">
             <RotateCcw className="w-4 h-4 mr-2" />
             Prøv igen
           </Button>
         )}
 
-        {uploading && (
-          <Button variant="outline" onClick={handlePauseToggle}>
-            {paused ? (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                Fortsæt
-              </>
-            ) : (
-              <>
-                <Pause className="w-4 h-4 mr-2" />
-                Pause
-              </>
-            )}
-          </Button>
+        {isUploading && (
+          <>
+            <Button variant="outline" onClick={handlePauseResume}>
+              {isPaused ? (
+                <>
+                  <Play className="w-4 h-4 mr-2" />
+                  Fortsæt
+                </>
+              ) : (
+                <>
+                  <Pause className="w-4 h-4 mr-2" />
+                  Pause
+                </>
+              )}
+            </Button>
+            <Button variant="destructive" onClick={handleCancel}>
+              <CloudOff className="w-4 h-4 mr-2" />
+              Stop
+            </Button>
+          </>
         )}
 
         {allCompleted && (
@@ -831,7 +646,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         )}
       </div>
 
-      {/* Error Details Section - Only show if there are actual errors */}
+      {/* Error Details Section */}
       {totalErrors > 0 && (
         <Card>
           <CardHeader>
@@ -846,11 +661,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           <CardContent>
             <Accordion type="multiple" className="w-full">
               {ENTITY_CONFIG.map(({ type, label }) => {
-                const p = progress.find(p => p.entityType === type)!;
-                if (p.errorDetails.length === 0) return null;
+                const job = getJobForEntity(type);
+                const errorDetails = job?.error_details || [];
+                if (errorDetails.length === 0) return null;
 
                 // Group errors by message
-                const groupedErrors = p.errorDetails.reduce((acc, err) => {
+                const groupedErrors = errorDetails.reduce((acc, err) => {
                   const key = err.message;
                   if (!acc[key]) {
                     acc[key] = [];
@@ -864,7 +680,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     <AccordionTrigger className="text-left">
                       <div className="flex items-center gap-2">
                         <XCircle className="w-4 h-4 text-destructive" />
-                        <span>{label}: {p.errorDetails.length} fejl</span>
+                        <span>{label}: {errorDetails.length} fejl</span>
                       </div>
                     </AccordionTrigger>
                     <AccordionContent>
