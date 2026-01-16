@@ -515,6 +515,77 @@ export type Database = {
         }
         Relationships: []
       }
+      upload_jobs: {
+        Row: {
+          batch_size: number
+          completed_at: string | null
+          created_at: string
+          current_batch: number
+          entity_type: string
+          error_count: number
+          error_details: Json | null
+          id: string
+          is_test_mode: boolean
+          items_per_minute: number | null
+          last_heartbeat_at: string | null
+          processed_count: number
+          project_id: string
+          skipped_count: number
+          started_at: string | null
+          status: string
+          total_count: number
+          updated_at: string
+        }
+        Insert: {
+          batch_size?: number
+          completed_at?: string | null
+          created_at?: string
+          current_batch?: number
+          entity_type: string
+          error_count?: number
+          error_details?: Json | null
+          id?: string
+          is_test_mode?: boolean
+          items_per_minute?: number | null
+          last_heartbeat_at?: string | null
+          processed_count?: number
+          project_id: string
+          skipped_count?: number
+          started_at?: string | null
+          status?: string
+          total_count?: number
+          updated_at?: string
+        }
+        Update: {
+          batch_size?: number
+          completed_at?: string | null
+          created_at?: string
+          current_batch?: number
+          entity_type?: string
+          error_count?: number
+          error_details?: Json | null
+          id?: string
+          is_test_mode?: boolean
+          items_per_minute?: number | null
+          last_heartbeat_at?: string | null
+          processed_count?: number
+          project_id?: string
+          skipped_count?: number
+          started_at?: string | null
+          status?: string
+          total_count?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "upload_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

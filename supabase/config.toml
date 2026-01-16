@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.reset-upload-status]
 verify_jwt = false
+
+[functions.upload-worker]
+verify_jwt = false

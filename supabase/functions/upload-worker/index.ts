@@ -1,0 +1,413 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+interface WorkerRequest {
+  jobId?: string;
+  projectId?: string;
+  action: 'start' | 'process' | 'pause' | 'resume' | 'cancel' | 'status';
+  entityTypes?: string[];
+  isTestMode?: boolean;
+}
+
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  try {
+    const { jobId, projectId, action, entityTypes, isTestMode }: WorkerRequest = await req.json();
+
+    switch (action) {
+      case 'start': {
+        if (!projectId) {
+          throw new Error('projectId required for start action');
+        }
+
+        // Cancel any existing running/pending jobs for this project
+        await supabase
+          .from('upload_jobs')
+          .update({ status: 'cancelled', completed_at: new Date().toISOString() })
+          .eq('project_id', projectId)
+          .in('status', ['pending', 'running', 'paused']);
+
+        // Get counts for each entity type
+        const entitiesToProcess = entityTypes || ['pages', 'categories', 'products', 'customers', 'orders'];
+        const jobs = [];
+
+        for (const entityType of entitiesToProcess) {
+          const tableName = `canonical_${entityType}`;
+          
+          // Get pending count
+          let query = supabase
+            .from(tableName)
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', projectId)
+            .eq('status', 'pending');
+          
+          // Categories need exclude filter
+          if (entityType === 'categories') {
+            query = query.eq('exclude', false);
+          }
+          
+          const { count: pendingCount } = await query;
+          
+          // Get already uploaded count for progress display
+          const { count: uploadedCount } = await supabase
+            .from(tableName)
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', projectId)
+            .eq('status', 'uploaded');
+
+          const totalCount = (pendingCount || 0) + (uploadedCount || 0);
+          
+          if (pendingCount && pendingCount > 0) {
+            const { data: job, error } = await supabase
+              .from('upload_jobs')
+              .insert({
+                project_id: projectId,
+                entity_type: entityType,
+                status: 'pending',
+                total_count: isTestMode ? Math.min(pendingCount, 3) : totalCount,
+                processed_count: isTestMode ? 0 : (uploadedCount || 0),
+                batch_size: isTestMode ? 3 : 50,
+                is_test_mode: isTestMode || false,
+              })
+              .select()
+              .single();
+
+            if (error) throw error;
+            jobs.push(job);
+          }
+        }
+
+        // Start processing the first job immediately
+        if (jobs.length > 0) {
+          const firstJob = jobs[0];
+          await supabase
+            .from('upload_jobs')
+            .update({ 
+              status: 'running', 
+              started_at: new Date().toISOString(),
+              last_heartbeat_at: new Date().toISOString()
+            })
+            .eq('id', firstJob.id);
+
+          // Trigger processing asynchronously (fire and forget)
+          const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+          fetch(functionUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseServiceKey}`,
+            },
+            body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
+          }).catch(console.error);
+        }
+
+        // Update project status
+        await supabase
+          .from('projects')
+          .update({ status: 'migrating' })
+          .eq('id', projectId);
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `Started ${jobs.length} upload jobs`,
+          jobs,
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      case 'process': {
+        if (!jobId) {
+          throw new Error('jobId required for process action');
+        }
+
+        // Get the job
+        const { data: job, error: jobError } = await supabase
+          .from('upload_jobs')
+          .select('*')
+          .eq('id', jobId)
+          .single();
+
+        if (jobError || !job) {
+          throw new Error('Job not found');
+        }
+
+        // Check if job should continue
+        if (job.status === 'cancelled' || job.status === 'paused') {
+          return new Response(JSON.stringify({
+            success: true,
+            message: `Job is ${job.status}`,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        // Get project for Shopify credentials
+        const { data: project, error: projectError } = await supabase
+          .from('projects')
+          .select('*')
+          .eq('id', job.project_id)
+          .single();
+
+        if (projectError || !project) {
+          throw new Error('Project not found');
+        }
+
+        // Process one batch
+        const startTime = Date.now();
+        const response = await fetch(`${supabaseUrl}/functions/v1/shopify-upload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseServiceKey}`,
+          },
+          body: JSON.stringify({
+            projectId: job.project_id,
+            entityType: job.entity_type,
+            batchSize: job.batch_size,
+          }),
+        });
+
+        const result = await response.json();
+        const elapsed = Date.now() - startTime;
+        const itemsProcessed = (result.processed || 0) + (result.skipped || 0);
+        const itemsPerMinute = elapsed > 0 ? (itemsProcessed / (elapsed / 60000)) : 0;
+
+        // Merge error details
+        const existingErrors = job.error_details || [];
+        const newErrors = result.errorDetails || [];
+        const allErrors = [...existingErrors, ...newErrors].slice(-100); // Keep last 100
+
+        // Update job progress
+        const updateData: Record<string, any> = {
+          processed_count: job.processed_count + itemsProcessed,
+          error_count: job.error_count + (result.errors || 0),
+          skipped_count: job.skipped_count + (result.skipped || 0),
+          items_per_minute: itemsPerMinute > 0 ? itemsPerMinute : job.items_per_minute,
+          error_details: allErrors,
+          last_heartbeat_at: new Date().toISOString(),
+          current_batch: job.current_batch + 1,
+        };
+
+        // Check if this entity is complete
+        const hasMore = result.hasMore && !job.is_test_mode;
+        
+        if (!hasMore) {
+          updateData.status = 'completed';
+          updateData.completed_at = new Date().toISOString();
+        }
+
+        await supabase
+          .from('upload_jobs')
+          .update(updateData)
+          .eq('id', jobId);
+
+        // If more work, schedule next batch
+        if (hasMore) {
+          // Small delay to avoid hammering the API
+          setTimeout(async () => {
+            try {
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId, action: 'process' }),
+              });
+            } catch (e) {
+              console.error('Failed to schedule next batch:', e);
+            }
+          }, 500);
+        } else {
+          // Check for next entity to process
+          const { data: nextJob } = await supabase
+            .from('upload_jobs')
+            .select('*')
+            .eq('project_id', job.project_id)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .single();
+
+          if (nextJob) {
+            // Start next entity
+            await supabase
+              .from('upload_jobs')
+              .update({ 
+                status: 'running', 
+                started_at: new Date().toISOString(),
+                last_heartbeat_at: new Date().toISOString()
+              })
+              .eq('id', nextJob.id);
+
+            setTimeout(async () => {
+              try {
+                const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+                await fetch(functionUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${supabaseServiceKey}`,
+                  },
+                  body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
+                });
+              } catch (e) {
+                console.error('Failed to start next entity:', e);
+              }
+            }, 500);
+          } else {
+            // All done - update project status
+            await supabase
+              .from('projects')
+              .update({ status: 'completed' })
+              .eq('id', job.project_id);
+          }
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          processed: itemsProcessed,
+          errors: result.errors || 0,
+          hasMore,
+          jobStatus: updateData.status || 'running',
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      case 'pause': {
+        if (!jobId && !projectId) {
+          throw new Error('jobId or projectId required for pause action');
+        }
+
+        const query = supabase
+          .from('upload_jobs')
+          .update({ status: 'paused' })
+          .eq('status', 'running');
+
+        if (jobId) {
+          await query.eq('id', jobId);
+        } else if (projectId) {
+          await query.eq('project_id', projectId);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'Upload paused',
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      case 'resume': {
+        if (!jobId && !projectId) {
+          throw new Error('jobId or projectId required for resume action');
+        }
+
+        // Find paused job(s) to resume
+        let query = supabase
+          .from('upload_jobs')
+          .select('*')
+          .eq('status', 'paused');
+
+        if (jobId) {
+          query = query.eq('id', jobId);
+        } else if (projectId) {
+          query = query.eq('project_id', projectId);
+        }
+
+        const { data: pausedJobs } = await query;
+
+        if (pausedJobs && pausedJobs.length > 0) {
+          const jobToResume = pausedJobs[0];
+          
+          await supabase
+            .from('upload_jobs')
+            .update({ 
+              status: 'running',
+              last_heartbeat_at: new Date().toISOString()
+            })
+            .eq('id', jobToResume.id);
+
+          // Trigger processing
+          const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+          fetch(functionUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseServiceKey}`,
+            },
+            body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
+          }).catch(console.error);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'Upload resumed',
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      case 'cancel': {
+        if (!jobId && !projectId) {
+          throw new Error('jobId or projectId required for cancel action');
+        }
+
+        const query = supabase
+          .from('upload_jobs')
+          .update({ 
+            status: 'cancelled',
+            completed_at: new Date().toISOString()
+          })
+          .in('status', ['pending', 'running', 'paused']);
+
+        if (jobId) {
+          await query.eq('id', jobId);
+        } else if (projectId) {
+          await query.eq('project_id', projectId);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'Upload cancelled',
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      case 'status': {
+        if (!projectId) {
+          throw new Error('projectId required for status action');
+        }
+
+        const { data: jobs } = await supabase
+          .from('upload_jobs')
+          .select('*')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: true });
+
+        return new Response(JSON.stringify({
+          success: true,
+          jobs: jobs || [],
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      default:
+        throw new Error(`Unknown action: ${action}`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Upload worker error:', errorMessage);
+    
+    return new Response(JSON.stringify({
+      success: false,
+      error: errorMessage,
+    }), { 
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
+  }
+});
