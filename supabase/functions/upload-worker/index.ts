@@ -6,6 +6,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const WORKER_SCHEDULE_DELAY_MS = 500;
+const WORKER_RETRY_DELAY_MS = 5000;
+const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
+
 interface WorkerRequest {
   jobId?: string;
   projectId?: string;
@@ -162,10 +168,19 @@ serve(async (req) => {
         }
 
         // Process one batch
+        // Update heartbeat at the start so the UI doesn't look "stuck" while a batch is in-flight.
+        await supabase
+          .from('upload_jobs')
+          .update({ last_heartbeat_at: new Date().toISOString() })
+          .eq('id', jobId);
+
         const startTime = Date.now();
         let result: Record<string, any>;
         
         try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), SHOPIFY_UPLOAD_TIMEOUT_MS);
+
           const response = await fetch(`${supabaseUrl}/functions/v1/shopify-upload`, {
             method: 'POST',
             headers: {
@@ -177,7 +192,10 @@ serve(async (req) => {
               entityType: job.entity_type,
               batchSize: job.batch_size,
             }),
+            signal: controller.signal,
           });
+
+          clearTimeout(timeout);
 
           const responseText = await response.text();
           
@@ -204,22 +222,21 @@ serve(async (req) => {
             })
             .eq('id', jobId);
           
-          // Retry after 5 seconds
-          setTimeout(async () => {
-            try {
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${supabaseServiceKey}`,
-                },
-                body: JSON.stringify({ jobId, action: 'process' }),
-              });
-            } catch (e) {
-              console.error('Failed to retry after error:', e);
-            }
-          }, 5000);
+          // Retry after a short delay (do NOT use setTimeout; the runtime may shut down before it fires)
+          await sleep(WORKER_RETRY_DELAY_MS);
+          try {
+            const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+            fetch(functionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`,
+              },
+              body: JSON.stringify({ jobId, action: 'process' }),
+            }).catch((e) => console.error('Failed to retry after error:', e));
+          } catch (e) {
+            console.error('Failed to retry after error:', e);
+          }
           
           return new Response(JSON.stringify({
             success: false,
@@ -263,21 +280,20 @@ serve(async (req) => {
         // If more work, schedule next batch
         if (hasMore) {
           // Small delay to avoid hammering the API
-          setTimeout(async () => {
-            try {
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${supabaseServiceKey}`,
-                },
-                body: JSON.stringify({ jobId, action: 'process' }),
-              });
-            } catch (e) {
-              console.error('Failed to schedule next batch:', e);
-            }
-          }, 500);
+          await sleep(WORKER_SCHEDULE_DELAY_MS);
+          try {
+            const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+            fetch(functionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`,
+              },
+              body: JSON.stringify({ jobId, action: 'process' }),
+            }).catch((e) => console.error('Failed to schedule next batch:', e));
+          } catch (e) {
+            console.error('Failed to schedule next batch:', e);
+          }
         } else {
           // Check for next entity to process
           const { data: nextJob } = await supabase
@@ -300,21 +316,20 @@ serve(async (req) => {
               })
               .eq('id', nextJob.id);
 
-            setTimeout(async () => {
-              try {
-                const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-                await fetch(functionUrl, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${supabaseServiceKey}`,
-                  },
-                  body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
-                });
-              } catch (e) {
-                console.error('Failed to start next entity:', e);
-              }
-            }, 500);
+            await sleep(WORKER_SCHEDULE_DELAY_MS);
+            try {
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
+              }).catch((e) => console.error('Failed to start next entity:', e));
+            } catch (e) {
+              console.error('Failed to start next entity:', e);
+            }
           } else {
             // All done - update project status
             await supabase
