@@ -200,13 +200,24 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     };
   }, [project.id]);
 
-  // Heartbeat timer for UI updates
+  // Heartbeat timer for UI updates + fallback polling
   useEffect(() => {
     const hasActiveJobs = jobs.some(j => j.status === 'running' || j.status === 'paused');
     if (!hasActiveJobs) return;
     
-    const id = window.setInterval(() => setUiNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
+    // Update UI time every second
+    const uiTimer = window.setInterval(() => setUiNow(Date.now()), 1000);
+    
+    // Fallback polling every 5 seconds in case realtime doesn't work
+    const pollTimer = window.setInterval(() => {
+      fetchJobs();
+      fetchStatusCounts();
+    }, 5000);
+    
+    return () => {
+      window.clearInterval(uiTimer);
+      window.clearInterval(pollTimer);
+    };
   }, [jobs]);
 
   const fetchJobs = async () => {
