@@ -12,6 +12,22 @@ const WORKER_SCHEDULE_DELAY_MS = 500;
 const WORKER_RETRY_DELAY_MS = 5000;
 const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
 
+// Smaller batches => progress updates more frequently (UI updates at least every ~5s)
+const batchSizeForEntity = (entityType: string) => {
+  switch (entityType) {
+    case 'customers':
+    case 'orders':
+      return 10;
+    case 'products':
+      return 10;
+    case 'pages':
+    case 'categories':
+      return 20;
+    default:
+      return 20;
+  }
+};
+
 interface WorkerRequest {
   jobId?: string;
   projectId?: string;
@@ -84,7 +100,7 @@ serve(async (req) => {
                 status: 'pending',
                 total_count: isTestMode ? Math.min(pendingCount, 3) : totalCount,
                 processed_count: isTestMode ? 0 : (uploadedCount || 0),
-                batch_size: isTestMode ? 3 : 50,
+                batch_size: isTestMode ? 3 : batchSizeForEntity(entityType),
                 is_test_mode: isTestMode || false,
               })
               .select()
@@ -107,16 +123,20 @@ serve(async (req) => {
             })
             .eq('id', firstJob.id);
 
-          // Trigger processing asynchronously (fire and forget)
+          // Trigger processing (await so the request is actually sent before runtime shuts down)
           const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-          fetch(functionUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${supabaseServiceKey}`,
-            },
-            body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
-          }).catch(console.error);
+          try {
+            await fetch(functionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`,
+              },
+              body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
+            });
+          } catch (e) {
+            console.error('[WORKER] Failed to trigger initial processing:', e);
+          }
         }
 
         // Update project status
@@ -148,6 +168,8 @@ serve(async (req) => {
           throw new Error('Job not found');
         }
 
+        console.log(`[WORKER] Processing job ${job.id} (${job.entity_type}) batch=${job.current_batch} processed=${job.processed_count}/${job.total_count}`);
+
         // Check if job should continue
         if (job.status === 'cancelled' || job.status === 'paused') {
           return new Response(JSON.stringify({
@@ -168,10 +190,17 @@ serve(async (req) => {
         }
 
         // Process one batch
+        const effectiveBatchSize = job.is_test_mode
+          ? job.batch_size
+          : Math.min(job.batch_size, batchSizeForEntity(job.entity_type));
+
         // Update heartbeat at the start so the UI doesn't look "stuck" while a batch is in-flight.
         await supabase
           .from('upload_jobs')
-          .update({ last_heartbeat_at: new Date().toISOString() })
+          .update({
+            last_heartbeat_at: new Date().toISOString(),
+            batch_size: effectiveBatchSize,
+          })
           .eq('id', jobId);
 
         const startTime = Date.now();
@@ -226,16 +255,17 @@ serve(async (req) => {
           await sleep(WORKER_RETRY_DELAY_MS);
           try {
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-            fetch(functionUrl, {
+            await fetch(functionUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseServiceKey}`,
               },
               body: JSON.stringify({ jobId, action: 'process' }),
-            }).catch((e) => console.error('Failed to retry after error:', e));
+            });
+            console.log(`[WORKER] Retrying job ${jobId} after error`);
           } catch (e) {
-            console.error('Failed to retry after error:', e);
+            console.error('[WORKER] Failed to retry after error:', e);
           }
           
           return new Response(JSON.stringify({
@@ -266,7 +296,7 @@ serve(async (req) => {
 
         // Check if this entity is complete
         const hasMore = result.hasMore && !job.is_test_mode;
-        
+        console.log(`[WORKER] job ${jobId} batchProcessed=${itemsProcessed} elapsedMs=${elapsed} hasMore=${hasMore}`);
         if (!hasMore) {
           updateData.status = 'completed';
           updateData.completed_at = new Date().toISOString();
@@ -283,16 +313,17 @@ serve(async (req) => {
           await sleep(WORKER_SCHEDULE_DELAY_MS);
           try {
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-            fetch(functionUrl, {
+            await fetch(functionUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseServiceKey}`,
               },
               body: JSON.stringify({ jobId, action: 'process' }),
-            }).catch((e) => console.error('Failed to schedule next batch:', e));
+            });
+            console.log(`[WORKER] Scheduled next batch for job ${jobId}`);
           } catch (e) {
-            console.error('Failed to schedule next batch:', e);
+            console.error('[WORKER] Failed to schedule next batch:', e);
           }
         } else {
           // Check for next entity to process
@@ -319,16 +350,17 @@ serve(async (req) => {
             await sleep(WORKER_SCHEDULE_DELAY_MS);
             try {
               const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              fetch(functionUrl, {
+              await fetch(functionUrl, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'Authorization': `Bearer ${supabaseServiceKey}`,
                 },
                 body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
-              }).catch((e) => console.error('Failed to start next entity:', e));
+              });
+              console.log(`[WORKER] Started next entity job ${nextJob.id} (${nextJob.entity_type})`);
             } catch (e) {
-              console.error('Failed to start next entity:', e);
+              console.error('[WORKER] Failed to start next entity:', e);
             }
           } else {
             // All done - update project status
@@ -400,16 +432,21 @@ serve(async (req) => {
             })
             .eq('id', jobToResume.id);
 
-          // Trigger processing
+          // Trigger processing (await so it doesn't get dropped on shutdown)
           const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-          fetch(functionUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${supabaseServiceKey}`,
-            },
-            body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
-          }).catch(console.error);
+          try {
+            await fetch(functionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`,
+              },
+              body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
+            });
+            console.log(`[WORKER] Resumed job ${jobToResume.id}`);
+          } catch (e) {
+            console.error('[WORKER] Failed to trigger resume processing:', e);
+          }
         }
 
         return new Response(JSON.stringify({
