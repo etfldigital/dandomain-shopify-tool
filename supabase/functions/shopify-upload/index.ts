@@ -8,13 +8,13 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Shopify rate limit: ~4 calls/sec with some buffer
-// With 5x parallel, we need intelligent backoff
-const SHOPIFY_MIN_DELAY_MS = 200;
+// AGGRESSIVE PROFILE: ~150-200 items/minute
+// 8 parallel connections, 100ms base delay with intelligent backoff
+const SHOPIFY_MIN_DELAY_MS = 100;
 let lastShopifyRequest = 0;
 
-// Concurrency for parallel uploads - 5 concurrent for faster throughput
-const PARALLEL_CONCURRENCY = 5;
+// Concurrency for parallel uploads - 8 concurrent for aggressive throughput
+const PARALLEL_CONCURRENCY = 8;
 
 // Track rate limit state for intelligent backoff
 let consecutiveRateLimits = 0;
