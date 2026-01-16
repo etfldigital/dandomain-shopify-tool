@@ -9,12 +9,16 @@ const corsHeaders = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Shopify rate limit: ~4 calls/sec with some buffer
-// With parallel execution, we need to be more careful
-const SHOPIFY_MIN_DELAY_MS = 300;
+// With 5x parallel, we need intelligent backoff
+const SHOPIFY_MIN_DELAY_MS = 200;
 let lastShopifyRequest = 0;
 
-// Concurrency for parallel uploads (safe with rate limiting)
-const PARALLEL_CONCURRENCY = 3;
+// Concurrency for parallel uploads - 5 concurrent for faster throughput
+const PARALLEL_CONCURRENCY = 5;
+
+// Track rate limit state for intelligent backoff
+let consecutiveRateLimits = 0;
+let backoffMultiplier = 1;
 
 /**
  * Rate-limited fetch wrapper for Shopify API with automatic retry on 429.
@@ -25,11 +29,12 @@ async function shopifyFetch(
   options: RequestInit,
   maxRetries = 3
 ): Promise<{ response: Response; body: string }> {
-  // Enforce minimum delay between requests
+  // Enforce minimum delay between requests with adaptive backoff
+  const effectiveDelay = SHOPIFY_MIN_DELAY_MS * backoffMultiplier;
   const now = Date.now();
   const timeSinceLastRequest = now - lastShopifyRequest;
-  if (timeSinceLastRequest < SHOPIFY_MIN_DELAY_MS) {
-    await sleep(SHOPIFY_MIN_DELAY_MS - timeSinceLastRequest);
+  if (timeSinceLastRequest < effectiveDelay) {
+    await sleep(effectiveDelay - timeSinceLastRequest);
   }
   lastShopifyRequest = Date.now();
 
@@ -38,15 +43,25 @@ async function shopifyFetch(
     const response = await fetch(url, options);
     const body = await response.text();
 
-    // Handle rate limiting
+    // Handle rate limiting with intelligent backoff
     if (response.status === 429) {
       attempt++;
+      consecutiveRateLimits++;
+      // Increase backoff multiplier when we hit rate limits
+      backoffMultiplier = Math.min(backoffMultiplier * 1.5, 5);
+      
       // Check Retry-After header, default to exponential backoff
       const retryAfter = response.headers.get('Retry-After');
       const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(2000 * Math.pow(2, attempt), 30000);
-      console.log(`Rate limited (429), waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+      console.log(`Rate limited (429), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
       await sleep(waitTime);
       continue;
+    }
+    
+    // Success - reduce backoff if we've been successful
+    if (response.ok) {
+      consecutiveRateLimits = 0;
+      backoffMultiplier = Math.max(1, backoffMultiplier * 0.9);
     }
 
     return { response, body };
