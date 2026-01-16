@@ -48,6 +48,7 @@ import {
   MoreVertical,
   Cloud,
   CloudOff,
+  SkipForward,
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -121,7 +122,7 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
   { type: 'orders', icon: FileText, label: 'Ordrer' },
 ];
 
-export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps) {
+export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
@@ -414,10 +415,43 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return Math.max(base, Math.min(est, hardCap));
   };
 
-  const totalProcessed = jobs.reduce((acc, j) => acc + getLiveProcessedCount(j, j.processed_count), 0);
-  const totalItems = jobs.reduce((acc, j) => acc + j.total_count, 0);
-  const totalErrors = jobs.reduce((acc, j) => acc + j.error_count, 0);
-  const totalSkipped = jobs.reduce((acc, j) => acc + j.skipped_count, 0);
+  // Calculate totals from statusCounts (the source of truth from database)
+  // This gives us fixed, accurate totals that don't change based on job iterations
+  const fixedTotalItems = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed, 
+    0
+  );
+  const fixedTotalUploaded = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.uploaded, 
+    0
+  );
+  const fixedTotalFailed = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.failed, 
+    0
+  );
+  const fixedTotalPending = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.pending, 
+    0
+  );
+
+  // For live progress during upload, use the running job's processed count
+  const runningJobProcessed = runningJob ? getLiveProcessedCount(runningJob, runningJob.processed_count) : 0;
+  
+  // Get errors and skipped only from the CURRENT set of jobs (not cancelled ones)
+  // We only want to show stats from the most recent job run
+  const activeJobs = jobs.filter(j => j.status === 'running' || j.status === 'paused' || j.status === 'pending');
+  const recentCompletedJobs = ENTITY_CONFIG.map(({ type }) => {
+    const entityJobs = jobs.filter(j => j.entity_type === type);
+    // Get the most recent job for this entity
+    return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : null;
+  }).filter(Boolean) as UploadJob[];
+  
+  // Use active jobs if uploading, otherwise use recent completed jobs
+  const relevantJobs = activeJobs.length > 0 ? [...activeJobs, ...recentCompletedJobs.filter(j => j.status === 'completed')] : recentCompletedJobs;
+  const uniqueRelevantJobs = Array.from(new Map(relevantJobs.map(j => [j.id, j])).values());
+  
+  const totalErrors = uniqueRelevantJobs.reduce((acc, j) => acc + j.error_count, 0);
+  const totalSkipped = uniqueRelevantJobs.reduce((acc, j) => acc + j.skipped_count, 0);
 
   // Get progress for each entity type - prioritize running/paused jobs over completed/cancelled
   const getJobForEntity = (entityType: EntityType) => {
@@ -434,8 +468,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
   };
 
-  // Calculate overall speed and ETA across all running jobs
-  const runningJobs = jobs.filter(j => j.status === 'running');
+  // Calculate overall speed and ETA
   const currentSpeed = runningJob?.items_per_minute || 0;
   
   // Calculate remaining items across ALL pending and running jobs
@@ -556,20 +589,24 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
+            // Always use statusCounts as source of truth - this is the actual count from the database
             const totalCount = counts.pending + counts.uploaded + counts.failed;
 
-            // Use job data if available, otherwise show status counts.
-            // When uploading, we show a smooth "live" counter based on items/minute between DB updates.
-            const processedActual = job ? job.processed_count : counts.uploaded;
-            const processedLive = job ? getLiveProcessedCount(job, processedActual) : processedActual;
+            // For progress display, use counts.uploaded as the "processed" count
+            // This reflects actual database state, not job iterations
+            const processedActual = counts.uploaded;
+            const processedLive = job && job.status === 'running' 
+              ? getLiveProcessedCount(job, job.processed_count)
+              : processedActual;
             const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
 
-            const total = job ? job.total_count : totalCount;
-            const errors = job?.error_count || 0;
+            // Always use totalCount from statusCounts - this is the fixed, accurate total
+            const total = totalCount;
+            const errors = job?.error_count || counts.failed;
             const skipped = job?.skipped_count || 0;
             const status = job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
 
-            const percent = total > 0 ? (processedLive / total) * 100 : 0;
+            const percent = total > 0 ? (processedActual / total) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">
@@ -617,10 +654,10 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                         {errors} fejl
                       </span>
                     )}
-                    {isUploading && job && (
+                    {isUploading && (
                       <span className="text-sm text-muted-foreground">
                         <span className="text-green-600 font-medium">
-                          {isEstimated ? `~${processedLive.toLocaleString('da-DK')}` : processedLive.toLocaleString('da-DK')}
+                          {counts.uploaded.toLocaleString('da-DK')}
                         </span>
                         {' / '}
                         <span>{total.toLocaleString('da-DK')}</span>
@@ -670,7 +707,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             <div className="pt-4 border-t">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">
-                  Total: {totalProcessed.toLocaleString('da-DK')} / {totalItems.toLocaleString('da-DK')}
+                  Total: {fixedTotalUploaded.toLocaleString('da-DK')} / {fixedTotalItems.toLocaleString('da-DK')}
                 </span>
                 <div className="flex items-center gap-3">
                   {totalSkipped > 0 && (
@@ -678,6 +715,28 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                   )}
                   {totalErrors > 0 && (
                     <span className="text-destructive">{totalErrors} fejl</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Summary when not uploading */}
+          {!isUploading && fixedTotalItems > 0 && (
+            <div className="pt-4 border-t">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">
+                  Total: {fixedTotalItems.toLocaleString('da-DK')} elementer
+                </span>
+                <div className="flex items-center gap-3">
+                  {fixedTotalUploaded > 0 && (
+                    <span className="text-green-600">{fixedTotalUploaded.toLocaleString('da-DK')} uploadet</span>
+                  )}
+                  {fixedTotalPending > 0 && (
+                    <span className="text-muted-foreground">{fixedTotalPending.toLocaleString('da-DK')} pending</span>
+                  )}
+                  {fixedTotalFailed > 0 && (
+                    <span className="text-destructive">{fixedTotalFailed.toLocaleString('da-DK')} fejlet</span>
                   )}
                 </div>
               </div>
@@ -752,6 +811,45 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           </Button>
         )}
       </div>
+
+      {/* Skipped Details Section */}
+      {totalSkipped > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <SkipForward className="w-5 h-5 text-amber-600" />
+              Sprunget over ({totalSkipped})
+            </CardTitle>
+            <CardDescription>
+              Disse elementer blev sprunget over under upload
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {ENTITY_CONFIG.map(({ type, label }) => {
+                const job = getJobForEntity(type);
+                const skippedCount = job?.skipped_count || 0;
+                if (skippedCount === 0) return null;
+
+                return (
+                  <div key={type} className="border-l-2 border-amber-400/50 pl-3">
+                    <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                      {label}: {skippedCount.toLocaleString('da-DK')} sprunget over
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {type === 'products' && 'Produkter uden titel eller med titel "Untitled" blev sprunget over.'}
+                      {type === 'customers' && 'Kunder der allerede findes i Shopify blev sprunget over.'}
+                      {type === 'orders' && 'Ordrer med ugyldige data blev sprunget over.'}
+                      {type === 'categories' && 'Kategorier markeret som "exclude" blev sprunget over.'}
+                      {type === 'pages' && 'Sider uden indhold blev sprunget over.'}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Error Details Section */}
       {totalErrors > 0 && (
