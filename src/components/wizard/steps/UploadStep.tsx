@@ -381,8 +381,20 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const totalErrors = jobs.reduce((acc, j) => acc + j.error_count, 0);
   const totalSkipped = jobs.reduce((acc, j) => acc + j.skipped_count, 0);
 
-  // Get progress for each entity type
-  const getJobForEntity = (entityType: EntityType) => jobs.find(j => j.entity_type === entityType);
+  // Get progress for each entity type - prioritize running/paused jobs over completed/cancelled
+  const getJobForEntity = (entityType: EntityType) => {
+    // First look for active jobs (running or paused)
+    const activeJob = jobs.find(j => j.entity_type === entityType && (j.status === 'running' || j.status === 'paused'));
+    if (activeJob) return activeJob;
+    
+    // Then look for pending jobs
+    const pendingJob = jobs.find(j => j.entity_type === entityType && j.status === 'pending');
+    if (pendingJob) return pendingJob;
+    
+    // Finally, get the most recent job for this entity type
+    const entityJobs = jobs.filter(j => j.entity_type === entityType);
+    return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
+  };
 
   // Calculate ETA for running job
   const currentSpeed = runningJob?.items_per_minute || 0;
