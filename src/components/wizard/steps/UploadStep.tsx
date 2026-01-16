@@ -99,6 +99,10 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
   const [baselineProcessed, setBaselineProcessed] = useState<number>(0);
 
+  // Track per-entity timing for accurate ETA
+  const [currentEntityStartedAt, setCurrentEntityStartedAt] = useState<number | null>(null);
+  const [currentEntityBaseline, setCurrentEntityBaseline] = useState<number>(0);
+
   const updateActivity = (msg: string) => {
     setActivity(msg);
     const t = Date.now();
@@ -275,6 +279,10 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     const displayInitialUploaded = isTestMode ? 0 : Math.min(initialUploaded, displayTotal);
 
     updateActivity(`${label}: starter… (${displayInitialUploaded.toLocaleString('da-DK')}/${displayTotal.toLocaleString('da-DK')})`);
+
+    // Reset per-entity timing when starting a new entity
+    setCurrentEntityStartedAt(Date.now());
+    setCurrentEntityBaseline(displayInitialUploaded);
 
     setProgress(prev => prev.map(p => 
       p.entityType === entityType
@@ -570,11 +578,21 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const totalSkipped = progress.reduce((acc, p) => acc + p.skipped, 0);
   const secondsSinceUpdate = Math.max(0, Math.floor((uiNow - lastActivityAt) / 1000));
 
-  const elapsedMs = uploadStartedAt ? Math.max(0, uiNow - uploadStartedAt) : 0;
-  const newlyProcessed = uploadStartedAt ? Math.max(0, totalProcessed - baselineProcessed) : 0;
-  const perMinute = elapsedMs > 15_000 ? newlyProcessed / (elapsedMs / 60_000) : 0;
-  const remaining = Math.max(0, totalItems - totalProcessed);
-  const etaMinutes = perMinute > 0 ? Math.ceil(remaining / perMinute) : null;
+  // Calculate ETA based on CURRENT entity only (not total across all entities)
+  const runningEntity = progress.find(p => p.status === 'running');
+  const currentEntityElapsedMs = currentEntityStartedAt ? Math.max(0, uiNow - currentEntityStartedAt) : 0;
+  const currentEntityNewlyProcessed = runningEntity 
+    ? Math.max(0, runningEntity.processed - currentEntityBaseline) 
+    : 0;
+  const currentEntityPerMinute = currentEntityElapsedMs > 15_000 
+    ? currentEntityNewlyProcessed / (currentEntityElapsedMs / 60_000) 
+    : 0;
+  const currentEntityRemaining = runningEntity 
+    ? Math.max(0, runningEntity.total - runningEntity.processed) 
+    : 0;
+  const etaMinutes = currentEntityPerMinute > 0 
+    ? Math.ceil(currentEntityRemaining / currentEntityPerMinute) 
+    : null;
 
   // Format ETA nicely: show hours if > 90 min, otherwise minutes
   const formatEta = (minutes: number) => {
@@ -611,9 +629,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                   {secondsSinceUpdate}s siden
                 </span>
-                {perMinute > 0 && (
+                {currentEntityPerMinute > 0 && (
                   <span className="text-primary font-medium">
-                    {perMinute.toFixed(1).replace('.', ',')} / min
+                    {currentEntityPerMinute.toFixed(1).replace('.', ',')} / min
                   </span>
                 )}
                 {etaMinutes != null && (
