@@ -672,7 +672,7 @@ async function uploadProductsWithVariants(
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
 
-            if (costUpdatesSupported !== false && /(^|\s)403(\s|$)|merchant approval|write_inventory/i.test(msg)) {
+            if (/(^|\s)403(\s|$)|merchant approval|write_inventory/i.test(msg)) {
               costUpdatesSupported = false;
               console.log(
                 'Inventory cost updates not permitted (missing write_inventory approval). Skipping cost updates for the rest of this run.'
