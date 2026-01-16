@@ -400,6 +400,10 @@ async function uploadProductsWithVariants(
   let errors = 0;
   let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
+
+  // Cost price updates require special permissions in Shopify. If Shopify denies (403),
+  // disable cost updates for the remainder of this request to save a LOT of API calls.
+  let costUpdatesSupported: boolean | null = null;
   
   // Process up to batchSize product groups
   const groupsToProcess = Array.from(productGroups.entries()).slice(0, batchSize);
@@ -416,15 +420,18 @@ async function uploadProductsWithVariants(
       // Skip untitled/empty products
       if (!data.title || data.title === 'Untitled') {
         // Mark as uploaded to skip them permanently
-        for (const item of items) {
-          await supabase
-            .from('canonical_products')
-            .update({
-              status: 'uploaded',
-              error_message: 'Sprunget over: ingen titel',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', item.id);
+        const ids = items.map((it) => it.id);
+        const { error: markSkipError } = await supabase
+          .from('canonical_products')
+          .update({
+            status: 'uploaded',
+            error_message: 'Sprunget over: ingen titel',
+            updated_at: new Date().toISOString(),
+          })
+          .in('id', ids);
+
+        if (markSkipError) {
+          throw new Error(`Failed to mark skipped products: ${markSkipError.message}`);
         }
         skipped += items.length;
         continue;
@@ -451,15 +458,18 @@ async function uploadProductsWithVariants(
         console.log(`Product "${transformedTitle}" already exists (ID ${existingProductId}), skipping`);
         
         // Mark all items as uploaded with existing ID
-        for (const item of items) {
-          await supabase
-            .from('canonical_products')
-            .update({
-              status: 'uploaded',
-              shopify_id: existingProductId,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', item.id);
+        const ids = items.map((it) => it.id);
+        const { error: markExistingError } = await supabase
+          .from('canonical_products')
+          .update({
+            status: 'uploaded',
+            shopify_id: existingProductId,
+            updated_at: new Date().toISOString(),
+          })
+          .in('id', ids);
+
+        if (markExistingError) {
+          throw new Error(`Failed to mark existing products as uploaded: ${markExistingError.message}`);
         }
         skipped += items.length;
         continue;
@@ -613,15 +623,18 @@ async function uploadProductsWithVariants(
           }
         }
         
-        for (const item of items) {
-          await supabase
-            .from('canonical_products')
-            .update({
-              status: 'uploaded',
-              shopify_id: existingId,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', item.id);
+        const ids = items.map((it) => it.id);
+        const { error: markDupError } = await supabase
+          .from('canonical_products')
+          .update({
+            status: 'uploaded',
+            shopify_id: existingId,
+            updated_at: new Date().toISOString(),
+          })
+          .in('id', ids);
+
+        if (markDupError) {
+          throw new Error(`Failed to mark duplicate products as uploaded: ${markDupError.message}`);
         }
         skipped += items.length;
         if (existingId) {
@@ -641,8 +654,12 @@ async function uploadProductsWithVariants(
       existingProducts.set(titleLower, shopifyId);
 
       // Update cost price (inventory cost) per variant via InventoryItem API
+      // NOTE: This frequently fails with 403 unless the store has approved write_inventory.
+      // When we detect that, we disable further cost update attempts to keep uploads fast.
       const createdVariants = result?.product?.variants || [];
       for (const createdVariant of createdVariants) {
+        if (costUpdatesSupported === false) break;
+
         const sku = createdVariant?.sku;
         const inventoryItemId = createdVariant?.inventory_item_id;
         const source = items.find((it) => it.data?.sku === sku)?.data;
@@ -651,22 +668,36 @@ async function uploadProductsWithVariants(
         if (cost != null && inventoryItemId) {
           try {
             await setInventoryItemCost(shopifyUrl, token, inventoryItemId, Number(cost));
+            if (costUpdatesSupported === null) costUpdatesSupported = true;
           } catch (e) {
-            console.log(`Could not set cost for SKU ${sku}:`, e instanceof Error ? e.message : e);
+            const msg = e instanceof Error ? e.message : String(e);
+
+            if (costUpdatesSupported !== false && /(^|\s)403(\s|$)|merchant approval|write_inventory/i.test(msg)) {
+              costUpdatesSupported = false;
+              console.log(
+                'Inventory cost updates not permitted (missing write_inventory approval). Skipping cost updates for the rest of this run.'
+              );
+              break;
+            }
+
+            console.log(`Could not set cost for SKU ${sku}:`, msg);
           }
         }
       }
 
       // Update all items in this group as uploaded
-      for (const item of items) {
-        await supabase
-          .from('canonical_products')
-          .update({
-            status: 'uploaded',
-            shopify_id: shopifyId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', item.id);
+      const ids = items.map((it) => it.id);
+      const { error: markUploadedError } = await supabase
+        .from('canonical_products')
+        .update({
+          status: 'uploaded',
+          shopify_id: shopifyId,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', ids);
+
+      if (markUploadedError) {
+        throw new Error(`Failed to update canonical_products status: ${markUploadedError.message}`);
       }
 
       processed += items.length;
@@ -676,16 +707,17 @@ async function uploadProductsWithVariants(
       console.error(`Error uploading product group "${groupKey}":`, errorMessage);
       
       // Mark all items in this group as failed
+      const ids = items.map((it) => it.id);
+      await supabase
+        .from('canonical_products')
+        .update({
+          status: 'failed',
+          error_message: errorMessage,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', ids);
+
       for (const item of items) {
-        await supabase
-          .from('canonical_products')
-          .update({
-            status: 'failed',
-            error_message: errorMessage,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', item.id);
-        
         errorDetails.push({ externalId: item.external_id, message: errorMessage });
       }
       

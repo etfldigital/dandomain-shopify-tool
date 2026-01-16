@@ -96,6 +96,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const [lastActivityAt, setLastActivityAt] = useState<number>(() => Date.now());
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
 
+  const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
+  const [baselineProcessed, setBaselineProcessed] = useState<number>(0);
+
   const updateActivity = (msg: string) => {
     setActivity(msg);
     const t = Date.now();
@@ -388,6 +391,13 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       fetchStatusCounts(),
     ]);
 
+    if (!isTestMode) {
+      setUploadStartedAt(Date.now());
+      setBaselineProcessed(
+        Object.values(initialStatusCounts).reduce((acc, c) => acc + c.uploaded, 0)
+      );
+    }
+
     // In test mode, limit to 3 pending of each type
     const effectivePendingCounts = isTestMode
       ? Object.fromEntries(
@@ -560,6 +570,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const totalSkipped = progress.reduce((acc, p) => acc + p.skipped, 0);
   const secondsSinceUpdate = Math.max(0, Math.floor((uiNow - lastActivityAt) / 1000));
 
+  const elapsedMs = uploadStartedAt ? Math.max(0, uiNow - uploadStartedAt) : 0;
+  const newlyProcessed = uploadStartedAt ? Math.max(0, totalProcessed - baselineProcessed) : 0;
+  const perMinute = elapsedMs > 15_000 ? newlyProcessed / (elapsedMs / 60_000) : 0;
+  const remaining = Math.max(0, totalItems - totalProcessed);
+  const etaMinutes = perMinute > 0 ? Math.ceil(remaining / perMinute) : null;
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="text-center mb-8">
@@ -578,6 +594,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
           {uploading && (
             <div className="mt-2 text-sm text-muted-foreground">
               Status: {activity || 'Arbejder…'} • Sidst opdateret for {secondsSinceUpdate}s siden
+              {perMinute > 0 && (
+                <> • Hastighed: {perMinute.toFixed(1).replace('.', ',')} / min</>
+              )}
+              {etaMinutes != null && (
+                <> • Estimat: ~{etaMinutes.toLocaleString('da-DK')} min tilbage</>
+              )}
             </div>
           )}
         </CardHeader>
