@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.upload-worker]
 verify_jwt = false
+
+[functions.job-watchdog]
+verify_jwt = false
