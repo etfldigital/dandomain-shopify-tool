@@ -230,14 +230,14 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     const hasActiveJobs = jobs.some(j => j.status === 'running' || j.status === 'paused');
     if (!hasActiveJobs) return;
     
-    // Update UI time every second
+    // Update UI time every second for smooth animations
     const uiTimer = window.setInterval(() => setUiNow(Date.now()), 1000);
     
-    // Fallback polling every 5 seconds in case realtime doesn't work
+    // Fallback polling every 3 seconds for more frequent count updates
     const pollTimer = window.setInterval(() => {
       fetchJobs();
       fetchStatusCounts();
-    }, 5000);
+    }, 3000);
     
     return () => {
       window.clearInterval(uiTimer);
@@ -434,10 +434,16 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
   };
 
-  // Calculate ETA for running job
+  // Calculate overall speed and ETA across all running jobs
+  const runningJobs = jobs.filter(j => j.status === 'running');
   const currentSpeed = runningJob?.items_per_minute || 0;
-  const currentRemaining = runningJob ? runningJob.total_count - runningJob.processed_count : 0;
-  const etaMinutes = currentSpeed > 0 ? Math.ceil(currentRemaining / currentSpeed) : null;
+  
+  // Calculate remaining items across ALL pending and running jobs
+  const totalRemainingItems = jobs
+    .filter(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused')
+    .reduce((acc, j) => acc + Math.max(0, j.total_count - j.processed_count), 0);
+  
+  const etaMinutes = currentSpeed > 0 ? Math.ceil(totalRemainingItems / currentSpeed) : null;
 
   const formatEta = (minutes: number) => {
     if (minutes >= 90) {
@@ -445,6 +451,13 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       return `${hours.toFixed(1).replace('.', ',')} timer`;
     }
     return `${minutes.toLocaleString('da-DK')} min`;
+  };
+  
+  const formatSpeed = (speed: number) => {
+    if (speed >= 100) {
+      return `${Math.round(speed)} / min`;
+    }
+    return `${speed.toFixed(1).replace('.', ',')} / min`;
   };
 
   const formatHeartbeat = (seconds: number) => {
@@ -503,19 +516,37 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                 <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
-              <span className="flex items-center gap-1.5">
+                <span className="flex items-center gap-1.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
                   {formatHeartbeat(secondsSinceHeartbeat)}
                 </span>
                 {currentSpeed > 0 && (
-                  <span className="text-primary font-medium">
-                    {currentSpeed.toFixed(1).replace('.', ',')} / min
-                  </span>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-primary font-medium cursor-help flex items-center gap-1">
+                          ⚡ {formatSpeed(currentSpeed)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Aktuel upload-hastighed</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
-                {etaMinutes != null && (
-                  <span className="bg-muted px-2 py-0.5 rounded-md font-medium">
-                    ~{formatEta(etaMinutes)} tilbage
-                  </span>
+                {etaMinutes != null && totalRemainingItems > 0 && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help">
+                          ~{formatEta(etaMinutes)} tilbage
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{totalRemainingItems.toLocaleString('da-DK')} elementer tilbage</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
               </div>
             </div>
