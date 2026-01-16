@@ -119,6 +119,7 @@ serve(async (req) => {
 
     let processed = 0;
     let errors = 0;
+    let skipped = 0; // For items that already existed in Shopify
     let errorDetails: { externalId: string; message: string }[] = [];
 
     // Get pending items based on entity type
@@ -162,14 +163,18 @@ serve(async (req) => {
     }
 
     // Process items in parallel with controlled concurrency
-    const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string }> => {
+    const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }> => {
       try {
         let shopifyId: string | null = null;
+        let wasExisting = false;
 
         switch (entityType) {
-          case 'customers':
-            shopifyId = await uploadCustomer(shopifyUrl, shopifyToken, item.data);
+          case 'customers': {
+            const result = await uploadCustomer(shopifyUrl, shopifyToken, item.data);
+            shopifyId = result.shopifyId;
+            wasExisting = result.wasExisting;
             break;
+          }
           case 'orders':
             shopifyId = await uploadOrder(shopifyUrl, shopifyToken, item.data, supabase, projectId);
             break;
@@ -194,7 +199,7 @@ serve(async (req) => {
           throw new Error(`Failed to update ${entityType} row status: ${updateError.message}`);
         }
 
-        return { success: true, externalId: item.external_id };
+        return { success: true, externalId: item.external_id, wasExisting };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
@@ -219,7 +224,11 @@ serve(async (req) => {
       
       for (const result of results) {
         if (result.success) {
-          processed++;
+          if (result.wasExisting) {
+            skipped++; // Already existed in Shopify
+          } else {
+            processed++; // Newly created
+          }
         } else {
           errors++;
           errorDetails.push({ externalId: result.externalId, message: result.error || 'Unknown error' });
@@ -237,6 +246,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       success: true,
       processed,
+      skipped,
       errors,
       errorDetails,
       hasMore: (count || 0) > 0,
@@ -1165,7 +1175,7 @@ function hasMeaningfulAddress(addr: any): boolean {
   );
 }
 
-async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<string> {
+async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<{ shopifyId: string; wasExisting: boolean }> {
   const firstName = String(data.first_name || '').trim();
   const lastName = String(data.last_name || '').trim();
   const customerPhone = normalizePhoneNumber(data.phone);
@@ -1217,7 +1227,8 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
       if (searchResponse.ok) {
         const searchResult = JSON.parse(searchBody);
         if (searchResult.customers && searchResult.customers.length > 0) {
-          return String(searchResult.customers[0].id);
+          // Return as existing - this customer was already in Shopify
+          return { shopifyId: String(searchResult.customers[0].id), wasExisting: true };
         }
       }
     }
@@ -1225,7 +1236,8 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
   }
 
   const result = JSON.parse(body);
-  return String(result.customer.id);
+  // Newly created customer
+  return { shopifyId: String(result.customer.id), wasExisting: false };
 }
 
 async function findShopifyCustomerIdByEmail(
@@ -1303,7 +1315,7 @@ async function uploadOrder(
   // IMPORTANT: Shopify doesn't reliably persist address data when you create a customer via order payload.
   // So we create/find the customer first, then create the order linked to the customer id.
   if (!shopifyCustomerId && customerEmail) {
-    shopifyCustomerId = await uploadCustomer(shopifyUrl, token, {
+    const customerResult = await uploadCustomer(shopifyUrl, token, {
       email: customerEmail,
       first_name: customerFirstName,
       last_name: customerLastName,
@@ -1317,6 +1329,7 @@ async function uploadOrder(
         },
       ],
     });
+    shopifyCustomerId = customerResult.shopifyId;
   }
 
   // Map line items with Shopify variant IDs

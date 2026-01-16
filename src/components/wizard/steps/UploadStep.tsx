@@ -838,7 +838,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {type === 'products' && 'Produkter uden titel eller med titel "Untitled" blev sprunget over.'}
-                      {type === 'customers' && 'Kunder der allerede findes i Shopify blev sprunget over.'}
+                      {type === 'customers' && 'Kunder der allerede eksisterede i Shopify blev linket i stedet for oprettet.'}
                       {type === 'orders' && 'Ordrer med ugyldige data blev sprunget over.'}
                       {type === 'categories' && 'Kategorier markeret som "exclude" blev sprunget over.'}
                       {type === 'pages' && 'Sider uden indhold blev sprunget over.'}
