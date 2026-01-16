@@ -12,19 +12,20 @@ const WORKER_SCHEDULE_DELAY_MS = 500;
 const WORKER_RETRY_DELAY_MS = 5000;
 const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
 
-// Smaller batches => progress updates more frequently (UI updates at least every ~5s)
+// Larger batches for better throughput - 25 items per batch = ~15-20s per batch at 80-100/min
+// This reduces overhead from fetch/parse cycles while still updating UI frequently
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
     case 'orders':
-      return 10;
+      return 25;
     case 'products':
-      return 10;
+      return 25;
     case 'pages':
     case 'categories':
-      return 20;
+      return 25;
     default:
-      return 20;
+      return 25;
   }
 };
 
