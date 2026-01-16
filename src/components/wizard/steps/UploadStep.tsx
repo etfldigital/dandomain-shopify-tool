@@ -74,6 +74,7 @@ interface UploadJob {
   error_count: number;
   skipped_count: number;
   items_per_minute: number | null;
+  batch_size: number;
   error_details: ErrorDetail[] | null;
   created_at: string;
   started_at: string | null;
@@ -376,7 +377,30 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     ? Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000)
     : 0;
 
-  const totalProcessed = jobs.reduce((acc, j) => acc + j.processed_count, 0);
+  // UI-only "live" progress so the counter/bar can move smoothly between DB updates.
+  // We cap the estimate to at most one batch.
+  const getLiveProcessedCount = (job?: UploadJob, fallback = 0) => {
+    if (!job) return fallback;
+
+    const base = typeof job.processed_count === 'number' ? job.processed_count : fallback;
+    if (job.status !== 'running') return base;
+
+    const ipm = job.items_per_minute ?? 0;
+    if (!ipm || !job.last_heartbeat_at) return base;
+
+    const last = new Date(job.last_heartbeat_at).getTime();
+    if (!Number.isFinite(last)) return base;
+
+    const elapsedMs = Math.max(0, uiNow - last);
+    const maxElapsedMs = ipm > 0 ? (job.batch_size / ipm) * 60_000 : 60_000;
+    const effectiveElapsedMs = Math.min(elapsedMs, maxElapsedMs);
+
+    const est = Math.floor(base + (effectiveElapsedMs / 60_000) * ipm);
+    const hardCap = Math.min(job.total_count, base + job.batch_size);
+    return Math.max(base, Math.min(est, hardCap));
+  };
+
+  const totalProcessed = jobs.reduce((acc, j) => acc + getLiveProcessedCount(j, j.processed_count), 0);
   const totalItems = jobs.reduce((acc, j) => acc + j.total_count, 0);
   const totalErrors = jobs.reduce((acc, j) => acc + j.error_count, 0);
   const totalSkipped = jobs.reduce((acc, j) => acc + j.skipped_count, 0);
@@ -488,15 +512,19 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
             const totalCount = counts.pending + counts.uploaded + counts.failed;
-            
-            // Use job data if available, otherwise show status counts
-            const processed = job?.processed_count || counts.uploaded;
-            const total = job?.total_count || totalCount;
+
+            // Use job data if available, otherwise show status counts.
+            // When uploading, we show a smooth "live" counter based on items/minute between DB updates.
+            const processedActual = job ? job.processed_count : counts.uploaded;
+            const processedLive = job ? getLiveProcessedCount(job, processedActual) : processedActual;
+            const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
+
+            const total = job ? job.total_count : totalCount;
             const errors = job?.error_count || 0;
             const skipped = job?.skipped_count || 0;
             const status = job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
-            
-            const percent = total > 0 ? (processed / total) * 100 : 0;
+
+            const percent = total > 0 ? (processedLive / total) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">
@@ -546,7 +574,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                     )}
                     {isUploading && job && (
                       <span className="text-sm text-muted-foreground">
-                        <span className="text-green-600 font-medium">{processed.toLocaleString('da-DK')}</span>
+                        <span className="text-green-600 font-medium">
+                          {isEstimated ? `~${processedLive.toLocaleString('da-DK')}` : processedLive.toLocaleString('da-DK')}
+                        </span>
                         {' / '}
                         <span>{total.toLocaleString('da-DK')}</span>
                       </span>
