@@ -576,6 +576,15 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
   const remaining = Math.max(0, totalItems - totalProcessed);
   const etaMinutes = perMinute > 0 ? Math.ceil(remaining / perMinute) : null;
 
+  // Format ETA nicely: show hours if > 90 min, otherwise minutes
+  const formatEta = (minutes: number) => {
+    if (minutes >= 90) {
+      const hours = minutes / 60;
+      return `${hours.toFixed(1).replace('.', ',')} timer`;
+    }
+    return `${minutes.toLocaleString('da-DK')} min`;
+  };
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="text-center mb-8">
@@ -592,14 +601,27 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
             Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer
           </CardDescription>
           {uploading && (
-            <div className="mt-2 text-sm text-muted-foreground">
-              Status: {activity || 'Arbejder…'} • Sidst opdateret for {secondsSinceUpdate}s siden
-              {perMinute > 0 && (
-                <> • Hastighed: {perMinute.toFixed(1).replace('.', ',')} / min</>
-              )}
-              {etaMinutes != null && (
-                <> • Estimat: ~{etaMinutes.toLocaleString('da-DK')} min tilbage</>
-              )}
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                <span className="font-medium text-foreground">{activity || 'Arbejder…'}</span>
+              </div>
+              <div className="flex items-center gap-4 text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  {secondsSinceUpdate}s siden
+                </span>
+                {perMinute > 0 && (
+                  <span className="text-primary font-medium">
+                    {perMinute.toFixed(1).replace('.', ',')} / min
+                  </span>
+                )}
+                {etaMinutes != null && (
+                  <span className="bg-muted px-2 py-0.5 rounded-md font-medium">
+                    ~{formatEta(etaMinutes)} tilbage
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </CardHeader>
