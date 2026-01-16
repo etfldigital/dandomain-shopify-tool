@@ -8,9 +8,13 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Minimum delay between Shopify API calls to avoid rate limiting (Shopify allows ~2 calls/sec)
-const SHOPIFY_REQUEST_DELAY_MS = 550;
+// Shopify rate limit: ~4 calls/sec with some buffer
+// With parallel execution, we need to be more careful
+const SHOPIFY_MIN_DELAY_MS = 300;
 let lastShopifyRequest = 0;
+
+// Concurrency for parallel uploads (safe with rate limiting)
+const PARALLEL_CONCURRENCY = 3;
 
 /**
  * Rate-limited fetch wrapper for Shopify API with automatic retry on 429.
@@ -24,8 +28,8 @@ async function shopifyFetch(
   // Enforce minimum delay between requests
   const now = Date.now();
   const timeSinceLastRequest = now - lastShopifyRequest;
-  if (timeSinceLastRequest < SHOPIFY_REQUEST_DELAY_MS) {
-    await sleep(SHOPIFY_REQUEST_DELAY_MS - timeSinceLastRequest);
+  if (timeSinceLastRequest < SHOPIFY_MIN_DELAY_MS) {
+    await sleep(SHOPIFY_MIN_DELAY_MS - timeSinceLastRequest);
   }
   lastShopifyRequest = Date.now();
 
@@ -140,8 +144,8 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // Process each item
-    for (const item of items) {
+    // Process items in parallel with controlled concurrency
+    const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string }> => {
       try {
         let shopifyId: string | null = null;
 
@@ -173,11 +177,9 @@ serve(async (req) => {
           throw new Error(`Failed to update ${entityType} row status: ${updateError.message}`);
         }
 
-        processed++;
+        return { success: true, externalId: item.external_id };
       } catch (error) {
-        errors++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        errorDetails.push({ externalId: item.external_id, message: errorMessage });
 
         // Update status to failed
         await supabase
@@ -188,6 +190,23 @@ serve(async (req) => {
             updated_at: new Date().toISOString()
           })
           .eq('id', item.id);
+
+        return { success: false, externalId: item.external_id, error: errorMessage };
+      }
+    };
+
+    // Process in batches of PARALLEL_CONCURRENCY
+    for (let i = 0; i < items.length; i += PARALLEL_CONCURRENCY) {
+      const batch = items.slice(i, i + PARALLEL_CONCURRENCY);
+      const results = await Promise.all(batch.map(processItem));
+      
+      for (const result of results) {
+        if (result.success) {
+          processed++;
+        } else {
+          errors++;
+          errorDetails.push({ externalId: result.externalId, message: result.error || 'Unknown error' });
+        }
       }
     }
 
