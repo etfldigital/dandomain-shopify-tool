@@ -163,20 +163,70 @@ serve(async (req) => {
 
         // Process one batch
         const startTime = Date.now();
-        const response = await fetch(`${supabaseUrl}/functions/v1/shopify-upload`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabaseServiceKey}`,
-          },
-          body: JSON.stringify({
-            projectId: job.project_id,
-            entityType: job.entity_type,
-            batchSize: job.batch_size,
-          }),
-        });
+        let result: Record<string, any>;
+        
+        try {
+          const response = await fetch(`${supabaseUrl}/functions/v1/shopify-upload`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseServiceKey}`,
+            },
+            body: JSON.stringify({
+              projectId: job.project_id,
+              entityType: job.entity_type,
+              batchSize: job.batch_size,
+            }),
+          });
 
-        const result = await response.json();
+          const responseText = await response.text();
+          
+          // Try to parse as JSON, handle HTML error pages
+          try {
+            result = JSON.parse(responseText);
+          } catch (parseError) {
+            console.error('Failed to parse shopify-upload response:', responseText.substring(0, 200));
+            throw new Error(`shopify-upload returned invalid JSON: ${responseText.substring(0, 100)}`);
+          }
+          
+          if (!response.ok) {
+            throw new Error(result.error || `shopify-upload failed with status ${response.status}`);
+          }
+        } catch (fetchError) {
+          console.error('shopify-upload call failed:', fetchError);
+          
+          // Update job with error and retry after delay
+          await supabase
+            .from('upload_jobs')
+            .update({
+              last_heartbeat_at: new Date().toISOString(),
+              error_count: job.error_count + 1,
+            })
+            .eq('id', jobId);
+          
+          // Retry after 5 seconds
+          setTimeout(async () => {
+            try {
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId, action: 'process' }),
+              });
+            } catch (e) {
+              console.error('Failed to retry after error:', e);
+            }
+          }, 5000);
+          
+          return new Response(JSON.stringify({
+            success: false,
+            error: fetchError instanceof Error ? fetchError.message : 'Unknown fetch error',
+            retrying: true,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
         const elapsed = Date.now() - startTime;
         const itemsProcessed = (result.processed || 0) + (result.skipped || 0);
         const itemsPerMinute = elapsed > 0 ? (itemsProcessed / (elapsed / 60000)) : 0;
