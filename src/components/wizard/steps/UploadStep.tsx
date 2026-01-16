@@ -64,6 +64,9 @@ interface ErrorDetail {
   message: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type UploadJobRaw = any;
+
 interface UploadJob {
   id: string;
   project_id: string;
@@ -83,6 +86,26 @@ interface UploadJob {
   last_heartbeat_at: string | null;
   is_test_mode: boolean;
 }
+
+const toUploadJob = (raw: UploadJobRaw): UploadJob => ({
+  id: raw.id,
+  project_id: raw.project_id,
+  entity_type: raw.entity_type as EntityType,
+  status: raw.status,
+  total_count: raw.total_count ?? 0,
+  processed_count: raw.processed_count ?? 0,
+  error_count: raw.error_count ?? 0,
+  skipped_count: raw.skipped_count ?? 0,
+  items_per_minute: raw.items_per_minute ?? null,
+  batch_size: raw.batch_size ?? 10,
+  error_details: raw.error_details as ErrorDetail[] | null,
+  created_at: raw.created_at,
+  started_at: raw.started_at,
+  completed_at: raw.completed_at,
+  current_batch: raw.current_batch ?? 1,
+  last_heartbeat_at: raw.last_heartbeat_at,
+  is_test_mode: raw.is_test_mode ?? false,
+});
 
 interface StatusCounts {
   pending: number;
@@ -184,11 +207,12 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
         (payload) => {
           console.log('Job update:', payload);
           if (payload.eventType === 'INSERT') {
-            setJobs(prev => [...prev, payload.new as UploadJob]);
+            setJobs(prev => [...prev, toUploadJob(payload.new)]);
           } else if (payload.eventType === 'UPDATE') {
-            setJobs(prev => prev.map(j => j.id === payload.new.id ? payload.new as UploadJob : j));
+            const updated = toUploadJob(payload.new);
+            setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
           } else if (payload.eventType === 'DELETE') {
-            setJobs(prev => prev.filter(j => j.id !== payload.old.id));
+            setJobs(prev => prev.filter(j => j.id !== (payload.old as { id: string }).id));
           }
           // Also refresh status counts periodically
           fetchStatusCounts();
@@ -229,7 +253,7 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
       .order('created_at', { ascending: true });
     
     if (data) {
-      setJobs(data as unknown as UploadJob[]);
+      setJobs(data.map(toUploadJob));
     }
   };
 
@@ -298,21 +322,11 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
 
   const handleRetry = async () => {
     // Reset failed items to pending for each entity type
-    const entityTypes: EntityType[] = ['products', 'customers', 'orders', 'categories', 'pages'];
-    
-    for (const entityType of entityTypes) {
-      if (entityType === 'products') {
-        await supabase.from('canonical_products').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
-      } else if (entityType === 'customers') {
-        await supabase.from('canonical_customers').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
-      } else if (entityType === 'orders') {
-        await supabase.from('canonical_orders').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
-      } else if (entityType === 'categories') {
-        await supabase.from('canonical_categories').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
-      } else if (entityType === 'pages') {
-        await supabase.from('canonical_pages').update({ status: 'pending' as const, error_message: null }).eq('project_id', project.id).eq('status', 'failed');
-      }
-    }
+    await supabase.from('canonical_products').update({ status: 'pending', error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+    await supabase.from('canonical_customers').update({ status: 'pending', error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+    await supabase.from('canonical_orders').update({ status: 'pending', error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+    await supabase.from('canonical_categories').update({ status: 'pending', error_message: null }).eq('project_id', project.id).eq('status', 'failed');
+    await supabase.from('canonical_pages').update({ status: 'pending', error_message: null }).eq('project_id', project.id).eq('status', 'failed');
 
     await fetchStatusCounts();
     await handleStartUpload(false);
