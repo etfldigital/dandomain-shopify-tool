@@ -8,13 +8,14 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// AGGRESSIVE PROFILE: ~150-200 items/minute
-// 8 parallel connections, 100ms base delay with intelligent backoff
-const SHOPIFY_MIN_DELAY_MS = 100;
+// OPTIMIZED BALANCED PROFILE: ~80-100 items/minute STABLE
+// 3 parallel connections, 400ms base delay - stays below Shopify rate limits
+// This is the fastest sustainable speed without triggering 429s
+const SHOPIFY_MIN_DELAY_MS = 400;
 let lastShopifyRequest = 0;
 
-// Concurrency for parallel uploads - 8 concurrent for aggressive throughput
-const PARALLEL_CONCURRENCY = 8;
+// Concurrency for parallel uploads - 3 concurrent for optimal throughput
+const PARALLEL_CONCURRENCY = 3;
 
 // Track rate limit state for intelligent backoff
 let consecutiveRateLimits = 0;
