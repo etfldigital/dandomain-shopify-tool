@@ -386,6 +386,15 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
     return `${minutes.toLocaleString('da-DK')} min`;
   };
 
+  const formatHeartbeat = (seconds: number) => {
+    if (seconds >= 60) {
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${mins}m ${secs}s siden`;
+    }
+    return `${seconds}s siden`;
+  };
+
   // Get current activity message
   const getActivityMessage = () => {
     if (isStarting) return 'Starter upload…';
@@ -433,9 +442,9 @@ export function UploadStep({ project, onUpdateProject, onNext }: UploadStepProps
                 <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
-                <span className="flex items-center gap-1.5">
+              <span className="flex items-center gap-1.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
-                  {secondsSinceHeartbeat}s siden
+                  {formatHeartbeat(secondsSinceHeartbeat)}
                 </span>
                 {currentSpeed > 0 && (
                   <span className="text-primary font-medium">
