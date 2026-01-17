@@ -316,13 +316,20 @@ serve(async (req) => {
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
         const elapsed = Date.now() - startTime;
-        const itemsProcessed = (result.processed || 0) + (result.skipped || 0);
-        const batchItemsPerMinute = elapsed > 0 && itemsProcessed > 0 
-          ? (itemsProcessed / (elapsed / 60000)) 
+
+        // Count ALL attempted items (success + skipped + failed).
+        // This is critical for correct progress + realistic speed when many items fail validation.
+        const itemsAttempted = (result.processed || 0) + (result.skipped || 0) + (result.errors || 0);
+        const itemsSucceeded = (result.processed || 0) + (result.skipped || 0);
+
+        const batchItemsPerMinute = elapsed > 0 && itemsAttempted > 0
+          ? (itemsAttempted / (elapsed / 60000))
           : 0;
-        
-        console.log(`[WORKER] Batch result: processed=${result.processed}, skipped=${result.skipped}, errors=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min`);
-        
+
+        console.log(
+          `[WORKER] Batch result: succeeded=${itemsSucceeded} (processed=${result.processed}, skipped=${result.skipped}), failed=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min`
+        );
+
         // Calculate rolling average speed (weighted: 70% previous, 30% current batch)
         // Always update if we have a valid batch speed
         let itemsPerMinute: number | null = null;
@@ -338,7 +345,7 @@ serve(async (req) => {
           // Keep previous if batch had no items
           itemsPerMinute = job.items_per_minute;
         }
-        
+
         console.log(`[WORKER] Speed calculation: previous=${job.items_per_minute?.toFixed(1) || 'null'}, batch=${batchItemsPerMinute.toFixed(1)}, new=${itemsPerMinute?.toFixed(1) || 'null'}`);
 
         // Merge error details
@@ -348,7 +355,8 @@ serve(async (req) => {
 
         // Update job progress
         const updateData: Record<string, any> = {
-          processed_count: job.processed_count + itemsProcessed,
+          // IMPORTANT: processed_count must include failures too, otherwise the progress bar never reaches 100%
+          processed_count: job.processed_count + itemsAttempted,
           error_count: job.error_count + (result.errors || 0),
           skipped_count: job.skipped_count + (result.skipped || 0),
           items_per_minute: itemsPerMinute,
@@ -359,7 +367,7 @@ serve(async (req) => {
 
         // Check if this entity is complete
         const hasMore = result.hasMore && !job.is_test_mode;
-        console.log(`[WORKER] job ${jobId} batchProcessed=${itemsProcessed} elapsedMs=${elapsed} hasMore=${hasMore}`);
+        console.log(`[WORKER] job ${jobId} batchAttempted=${itemsAttempted} elapsedMs=${elapsed} hasMore=${hasMore}`);
         if (!hasMore) {
           updateData.status = 'completed';
           updateData.completed_at = new Date().toISOString();
@@ -458,7 +466,8 @@ serve(async (req) => {
 
         return new Response(JSON.stringify({
           success: true,
-          processed: itemsProcessed,
+          attempted: itemsAttempted,
+          succeeded: itemsSucceeded,
           errors: result.errors || 0,
           hasMore,
           jobStatus: updateData.status || 'running',

@@ -154,7 +154,7 @@ function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProp
             Trial butik
           </Badge>
           <span className="text-muted-foreground">
-            Begrænset til ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
+            Observeret hastighed: ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
           </span>
         </div>
         <TooltipProvider>
@@ -165,10 +165,10 @@ function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProp
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs">
-              <p className="font-medium mb-1">Trial butik rate limit</p>
+              <p className="font-medium mb-1">Hastighed = ikke kun "2 req/sek"</p>
               <p className="text-sm text-muted-foreground">
-                Shopify begrænser trial/development butikker til meget lave upload-hastigheder. 
-                Opgrader til en betalt plan for at fjerne denne begrænsning og øge hastigheden 10-20x.
+                2 requests/sek er en API-kald grænse. Én ordre kræver ofte flere API-kald (opslag af kunde/produkter + oprettelse)
+                og hvis mange ordrer fejler validering, falder den effektive hastighed.
               </p>
             </TooltipContent>
           </Tooltip>
