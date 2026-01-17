@@ -1359,20 +1359,45 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
   });
 
   if (!response.ok) {
-    // Check if customer already exists
-    if (response.status === 422 && body.includes('email')) {
-      // Try to find existing customer
-      const { response: searchResponse, body: searchBody } = await shopifyFetch(
-        `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(data.email)}`,
-        {
-          headers: { 'X-Shopify-Access-Token': token },
+    // Check if customer already exists (duplicate email or phone)
+    if (response.status === 422) {
+      const isDuplicateEmail = body.includes('email') && body.toLowerCase().includes('taken');
+      const isDuplicatePhone = body.includes('phone') && body.toLowerCase().includes('taken');
+      
+      if (isDuplicateEmail || isDuplicatePhone) {
+        // Try to find existing customer by email first, then phone
+        let existingCustomerId: string | null = null;
+        
+        if (data.email) {
+          const { response: searchResponse, body: searchBody } = await shopifyFetch(
+            `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(data.email)}`,
+            { headers: { 'X-Shopify-Access-Token': token } }
+          );
+          if (searchResponse.ok) {
+            const searchResult = JSON.parse(searchBody);
+            if (searchResult.customers && searchResult.customers.length > 0) {
+              existingCustomerId = String(searchResult.customers[0].id);
+            }
+          }
         }
-      );
-      if (searchResponse.ok) {
-        const searchResult = JSON.parse(searchBody);
-        if (searchResult.customers && searchResult.customers.length > 0) {
-          // Return as existing - this customer was already in Shopify
-          return { shopifyId: String(searchResult.customers[0].id), wasExisting: true };
+        
+        // If not found by email, try phone
+        if (!existingCustomerId && customerPhone) {
+          const { response: searchResponse, body: searchBody } = await shopifyFetch(
+            `${shopifyUrl}/customers/search.json?query=phone:${encodeURIComponent(customerPhone)}`,
+            { headers: { 'X-Shopify-Access-Token': token } }
+          );
+          if (searchResponse.ok) {
+            const searchResult = JSON.parse(searchBody);
+            if (searchResult.customers && searchResult.customers.length > 0) {
+              existingCustomerId = String(searchResult.customers[0].id);
+            }
+          }
+        }
+        
+        if (existingCustomerId) {
+          console.log(`[CUSTOMER] Found existing customer ${existingCustomerId} (duplicate ${isDuplicateEmail ? 'email' : 'phone'})`);
+          return { shopifyId: existingCustomerId, wasExisting: true };
         }
       }
     }
