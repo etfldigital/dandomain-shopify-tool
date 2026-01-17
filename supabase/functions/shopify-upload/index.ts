@@ -17,19 +17,20 @@ let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
 // Base delay between requests - gives Shopify time to process
-const SHOPIFY_MIN_DELAY_MS = 300;
+// Reduced from 300ms to 100ms to increase throughput
+const SHOPIFY_MIN_DELAY_MS = 100;
 let lastShopifyRequest = 0;
 
 // Concurrency settings per entity type
-// Customers need 1-2 API calls each (create + potential search), so use lower concurrency
-// Products/Categories do batch operations internally
-// Orders with good caching can handle higher parallelism - each order is ~1 API call when cached
+// Shopify leaky bucket: 40 requests, 2/sec refill = can sustain ~2 req/sec average
+// But we can burst up to 40 requests, so higher concurrency with smart bucket tracking works
+// Orders with good caching need only 1 API call each when customer/product IDs are cached
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 1,    // 1 at a time to avoid rate limits (each customer = 1-2 API calls)
-  orders: 5,       // Orders use caching, most are just 1 API call each
-  products: 2,     // Products are batched by title internally
+  customers: 2,    // 2 at a time (each customer = 1-2 API calls)
+  orders: 10,      // Orders use caching, most are just 1 API call each - increased from 5
+  products: 3,     // Products are batched by title internally
   categories: 1,   // Categories are sequential due to dependency
-  pages: 2,
+  pages: 3,
 };
 
 // Track rate limit state for intelligent backoff
