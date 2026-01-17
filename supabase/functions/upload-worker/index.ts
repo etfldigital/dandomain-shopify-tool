@@ -366,41 +366,57 @@ serve(async (req) => {
         };
 
         // Check if this entity is complete
-        // CRITICAL: Job is only complete when BOTH conditions are met:
-        // 1. shopify-upload reports no more pending items (hasMore=false)
-        // 2. processed_count has actually reached total_count (progress bar is 100%)
+        // CRITICAL: Job completion is determined SOLELY by whether there are pending items left in the database
+        // This ensures the progress bar reaches 100% before moving to next entity
         const hasMore = result.hasMore && !job.is_test_mode;
         const newProcessedCount = job.processed_count + itemsAttempted;
-        const progressComplete = newProcessedCount >= job.total_count;
         
-        console.log(`[WORKER] job ${jobId} batchAttempted=${itemsAttempted} elapsedMs=${elapsed} hasMore=${hasMore} processed=${newProcessedCount}/${job.total_count} progressComplete=${progressComplete}`);
+        // ALWAYS check actual pending count from database - this is the source of truth
+        const tableName = `canonical_${job.entity_type}`;
+        let pendingQuery = supabase
+          .from(tableName)
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', job.project_id)
+          .eq('status', 'pending');
         
-        // Only mark as completed when both hasMore=false AND we've processed all items
-        if (!hasMore && progressComplete) {
+        // Categories need exclude filter
+        if (job.entity_type === 'categories') {
+          pendingQuery = pendingQuery.eq('exclude', false);
+        }
+        
+        const { count: actualPending } = await pendingQuery;
+        
+        // Get actual uploaded + failed count for accurate progress
+        const { count: actualUploaded } = await supabase
+          .from(tableName)
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', job.project_id)
+          .eq('status', 'uploaded');
+          
+        const { count: actualFailed } = await supabase
+          .from(tableName)
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', job.project_id)
+          .eq('status', 'failed');
+        
+        const actualTotal = (actualPending || 0) + (actualUploaded || 0) + (actualFailed || 0);
+        const actualProcessed = (actualUploaded || 0) + (actualFailed || 0);
+        
+        console.log(`[WORKER] job ${jobId} batchAttempted=${itemsAttempted} elapsedMs=${elapsed} hasMore=${hasMore} pending=${actualPending} uploaded=${actualUploaded} failed=${actualFailed}`);
+        
+        // Sync processed_count and total_count with actual database state
+        updateData.processed_count = actualProcessed + (job.skipped_count || 0);
+        updateData.total_count = actualTotal + (job.skipped_count || 0);
+        
+        // Job is ONLY complete when there are no more pending items (0 pending = 100% progress bar)
+        if (actualPending === 0 || (!hasMore && job.is_test_mode)) {
+          console.log(`[WORKER] Job ${jobId} completed: pending=0 (or test mode)`);
           updateData.status = 'completed';
           updateData.completed_at = new Date().toISOString();
-        } else if (!hasMore && !progressComplete) {
-          // Edge case: shopify-upload says no more pending, but processed_count < total_count
-          // This can happen if items were already uploaded before this job started
-          // Re-sync total_count to actual pending + already processed
-          const tableName = `canonical_${job.entity_type}`;
-          const { count: actualPending } = await supabase
-            .from(tableName)
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', job.project_id)
-            .eq('status', 'pending');
-          
-          if (actualPending && actualPending > 0) {
-            // There ARE still pending items - continue processing
-            console.log(`[WORKER] Mismatch detected: hasMore=false but ${actualPending} pending items remain. Continuing.`);
-            // Don't mark as completed, schedule another batch
-          } else {
-            // No pending items left - job is truly complete, adjust total_count to match reality
-            console.log(`[WORKER] No pending items remain, adjusting total_count from ${job.total_count} to ${newProcessedCount}`);
-            updateData.total_count = newProcessedCount;
-            updateData.status = 'completed';
-            updateData.completed_at = new Date().toISOString();
-          }
+        } else if (!hasMore && (actualPending || 0) > 0) {
+          // shopify-upload says no more, but database shows pending items remain
+          // This is a transient state - schedule another batch to pick up remaining items
+          console.log(`[WORKER] Mismatch: hasMore=false but ${actualPending || 0} pending items remain. Scheduling retry.`);
         }
 
         await supabase

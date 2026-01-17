@@ -700,31 +700,33 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
-            // Always use statusCounts as source of truth - this is the actual count from the database
-            const totalCount = counts.pending + counts.uploaded + counts.failed;
-
-            // Skipped items from job (these are items that already existed in Shopify)
+            
+            // Database counts are the SOURCE OF TRUTH for progress
+            const totalFromDb = counts.pending + counts.uploaded + counts.failed;
             const skipped = job?.skipped_count || 0;
-            const errors = job?.error_count || counts.failed;
-
-            // For progress display: uploaded + skipped = "completed" items
-            // Skipped items already exist in Shopify, so they count as done
-            const processedActual = counts.uploaded + skipped;
+            const errors = counts.failed; // Use DB failed count, not job error_count
+            
+            // CRITICAL: Progress is based on database state
+            // - Processed = uploaded + failed (items no longer pending)
+            // - Total = all items in database + skipped (for percentage calculation)
+            const processedFromDb = counts.uploaded + counts.failed;
+            const total = totalFromDb + skipped;
+            const processedActual = processedFromDb + skipped;
+            
+            // Live estimation for smooth UI during uploads
             const processedLive = job && job.status === 'running' 
-              ? getLiveProcessedCount(job, job.processed_count)
+              ? getLiveProcessedCount(job, processedActual)
               : processedActual;
             const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
-
-            // Total should also include skipped items for accurate percentage
-            const total = totalCount + skipped;
             
-            // Job is complete when there are no pending items left
+            // CRITICAL: Job is ONLY complete when pending = 0
+            // This ensures the progress bar reaches 100% before showing green checkmark
             const isComplete = counts.pending === 0 && total > 0;
-            const status = job?.status === 'completed' || isComplete 
+            const status = isComplete 
               ? 'completed' 
-              : job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
+              : job?.status || (counts.pending === 0 && total > 0 ? 'completed' : 'pending');
 
-            // Progress: (uploaded + skipped) / (total + skipped) = 100% when done
+            // Progress percentage: when pending=0, this will be 100%
             const percent = total > 0 ? (processedActual / total) * 100 : 0;
 
             return (
@@ -752,7 +754,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </div>
                     <div>
                       <span className="font-medium">{label}</span>
-                      {!isUploading && totalCount > 0 && (
+                      {!isUploading && totalFromDb > 0 && (
                         <div className="text-xs text-muted-foreground flex gap-2">
                           {counts.pending > 0 && <span>{counts.pending} pending</span>}
                           {counts.uploaded > 0 && <span className="text-green-600">{counts.uploaded} uploadet</span>}
@@ -829,7 +831,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         <DropdownMenuContent align="end" className="bg-popover">
                           <DropdownMenuItem 
                             onClick={() => handleResetRequest(type, 'all')}
-                            disabled={totalCount === 0}
+                            disabled={totalFromDb === 0}
                           >
                             <RotateCcw className="w-4 h-4 mr-2" />
                             Nulstil alle til pending
