@@ -16,22 +16,22 @@ const SHOPIFY_LEAK_RATE = 2; // requests per second
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
-// Base delay between requests - gives Shopify time to process
-// Increased to 600ms to avoid 429 storm on trial stores (trial stores have ~1-2 orders/min hard limit)
-// On paid stores, this is more conservative but stable
-const SHOPIFY_MIN_DELAY_MS = 600;
+// Base delay between requests - optimized based on Shopify's leaky bucket algorithm
+// Shopify: 40 request bucket, 2 requests/sec leak rate = 500ms ideal spacing
+// We use 350ms as base since we also track bucket state and wait when needed
+const SHOPIFY_MIN_DELAY_MS = 350;
 let lastShopifyRequest = 0;
 
-// Concurrency settings per entity type
-// IMPORTANT: Orders set to 1 to avoid 429 rate-limit storms
-// Trial stores have extremely low order limits (~1-2/min)
-// Paid stores can handle more, but sequential is more stable
+// Concurrency settings per entity type - optimized for throughput
+// Shopify's bucket (40 requests) allows multiple concurrent requests if spaced correctly
+// Orders: Increased to 3 - each order = 1-3 API calls, bucket can handle this
+// Trial stores have lower limits but our bucket tracking + backoff handles this automatically
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 2,    // 2 at a time (each customer = 1-2 API calls)
-  orders: 1,       // Sequential to avoid 429 storm - trial stores have ~1-2/min hard limit
-  products: 3,     // Products are batched by title internally
-  categories: 1,   // Categories are sequential due to dependency
-  pages: 3,
+  customers: 3,    // 3 at a time (each customer = 1-2 API calls)
+  orders: 3,       // Increased from 1 to 3 - bucket tracking handles rate limits
+  products: 4,     // Products are batched by title internally
+  categories: 2,   // Categories have dependencies but can do 2 safely
+  pages: 4,
 };
 
 // Track rate limit state for intelligent backoff

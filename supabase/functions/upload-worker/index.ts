@@ -441,7 +441,7 @@ serve(async (req) => {
           throw new Error('jobId or projectId required for resume action');
         }
 
-        // Find paused job(s) to resume
+        // Find ALL paused jobs to resume (not just the first one!)
         let query = supabase
           .from('upload_jobs')
           .select('*')
@@ -454,38 +454,42 @@ serve(async (req) => {
         }
 
         const { data: pausedJobs } = await query;
+        const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
 
         if (pausedJobs && pausedJobs.length > 0) {
-          const jobToResume = pausedJobs[0];
+          console.log(`[WORKER] Resuming ${pausedJobs.length} paused jobs`);
           
-          await supabase
-            .from('upload_jobs')
-            .update({ 
-              status: 'running',
-              last_heartbeat_at: new Date().toISOString()
-            })
-            .eq('id', jobToResume.id);
+          // Resume ALL paused jobs, not just the first one
+          for (const jobToResume of pausedJobs) {
+            await supabase
+              .from('upload_jobs')
+              .update({ 
+                status: 'running',
+                last_heartbeat_at: new Date().toISOString()
+              })
+              .eq('id', jobToResume.id);
 
-          // Trigger processing (await so it doesn't get dropped on shutdown)
-          const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-          try {
-            await fetch(functionUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${supabaseServiceKey}`,
-              },
-              body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
-            });
-            console.log(`[WORKER] Resumed job ${jobToResume.id}`);
-          } catch (e) {
-            console.error('[WORKER] Failed to trigger resume processing:', e);
+            // Trigger processing for each job
+            try {
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
+              });
+              console.log(`[WORKER] Resumed job ${jobToResume.id} (${jobToResume.entity_type})`);
+            } catch (e) {
+              console.error(`[WORKER] Failed to trigger resume for job ${jobToResume.id}:`, e);
+            }
           }
         }
 
         return new Response(JSON.stringify({
           success: true,
-          message: 'Upload resumed',
+          message: `Resumed ${pausedJobs?.length || 0} jobs`,
+          resumedJobs: pausedJobs?.length || 0,
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
