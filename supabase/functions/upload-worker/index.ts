@@ -126,12 +126,18 @@ serve(async (req) => {
           }
         }
 
-        // Start ALL jobs in parallel - each entity type processes independently
-        // This allows customers, orders, products etc. to upload simultaneously
+        // SEQUENTIAL PROCESSING: Start only the FIRST job
+        // Order: pages → categories → products → customers → orders
+        // This ensures:
+        // 1. Customers are fully uploaded before orders start
+        // 2. Each entity type gets the full rate limit budget
+        // 3. No conflicts or race conditions between entity types
         const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
         
-        for (const job of jobs) {
-          // Mark job as running
+        if (jobs.length > 0) {
+          const firstJob = jobs[0];
+          
+          // Mark first job as running
           await supabase
             .from('upload_jobs')
             .update({ 
@@ -139,9 +145,9 @@ serve(async (req) => {
               started_at: new Date().toISOString(),
               last_heartbeat_at: new Date().toISOString()
             })
-            .eq('id', job.id);
+            .eq('id', firstJob.id);
 
-          // Trigger processing for this job
+          // Trigger processing for first job only
           try {
             await fetch(functionUrl, {
               method: 'POST',
@@ -149,11 +155,11 @@ serve(async (req) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseServiceKey}`,
               },
-              body: JSON.stringify({ jobId: job.id, action: 'process' }),
+              body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
             });
-            console.log(`[WORKER] Started parallel job ${job.id} (${job.entity_type})`);
+            console.log(`[WORKER] Started sequential job ${firstJob.id} (${firstJob.entity_type}), ${jobs.length - 1} more jobs waiting`);
           } catch (e) {
-            console.error(`[WORKER] Failed to trigger ${job.entity_type} processing:`, e);
+            console.error(`[WORKER] Failed to trigger ${firstJob.entity_type} processing:`, e);
           }
         }
 
@@ -388,20 +394,65 @@ serve(async (req) => {
             scheduleNext().catch((e) => console.error('[WORKER] Failed to schedule next batch:', e));
           }
         } else {
-          // This entity is done - check if ALL jobs are completed
-          const { count: runningOrPending } = await supabase
+          // This entity is done - check for next pending job to start (SEQUENTIAL PROCESSING)
+          const { data: nextPendingJob } = await supabase
             .from('upload_jobs')
-            .select('*', { count: 'exact', head: true })
+            .select('*')
             .eq('project_id', job.project_id)
-            .in('status', ['running', 'pending', 'paused']);
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
 
-          if (!runningOrPending || runningOrPending === 0) {
-            // All jobs completed - update project status
-            console.log(`[WORKER] All jobs completed for project ${job.project_id}`);
+          if (nextPendingJob) {
+            // Start the next job in sequence
+            console.log(`[WORKER] Job ${job.entity_type} completed, starting next: ${nextPendingJob.entity_type}`);
+            
             await supabase
-              .from('projects')
-              .update({ status: 'completed' })
-              .eq('id', job.project_id);
+              .from('upload_jobs')
+              .update({ 
+                status: 'running', 
+                started_at: new Date().toISOString(),
+                last_heartbeat_at: new Date().toISOString()
+              })
+              .eq('id', nextPendingJob.id);
+
+            const startNext = async () => {
+              await sleep(WORKER_SCHEDULE_DELAY_MS);
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId: nextPendingJob.id, action: 'process' }),
+              });
+              console.log(`[WORKER] Started next sequential job ${nextPendingJob.id} (${nextPendingJob.entity_type})`);
+            };
+
+            const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+            if (typeof waitUntil === 'function') {
+              waitUntil(startNext());
+            } else {
+              startNext().catch((e) => console.error('[WORKER] Failed to start next job:', e));
+            }
+          } else {
+            // No more pending jobs - check if ALL jobs are completed
+            const { count: runningOrPending } = await supabase
+              .from('upload_jobs')
+              .select('*', { count: 'exact', head: true })
+              .eq('project_id', job.project_id)
+              .in('status', ['running', 'pending', 'paused']);
+
+            if (!runningOrPending || runningOrPending === 0) {
+              // All jobs completed - update project status
+              console.log(`[WORKER] All jobs completed for project ${job.project_id}`);
+              await supabase
+                .from('projects')
+                .update({ status: 'completed' })
+                .eq('id', job.project_id);
+            }
           }
         }
 
