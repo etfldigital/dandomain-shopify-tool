@@ -23,13 +23,34 @@ let consecutiveRateLimits = 0;
 let backoffMultiplier = 1;
 
 /**
- * Rate-limited fetch wrapper for Shopify API with automatic retry on 429.
+ * Check if an error is a transient network error that should be retried.
+ */
+function isTransientNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('connection reset') ||
+    message.includes('connection refused') ||
+    message.includes('connection closed') ||
+    message.includes('network error') ||
+    message.includes('timeout') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('etimedout') ||
+    message.includes('socket hang up') ||
+    message.includes('aborted') ||
+    message.includes('failed to fetch')
+  );
+}
+
+/**
+ * Rate-limited fetch wrapper for Shopify API with automatic retry on 429 and transient network errors.
  * Returns { response, body } to avoid double-consuming the response body.
  */
 async function shopifyFetch(
   url: string,
   options: RequestInit,
-  maxRetries = 3
+  maxRetries = 5
 ): Promise<{ response: Response; body: string }> {
   // Enforce minimum delay between requests with adaptive backoff
   const effectiveDelay = SHOPIFY_MIN_DELAY_MS * backoffMultiplier;
@@ -41,39 +62,65 @@ async function shopifyFetch(
   lastShopifyRequest = Date.now();
 
   let attempt = 0;
+  let lastError: Error | null = null;
+
   while (attempt < maxRetries) {
-    const response = await fetch(url, options);
-    const body = await response.text();
+    try {
+      const response = await fetch(url, options);
+      const body = await response.text();
 
-    // Handle rate limiting with intelligent backoff
-    if (response.status === 429) {
-      attempt++;
-      consecutiveRateLimits++;
-      // Increase backoff multiplier when we hit rate limits
-      backoffMultiplier = Math.min(backoffMultiplier * 1.5, 5);
+      // Handle rate limiting with intelligent backoff
+      if (response.status === 429) {
+        attempt++;
+        consecutiveRateLimits++;
+        // Increase backoff multiplier when we hit rate limits
+        backoffMultiplier = Math.min(backoffMultiplier * 1.5, 5);
+        
+        // Check Retry-After header, default to exponential backoff
+        const retryAfter = response.headers.get('Retry-After');
+        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(2000 * Math.pow(2, attempt), 30000);
+        console.log(`Rate limited (429), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+        await sleep(waitTime);
+        lastShopifyRequest = Date.now();
+        continue;
+      }
       
-      // Check Retry-After header, default to exponential backoff
-      const retryAfter = response.headers.get('Retry-After');
-      const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(2000 * Math.pow(2, attempt), 30000);
-      console.log(`Rate limited (429), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
-      await sleep(waitTime);
-      continue;
-    }
-    
-    // Success - reduce backoff if we've been successful
-    if (response.ok) {
-      consecutiveRateLimits = 0;
-      backoffMultiplier = Math.max(1, backoffMultiplier * 0.9);
-    }
+      // Success - reduce backoff if we've been successful
+      if (response.ok) {
+        consecutiveRateLimits = 0;
+        backoffMultiplier = Math.max(1, backoffMultiplier * 0.9);
+      }
 
-    return { response, body };
+      return { response, body };
+    } catch (error) {
+      // Handle transient network errors with exponential backoff
+      if (isTransientNetworkError(error)) {
+        attempt++;
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const waitTime = Math.min(2000 * Math.pow(2, attempt), 60000); // Max 60 seconds
+        console.warn(`[shopifyFetch] Transient network error (attempt ${attempt}/${maxRetries}): ${lastError.message}. Retrying in ${waitTime}ms...`);
+        await sleep(waitTime);
+        lastShopifyRequest = Date.now();
+        continue;
+      }
+      // Non-transient error - throw immediately
+      throw error;
+    }
   }
 
   // Final attempt after all retries exhausted
-  lastShopifyRequest = Date.now();
-  const response = await fetch(url, options);
-  const body = await response.text();
-  return { response, body };
+  try {
+    lastShopifyRequest = Date.now();
+    const response = await fetch(url, options);
+    const body = await response.text();
+    return { response, body };
+  } catch (finalError) {
+    // If final attempt also fails with a transient error, throw with more context
+    if (lastError) {
+      throw new Error(`Failed after ${maxRetries} retries. Last error: ${lastError.message}`);
+    }
+    throw finalError;
+  }
 }
 
 interface ShopifyUploadRequest {
