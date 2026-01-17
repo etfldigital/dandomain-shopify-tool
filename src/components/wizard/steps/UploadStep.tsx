@@ -703,20 +703,28 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             // Always use statusCounts as source of truth - this is the actual count from the database
             const totalCount = counts.pending + counts.uploaded + counts.failed;
 
-            // For progress display, use counts.uploaded as the "processed" count
-            // This reflects actual database state, not job iterations
-            const processedActual = counts.uploaded;
+            // Skipped items from job (these are items that already existed in Shopify)
+            const skipped = job?.skipped_count || 0;
+            const errors = job?.error_count || counts.failed;
+
+            // For progress display: uploaded + skipped = "completed" items
+            // Skipped items already exist in Shopify, so they count as done
+            const processedActual = counts.uploaded + skipped;
             const processedLive = job && job.status === 'running' 
               ? getLiveProcessedCount(job, job.processed_count)
               : processedActual;
             const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
 
-            // Always use totalCount from statusCounts - this is the fixed, accurate total
-            const total = totalCount;
-            const errors = job?.error_count || counts.failed;
-            const skipped = job?.skipped_count || 0;
-            const status = job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
+            // Total should also include skipped items for accurate percentage
+            const total = totalCount + skipped;
+            
+            // Job is complete when there are no pending items left
+            const isComplete = counts.pending === 0 && total > 0;
+            const status = job?.status === 'completed' || isComplete 
+              ? 'completed' 
+              : job?.status || (counts.uploaded === totalCount && totalCount > 0 ? 'completed' : 'pending');
 
+            // Progress: (uploaded + skipped) / (total + skipped) = 100% when done
             const percent = total > 0 ? (processedActual / total) * 100 : 0;
 
             return (
@@ -778,9 +786,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       )
                     )}
                     {skipped > 0 && (
-                      <span className="flex items-center gap-1 text-amber-600 text-sm">
-                        {skipped} skipped
-                      </span>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="flex items-center gap-1 text-amber-600 text-sm cursor-help">
+                              <SkipForward className="w-3 h-3" />
+                              {skipped.toLocaleString('da-DK')} eksisterer allerede
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">
+                            <p className="font-medium mb-1">Skipped: Findes allerede i Shopify</p>
+                            <p className="text-sm text-muted-foreground">
+                              Disse {label.toLowerCase()} blev ikke oprettet igen, fordi de allerede eksisterer i Shopify 
+                              (matchet på email, telefon eller andet unikt felt).
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     )}
                     {errors > 0 && (
                       <span className="flex items-center gap-1 text-destructive text-sm">
@@ -791,7 +813,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     {isUploading && (
                       <span className="text-sm text-muted-foreground">
                         <span className="text-green-600 font-medium">
-                          {counts.uploaded.toLocaleString('da-DK')}
+                          {processedActual.toLocaleString('da-DK')}
                         </span>
                         {' / '}
                         <span>{total.toLocaleString('da-DK')}</span>
