@@ -12,13 +12,14 @@ const WORKER_SCHEDULE_DELAY_MS = 500;
 const WORKER_RETRY_DELAY_MS = 5000;
 const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
 
-// Larger batches for better throughput - 25 items per batch = ~15-20s per batch at 80-100/min
-// This reduces overhead from fetch/parse cycles while still updating UI frequently
+// Larger batches for better throughput - tuned per entity to avoid platform timeouts
+// Orders are heavier (often multiple Shopify calls per order), so keep batches smaller.
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
-    case 'orders':
       return 25;
+    case 'orders':
+      return 10;
     case 'products':
       return 25;
     case 'pages':
@@ -236,7 +237,8 @@ serve(async (req) => {
             body: JSON.stringify({
               projectId: job.project_id,
               entityType: job.entity_type,
-              batchSize: job.batch_size,
+              // IMPORTANT: use effectiveBatchSize (job.batch_size may be outdated in-memory)
+              batchSize: effectiveBatchSize,
             }),
             signal: controller.signal,
           });
@@ -244,33 +246,43 @@ serve(async (req) => {
           clearTimeout(timeout);
 
           const responseText = await response.text();
-          
-          // Try to parse as JSON, handle HTML error pages
+
+          // Try to parse as JSON, handle empty/HTML error pages
+          if (!responseText || !responseText.trim()) {
+            throw new Error(`shopify-upload returned empty response (status ${response.status})`);
+          }
+
           try {
             result = JSON.parse(responseText);
           } catch (parseError) {
             console.error('Failed to parse shopify-upload response:', responseText.substring(0, 200));
-            throw new Error(`shopify-upload returned invalid JSON: ${responseText.substring(0, 100)}`);
+            throw new Error(`shopify-upload returned invalid JSON (status ${response.status}): ${responseText.substring(0, 100)}`);
           }
-          
+
           if (!response.ok) {
             throw new Error(result.error || `shopify-upload failed with status ${response.status}`);
           }
         } catch (fetchError) {
+          const message = fetchError instanceof Error ? fetchError.message : 'Unknown fetch error';
           console.error('shopify-upload call failed:', fetchError);
-          
-          // Update job with error and retry after delay
+
+          // Record the worker-level error so it is visible in the UI
+          const existingErrors = job.error_details || [];
+          const workerError = { externalId: '__worker__', message };
+          const mergedErrors = [...existingErrors, workerError].slice(-100);
+
+          // Update job with error and retry in the background
           await supabase
             .from('upload_jobs')
             .update({
               last_heartbeat_at: new Date().toISOString(),
               error_count: job.error_count + 1,
+              error_details: mergedErrors,
             })
             .eq('id', jobId);
-          
-          // Retry after a short delay (do NOT use setTimeout; the runtime may shut down before it fires)
-          await sleep(WORKER_RETRY_DELAY_MS);
-          try {
+
+          const scheduleRetry = async () => {
+            await sleep(WORKER_RETRY_DELAY_MS);
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
             await fetch(functionUrl, {
               method: 'POST',
@@ -281,13 +293,19 @@ serve(async (req) => {
               body: JSON.stringify({ jobId, action: 'process' }),
             });
             console.log(`[WORKER] Retrying job ${jobId} after error`);
-          } catch (e) {
-            console.error('[WORKER] Failed to retry after error:', e);
+          };
+
+          const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+          if (typeof waitUntil === 'function') {
+            waitUntil(scheduleRetry());
+          } else {
+            // Fallback (should rarely happen)
+            scheduleRetry().catch((e) => console.error('[WORKER] Failed to retry after error:', e));
           }
-          
+
           return new Response(JSON.stringify({
             success: false,
-            error: fetchError instanceof Error ? fetchError.message : 'Unknown fetch error',
+            error: message,
             retrying: true,
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
@@ -348,9 +366,9 @@ serve(async (req) => {
 
         // If more work, schedule next batch
         if (hasMore) {
-          // Small delay to avoid hammering the API
-          await sleep(WORKER_SCHEDULE_DELAY_MS);
-          try {
+          const scheduleNext = async () => {
+            // Small delay to avoid hammering the API
+            await sleep(WORKER_SCHEDULE_DELAY_MS);
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
             await fetch(functionUrl, {
               method: 'POST',
@@ -361,8 +379,13 @@ serve(async (req) => {
               body: JSON.stringify({ jobId, action: 'process' }),
             });
             console.log(`[WORKER] Scheduled next batch for job ${jobId}`);
-          } catch (e) {
-            console.error('[WORKER] Failed to schedule next batch:', e);
+          };
+
+          const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+          if (typeof waitUntil === 'function') {
+            waitUntil(scheduleNext());
+          } else {
+            scheduleNext().catch((e) => console.error('[WORKER] Failed to schedule next batch:', e));
           }
         } else {
           // This entity is done - check if ALL jobs are completed
