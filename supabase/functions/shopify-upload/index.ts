@@ -23,9 +23,10 @@ let lastShopifyRequest = 0;
 // Concurrency settings per entity type
 // Customers need 1-2 API calls each (create + potential search), so use lower concurrency
 // Products/Categories do batch operations internally
+// Orders with good caching can handle higher parallelism - each order is ~1 API call when cached
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
   customers: 1,    // 1 at a time to avoid rate limits (each customer = 1-2 API calls)
-  orders: 2,       // Orders use caching, can handle more parallelism
+  orders: 5,       // Orders use caching, most are just 1 API call each
   products: 2,     // Products are batched by title internally
   categories: 1,   // Categories are sequential due to dependency
   pages: 2,
