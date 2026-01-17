@@ -69,8 +69,8 @@ serve(async (req) => {
         for (const entityType of entitiesToProcess) {
           const tableName = `canonical_${entityType}`;
           
-          // Get pending count
-          let query = supabase
+          // Get pending count (only items that haven't been attempted)
+          let pendingQuery = supabase
             .from(tableName)
             .select('*', { count: 'exact', head: true })
             .eq('project_id', projectId)
@@ -78,10 +78,10 @@ serve(async (req) => {
           
           // Categories need exclude filter
           if (entityType === 'categories') {
-            query = query.eq('exclude', false);
+            pendingQuery = pendingQuery.eq('exclude', false);
           }
           
-          const { count: pendingCount } = await query;
+          const { count: pendingCount } = await pendingQuery;
           
           // Get already uploaded count for progress display
           const { count: uploadedCount } = await supabase
@@ -90,8 +90,21 @@ serve(async (req) => {
             .eq('project_id', projectId)
             .eq('status', 'uploaded');
 
-          const totalCount = (pendingCount || 0) + (uploadedCount || 0);
+          // Get failed count - these are considered "processed" and won't be retried automatically
+          const { count: failedCount } = await supabase
+            .from(tableName)
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', projectId)
+            .eq('status', 'failed');
+
+          // Total = all items that have been processed (uploaded + failed) + pending
+          const totalCount = (pendingCount || 0) + (uploadedCount || 0) + (failedCount || 0);
+          // Already processed = uploaded + failed
+          const alreadyProcessedCount = (uploadedCount || 0) + (failedCount || 0);
           
+          console.log(`[WORKER] Entity ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
+          
+          // Only create job if there are actually pending items to process
           if (pendingCount && pendingCount > 0) {
             const { data: job, error } = await supabase
               .from('upload_jobs')
@@ -100,7 +113,7 @@ serve(async (req) => {
                 entity_type: entityType,
                 status: 'pending',
                 total_count: isTestMode ? Math.min(pendingCount, 3) : totalCount,
-                processed_count: isTestMode ? 0 : (uploadedCount || 0),
+                processed_count: isTestMode ? 0 : alreadyProcessedCount,
                 batch_size: isTestMode ? 3 : batchSizeForEntity(entityType),
                 is_test_mode: isTestMode || false,
               })
