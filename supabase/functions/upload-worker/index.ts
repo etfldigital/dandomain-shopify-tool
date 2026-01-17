@@ -277,7 +277,16 @@ serve(async (req) => {
         }
         const elapsed = Date.now() - startTime;
         const itemsProcessed = (result.processed || 0) + (result.skipped || 0);
-        const itemsPerMinute = elapsed > 0 ? (itemsProcessed / (elapsed / 60000)) : 0;
+        const batchItemsPerMinute = elapsed > 0 ? (itemsProcessed / (elapsed / 60000)) : 0;
+        
+        // Calculate rolling average speed (weighted: 70% previous, 30% current batch)
+        // This gives a smoother, more accurate representation of speed
+        let itemsPerMinute = batchItemsPerMinute;
+        if (job.items_per_minute && job.items_per_minute > 0 && batchItemsPerMinute > 0) {
+          itemsPerMinute = job.items_per_minute * 0.7 + batchItemsPerMinute * 0.3;
+        } else if (batchItemsPerMinute === 0 && job.items_per_minute) {
+          itemsPerMinute = job.items_per_minute; // Keep previous if batch had no items
+        }
 
         // Merge error details
         const existingErrors = job.error_details || [];
