@@ -209,6 +209,41 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    // === PRE-LOAD CACHES FOR ORDERS ===
+    // This dramatically reduces API calls by doing bulk lookups upfront
+    if (entityType === 'orders') {
+      // Clear caches for this batch
+      orderCustomerCache = new Map();
+      orderProductVariantCache = new Map();
+      // Keep email cache across batches for efficiency
+      
+      // Collect all customer and product external IDs from this batch
+      const customerExternalIds: string[] = [];
+      const productExternalIds: string[] = [];
+      
+      for (const item of items) {
+        if (item.data?.customer_external_id) {
+          customerExternalIds.push(item.data.customer_external_id);
+        }
+        for (const lineItem of item.data?.line_items || []) {
+          if (lineItem.product_external_id) {
+            productExternalIds.push(lineItem.product_external_id);
+          }
+        }
+      }
+      
+      // Pre-load caches in parallel
+      console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} customers and ${productExternalIds.length} products for batch`);
+      await Promise.all([
+        preloadOrderCustomerCache(supabase, projectId, customerExternalIds),
+        preloadOrderProductCache(supabase, projectId, shopifyUrl, shopifyToken, productExternalIds),
+      ]);
+      console.log(`[ORDERS] Cache loaded: ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products`);
+    }
+
+    // Use higher concurrency for orders since we've cached the lookups
+    const effectiveConcurrency = entityType === 'orders' ? 4 : PARALLEL_CONCURRENCY;
+
     // Process items in parallel with controlled concurrency
     const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }> => {
       try {
@@ -264,9 +299,9 @@ serve(async (req) => {
       }
     };
 
-    // Process in batches of PARALLEL_CONCURRENCY
-    for (let i = 0; i < items.length; i += PARALLEL_CONCURRENCY) {
-      const batch = items.slice(i, i + PARALLEL_CONCURRENCY);
+    // Process in batches with dynamic concurrency
+    for (let i = 0; i < items.length; i += effectiveConcurrency) {
+      const batch = items.slice(i, i + effectiveConcurrency);
       const results = await Promise.all(batch.map(processItem));
       
       for (const result of results) {
@@ -1306,6 +1341,114 @@ async function findShopifyCustomerIdByEmail(
   return first?.id ? String(first.id) : null;
 }
 
+// === ORDER UPLOAD CACHING FOR PERFORMANCE ===
+// These caches are populated once per batch and reused for all orders in that batch
+let orderCustomerCache: Map<string, { shopifyId: string | null; email: string | null }> = new Map();
+let orderProductVariantCache: Map<string, { variantId: string | null; fetched: boolean }> = new Map();
+let orderShopifyCustomerEmailCache: Map<string, string | null> = new Map();
+
+/**
+ * Pre-load all customer data needed for a batch of orders.
+ * This reduces N database queries to just 1.
+ */
+async function preloadOrderCustomerCache(
+  supabase: any,
+  projectId: string,
+  customerExternalIds: string[]
+): Promise<void> {
+  if (customerExternalIds.length === 0) return;
+  
+  const uniqueIds = [...new Set(customerExternalIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return;
+
+  const { data: customers } = await supabase
+    .from('canonical_customers')
+    .select('external_id, shopify_id, data')
+    .eq('project_id', projectId)
+    .in('external_id', uniqueIds);
+
+  if (customers) {
+    for (const c of customers) {
+      orderCustomerCache.set(c.external_id, {
+        shopifyId: c.shopify_id || null,
+        email: c.data?.email ? String(c.data.email).trim() : null,
+      });
+    }
+  }
+}
+
+/**
+ * Pre-load all product variant IDs needed for a batch of orders.
+ * This reduces N database + API queries to just 1 database query + N/10 API queries.
+ */
+async function preloadOrderProductCache(
+  supabase: any,
+  projectId: string,
+  shopifyUrl: string,
+  token: string,
+  productExternalIds: string[]
+): Promise<void> {
+  if (productExternalIds.length === 0) return;
+  
+  const uniqueIds = [...new Set(productExternalIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return;
+
+  // First, get all shopify_ids from database
+  const { data: products } = await supabase
+    .from('canonical_products')
+    .select('external_id, shopify_id')
+    .eq('project_id', projectId)
+    .in('external_id', uniqueIds);
+
+  if (!products) return;
+
+  // Group products by shopify_id to batch fetch variants
+  const shopifyIdToExternalIds: Map<string, string[]> = new Map();
+  for (const p of products) {
+    if (p.shopify_id) {
+      if (!shopifyIdToExternalIds.has(p.shopify_id)) {
+        shopifyIdToExternalIds.set(p.shopify_id, []);
+      }
+      shopifyIdToExternalIds.get(p.shopify_id)!.push(p.external_id);
+    } else {
+      // No shopify_id - mark as fetched but null
+      orderProductVariantCache.set(p.external_id, { variantId: null, fetched: true });
+    }
+  }
+
+  // Fetch variants in parallel (max 5 at a time to avoid rate limits)
+  const shopifyIds = Array.from(shopifyIdToExternalIds.keys());
+  const PARALLEL_VARIANT_FETCH = 5;
+  
+  for (let i = 0; i < shopifyIds.length; i += PARALLEL_VARIANT_FETCH) {
+    const batch = shopifyIds.slice(i, i + PARALLEL_VARIANT_FETCH);
+    
+    await Promise.all(batch.map(async (shopifyId) => {
+      try {
+        const { response, body } = await shopifyFetch(
+          `${shopifyUrl}/products/${shopifyId}.json?fields=id,variants`,
+          { headers: { 'X-Shopify-Access-Token': token } }
+        );
+
+        if (response.ok) {
+          const productData = JSON.parse(body);
+          const variantId = productData.product?.variants?.[0]?.id;
+          
+          // Map all external_ids that point to this shopify product
+          for (const extId of shopifyIdToExternalIds.get(shopifyId) || []) {
+            orderProductVariantCache.set(extId, { 
+              variantId: variantId ? String(variantId) : null, 
+              fetched: true 
+            });
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to fetch variants for product ${shopifyId}:`, e);
+      }
+    }));
+  }
+}
+
 async function uploadOrder(
   shopifyUrl: string,
   token: string,
@@ -1317,7 +1460,13 @@ async function uploadOrder(
   let shopifyCustomerId: string | null = null;
   let customerEmail: string | null = null;
 
-  if (data.customer_external_id) {
+  // Use cache first
+  if (data.customer_external_id && orderCustomerCache.has(data.customer_external_id)) {
+    const cached = orderCustomerCache.get(data.customer_external_id)!;
+    shopifyCustomerId = cached.shopifyId;
+    customerEmail = cached.email;
+  } else if (data.customer_external_id) {
+    // Fallback to direct query if not in cache
     const { data: customer } = await supabase
       .from('canonical_customers')
       .select('shopify_id, data')
@@ -1328,7 +1477,6 @@ async function uploadOrder(
     if (customer?.shopify_id) {
       shopifyCustomerId = customer.shopify_id;
     }
-    // Also get email for fallback customer linking
     if (customer?.data?.email) {
       customerEmail = String(customer.data.email).trim();
     }
@@ -1339,9 +1487,14 @@ async function uploadOrder(
     customerEmail = String(data.customer_email).trim();
   }
 
-  // If we still don't have an ID, try to find the customer in Shopify by email
+  // If we still don't have an ID, try to find the customer in Shopify by email (with cache)
   if (!shopifyCustomerId && customerEmail) {
-    shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail);
+    if (orderShopifyCustomerEmailCache.has(customerEmail)) {
+      shopifyCustomerId = orderShopifyCustomerEmailCache.get(customerEmail) || null;
+    } else {
+      shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail);
+      orderShopifyCustomerEmailCache.set(customerEmail, shopifyCustomerId);
+    }
   }
 
   const customerFirstName = String(data.customer_first_name || '').trim();
@@ -1377,9 +1530,13 @@ async function uploadOrder(
       ],
     });
     shopifyCustomerId = customerResult.shopifyId;
+    // Cache the new customer ID
+    if (customerEmail) {
+      orderShopifyCustomerEmailCache.set(customerEmail, shopifyCustomerId);
+    }
   }
 
-  // Map line items with Shopify variant IDs
+  // Map line items with Shopify variant IDs - using cache
   const lineItems = [];
   const sourceLineItems = data.line_items || [];
 
@@ -1393,33 +1550,52 @@ async function uploadOrder(
   }
 
   for (const item of sourceLineItems) {
-    // Try to find the product's Shopify variant ID
-    const { data: product } = await supabase
-      .from('canonical_products')
-      .select('shopify_id')
-      .eq('project_id', projectId)
-      .eq('external_id', item.product_external_id)
-      .maybeSingle();
+    // Use cache for product variant lookup
+    const cached = orderProductVariantCache.get(item.product_external_id);
+    
+    if (cached?.variantId) {
+      lineItems.push({
+        variant_id: Number(cached.variantId),
+        quantity: item.quantity,
+        price: String(item.price),
+      });
+      continue;
+    }
 
-    if (product?.shopify_id) {
-      // Get variant ID from product
-      const { response: variantResponse, body: variantBody } = await shopifyFetch(
-        `${shopifyUrl}/products/${product.shopify_id}.json`,
-        { headers: { 'X-Shopify-Access-Token': token } }
-      );
+    // Fallback if not in cache
+    if (!cached?.fetched) {
+      const { data: product } = await supabase
+        .from('canonical_products')
+        .select('shopify_id')
+        .eq('project_id', projectId)
+        .eq('external_id', item.product_external_id)
+        .maybeSingle();
 
-      if (variantResponse.ok) {
-        const productData = JSON.parse(variantBody);
-        const variant = productData.product?.variants?.[0];
-        if (variant) {
-          lineItems.push({
-            variant_id: variant.id,
-            quantity: item.quantity,
-            price: String(item.price),
-          });
-          continue;
+      if (product?.shopify_id) {
+        const { response: variantResponse, body: variantBody } = await shopifyFetch(
+          `${shopifyUrl}/products/${product.shopify_id}.json?fields=id,variants`,
+          { headers: { 'X-Shopify-Access-Token': token } }
+        );
+
+        if (variantResponse.ok) {
+          const productData = JSON.parse(variantBody);
+          const variant = productData.product?.variants?.[0];
+          if (variant) {
+            orderProductVariantCache.set(item.product_external_id, { 
+              variantId: String(variant.id), 
+              fetched: true 
+            });
+            lineItems.push({
+              variant_id: variant.id,
+              quantity: item.quantity,
+              price: String(item.price),
+            });
+            continue;
+          }
         }
       }
+      
+      orderProductVariantCache.set(item.product_external_id, { variantId: null, fetched: true });
     }
 
     // Fallback: create custom line item

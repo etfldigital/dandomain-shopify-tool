@@ -643,6 +643,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* Show speed for the currently running entity */}
+                    {job?.status === 'running' && job.items_per_minute && job.items_per_minute > 0 && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-xs text-primary font-medium cursor-help flex items-center gap-1">
+                              ⚡ {job.items_per_minute >= 100 
+                                ? Math.round(job.items_per_minute) 
+                                : job.items_per_minute.toFixed(1).replace('.', ',')} / min
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Aktuel hastighed for {label.toLowerCase()}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                     {skipped > 0 && (
                       <span className="flex items-center gap-1 text-amber-600 text-sm">
                         {skipped} skipped
