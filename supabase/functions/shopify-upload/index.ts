@@ -8,15 +8,28 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// STABLE HIGH-THROUGHPUT PROFILE: ~80-100 items/minute
-// 2 parallel connections, 500ms base delay - avoids 429 rate limits entirely
-// Math: 2 parallel × (60s / 0.5s) = 240 theoretical max, but Shopify API latency
-// brings it down to ~80-100 items/min in practice
-const SHOPIFY_MIN_DELAY_MS = 500;
+// SHOPIFY RATE LIMITING
+// Shopify uses a "leaky bucket" algorithm: 40 requests bucket, 2 requests/second leak rate
+// We track the bucket state from response headers to maximize throughput without 429s
+const SHOPIFY_BUCKET_SIZE = 40;
+const SHOPIFY_LEAK_RATE = 2; // requests per second
+let shopifyBucketUsed = 0;
+let lastBucketUpdate = Date.now();
+
+// Base delay between requests - gives Shopify time to process
+const SHOPIFY_MIN_DELAY_MS = 300;
 let lastShopifyRequest = 0;
 
-// Concurrency for parallel uploads - 2 concurrent to stay under Shopify limits
-const PARALLEL_CONCURRENCY = 2;
+// Concurrency settings per entity type
+// Customers need 1-2 API calls each (create + potential search), so use lower concurrency
+// Products/Categories do batch operations internally
+const CONCURRENCY_BY_TYPE: Record<string, number> = {
+  customers: 1,    // 1 at a time to avoid rate limits (each customer = 1-2 API calls)
+  orders: 2,       // Orders use caching, can handle more parallelism
+  products: 2,     // Products are batched by title internally
+  categories: 1,   // Categories are sequential due to dependency
+  pages: 2,
+};
 
 // Track rate limit state for intelligent backoff
 let consecutiveRateLimits = 0;
@@ -47,11 +60,54 @@ function isTransientNetworkError(error: unknown): boolean {
  * Rate-limited fetch wrapper for Shopify API with automatic retry on 429 and transient network errors.
  * Returns { response, body } to avoid double-consuming the response body.
  */
+/**
+ * Update bucket state from Shopify response headers.
+ * Header format: "X/40" where X is currently used.
+ */
+function updateBucketFromHeaders(response: Response): void {
+  const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
+  if (callLimit) {
+    const match = callLimit.match(/(\d+)\/(\d+)/);
+    if (match) {
+      shopifyBucketUsed = parseInt(match[1], 10);
+      lastBucketUpdate = Date.now();
+    }
+  }
+}
+
+/**
+ * Calculate how many requests are available in the bucket right now.
+ * The bucket "leaks" at SHOPIFY_LEAK_RATE per second.
+ */
+function getAvailableBucketSpace(): number {
+  const now = Date.now();
+  const elapsed = (now - lastBucketUpdate) / 1000; // seconds
+  const leaked = Math.floor(elapsed * SHOPIFY_LEAK_RATE);
+  const currentUsed = Math.max(0, shopifyBucketUsed - leaked);
+  return SHOPIFY_BUCKET_SIZE - currentUsed;
+}
+
+/**
+ * Wait until there's space in the rate limit bucket.
+ */
+async function waitForBucketSpace(): Promise<void> {
+  const available = getAvailableBucketSpace();
+  if (available <= 5) { // Keep 5 request buffer
+    // Wait for bucket to drain a bit
+    const waitTime = Math.ceil((6 - available) / SHOPIFY_LEAK_RATE * 1000);
+    console.log(`[Rate Limit] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), waiting ${waitTime}ms`);
+    await sleep(waitTime);
+  }
+}
+
 async function shopifyFetch(
   url: string,
   options: RequestInit,
   maxRetries = 5
 ): Promise<{ response: Response; body: string }> {
+  // Wait for bucket space before making request
+  await waitForBucketSpace();
+  
   // Enforce minimum delay between requests with adaptive backoff
   const effectiveDelay = SHOPIFY_MIN_DELAY_MS * backoffMultiplier;
   const now = Date.now();
@@ -85,10 +141,13 @@ async function shopifyFetch(
         continue;
       }
       
+      // Update bucket state from headers
+      updateBucketFromHeaders(response);
+      
       // Success - reduce backoff if we've been successful
       if (response.ok) {
         consecutiveRateLimits = 0;
-        backoffMultiplier = Math.max(1, backoffMultiplier * 0.9);
+        backoffMultiplier = Math.max(1, backoffMultiplier * 0.95);
       }
 
       return { response, body };
@@ -241,8 +300,8 @@ serve(async (req) => {
       console.log(`[ORDERS] Cache loaded: ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products`);
     }
 
-    // Use higher concurrency for orders since we've cached the lookups
-    const effectiveConcurrency = entityType === 'orders' ? 4 : PARALLEL_CONCURRENCY;
+    // Use entity-specific concurrency settings
+    const effectiveConcurrency = CONCURRENCY_BY_TYPE[entityType] || 1;
 
     // Process items in parallel with controlled concurrency
     const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }> => {
