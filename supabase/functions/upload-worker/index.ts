@@ -125,9 +125,12 @@ serve(async (req) => {
           }
         }
 
-        // Start processing the first job immediately
-        if (jobs.length > 0) {
-          const firstJob = jobs[0];
+        // Start ALL jobs in parallel - each entity type processes independently
+        // This allows customers, orders, products etc. to upload simultaneously
+        const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+        
+        for (const job of jobs) {
+          // Mark job as running
           await supabase
             .from('upload_jobs')
             .update({ 
@@ -135,10 +138,9 @@ serve(async (req) => {
               started_at: new Date().toISOString(),
               last_heartbeat_at: new Date().toISOString()
             })
-            .eq('id', firstJob.id);
+            .eq('id', job.id);
 
-          // Trigger processing (await so the request is actually sent before runtime shuts down)
-          const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+          // Trigger processing for this job
           try {
             await fetch(functionUrl, {
               method: 'POST',
@@ -146,10 +148,11 @@ serve(async (req) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseServiceKey}`,
               },
-              body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
+              body: JSON.stringify({ jobId: job.id, action: 'process' }),
             });
+            console.log(`[WORKER] Started parallel job ${job.id} (${job.entity_type})`);
           } catch (e) {
-            console.error('[WORKER] Failed to trigger initial processing:', e);
+            console.error(`[WORKER] Failed to trigger ${job.entity_type} processing:`, e);
           }
         }
 
@@ -290,16 +293,29 @@ serve(async (req) => {
         }
         const elapsed = Date.now() - startTime;
         const itemsProcessed = (result.processed || 0) + (result.skipped || 0);
-        const batchItemsPerMinute = elapsed > 0 ? (itemsProcessed / (elapsed / 60000)) : 0;
+        const batchItemsPerMinute = elapsed > 0 && itemsProcessed > 0 
+          ? (itemsProcessed / (elapsed / 60000)) 
+          : 0;
+        
+        console.log(`[WORKER] Batch result: processed=${result.processed}, skipped=${result.skipped}, errors=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min`);
         
         // Calculate rolling average speed (weighted: 70% previous, 30% current batch)
-        // This gives a smoother, more accurate representation of speed
-        let itemsPerMinute = batchItemsPerMinute;
-        if (job.items_per_minute && job.items_per_minute > 0 && batchItemsPerMinute > 0) {
-          itemsPerMinute = job.items_per_minute * 0.7 + batchItemsPerMinute * 0.3;
-        } else if (batchItemsPerMinute === 0 && job.items_per_minute) {
-          itemsPerMinute = job.items_per_minute; // Keep previous if batch had no items
+        // Always update if we have a valid batch speed
+        let itemsPerMinute: number | null = null;
+        if (batchItemsPerMinute > 0) {
+          if (job.items_per_minute && job.items_per_minute > 0) {
+            // Rolling average: 70% previous, 30% current
+            itemsPerMinute = job.items_per_minute * 0.7 + batchItemsPerMinute * 0.3;
+          } else {
+            // First measurement - use batch speed directly
+            itemsPerMinute = batchItemsPerMinute;
+          }
+        } else if (job.items_per_minute) {
+          // Keep previous if batch had no items
+          itemsPerMinute = job.items_per_minute;
         }
+        
+        console.log(`[WORKER] Speed calculation: previous=${job.items_per_minute?.toFixed(1) || 'null'}, batch=${batchItemsPerMinute.toFixed(1)}, new=${itemsPerMinute?.toFixed(1) || 'null'}`);
 
         // Merge error details
         const existingErrors = job.error_details || [];
@@ -311,7 +327,7 @@ serve(async (req) => {
           processed_count: job.processed_count + itemsProcessed,
           error_count: job.error_count + (result.errors || 0),
           skipped_count: job.skipped_count + (result.skipped || 0),
-          items_per_minute: itemsPerMinute > 0 ? itemsPerMinute : job.items_per_minute,
+          items_per_minute: itemsPerMinute,
           error_details: allErrors,
           last_heartbeat_at: new Date().toISOString(),
           current_batch: job.current_batch + 1,
@@ -349,44 +365,16 @@ serve(async (req) => {
             console.error('[WORKER] Failed to schedule next batch:', e);
           }
         } else {
-          // Check for next entity to process
-          const { data: nextJob } = await supabase
+          // This entity is done - check if ALL jobs are completed
+          const { count: runningOrPending } = await supabase
             .from('upload_jobs')
-            .select('*')
+            .select('*', { count: 'exact', head: true })
             .eq('project_id', job.project_id)
-            .eq('status', 'pending')
-            .order('created_at', { ascending: true })
-            .limit(1)
-            .single();
+            .in('status', ['running', 'pending', 'paused']);
 
-          if (nextJob) {
-            // Start next entity
-            await supabase
-              .from('upload_jobs')
-              .update({ 
-                status: 'running', 
-                started_at: new Date().toISOString(),
-                last_heartbeat_at: new Date().toISOString()
-              })
-              .eq('id', nextJob.id);
-
-            await sleep(WORKER_SCHEDULE_DELAY_MS);
-            try {
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${supabaseServiceKey}`,
-                },
-                body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
-              });
-              console.log(`[WORKER] Started next entity job ${nextJob.id} (${nextJob.entity_type})`);
-            } catch (e) {
-              console.error('[WORKER] Failed to start next entity:', e);
-            }
-          } else {
-            // All done - update project status
+          if (!runningOrPending || runningOrPending === 0) {
+            // All jobs completed - update project status
+            console.log(`[WORKER] All jobs completed for project ${job.project_id}`);
             await supabase
               .from('projects')
               .update({ status: 'completed' })
