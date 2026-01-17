@@ -17,17 +17,18 @@ let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
 // Base delay between requests - gives Shopify time to process
-// Reduced from 300ms to 100ms to increase throughput
-const SHOPIFY_MIN_DELAY_MS = 100;
+// Increased to 600ms to avoid 429 storm on trial stores (trial stores have ~1-2 orders/min hard limit)
+// On paid stores, this is more conservative but stable
+const SHOPIFY_MIN_DELAY_MS = 600;
 let lastShopifyRequest = 0;
 
 // Concurrency settings per entity type
-// Shopify leaky bucket: 40 requests, 2/sec refill = can sustain ~2 req/sec average
-// But we can burst up to 40 requests, so higher concurrency with smart bucket tracking works
-// Orders with good caching need only 1 API call each when customer/product IDs are cached
+// IMPORTANT: Orders set to 1 to avoid 429 rate-limit storms
+// Trial stores have extremely low order limits (~1-2/min)
+// Paid stores can handle more, but sequential is more stable
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
   customers: 2,    // 2 at a time (each customer = 1-2 API calls)
-  orders: 10,      // Orders use caching, most are just 1 API call each - increased from 5
+  orders: 1,       // Sequential to avoid 429 storm - trial stores have ~1-2/min hard limit
   products: 3,     // Products are batched by title internally
   categories: 1,   // Categories are sequential due to dependency
   pages: 3,
@@ -1573,28 +1574,15 @@ async function uploadOrder(
     phone: customerPhone,
   };
 
-  // IMPORTANT: Shopify doesn't reliably persist address data when you create a customer via order payload.
-  // So we create/find the customer first, then create the order linked to the customer id.
-  if (!shopifyCustomerId && customerEmail) {
-    const customerResult = await uploadCustomer(shopifyUrl, token, {
-      email: customerEmail,
-      first_name: customerFirstName,
-      last_name: customerLastName,
-      phone: customerPhone,
-      accepts_marketing: false,
-      addresses: [
-        {
-          ...rawCustomerAddress,
-          first_name: customerFirstName,
-          last_name: customerLastName,
-        },
-      ],
-    });
-    shopifyCustomerId = customerResult.shopifyId;
-    // Cache the new customer ID
-    if (customerEmail) {
-      orderShopifyCustomerEmailCache.set(customerEmail, shopifyCustomerId);
-    }
+  // STRICT CUSTOMER BINDING: Do NOT auto-create customers during order import
+  // If customer is not already in Shopify, fail the order with a clear message
+  // This avoids extra API calls and ensures data integrity
+  if (!shopifyCustomerId) {
+    const reason = customerEmail 
+      ? `Kunde med email "${customerEmail}" blev ikke fundet i Shopify. Upload kunder først.`
+      : `Ordre mangler kunde-email og kan ikke knyttes til en Shopify-kunde.`;
+    console.log(`[Order] Strict binding failed: ${reason}`);
+    throw new Error(reason);
   }
 
   // Map line items with Shopify variant IDs - using cache
