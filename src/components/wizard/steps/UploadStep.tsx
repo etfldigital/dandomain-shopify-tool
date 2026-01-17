@@ -200,6 +200,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [isStarting, setIsStarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
 
+  // Persistent shop type detection - once detected, stays visible
+  const [detectedShopType, setDetectedShopType] = useState<{
+    type: 'trial' | 'paid';
+    entityType: EntityType;
+    measuredSpeed: number;
+  } | null>(null);
+
   // Status counts for each entity type (for the menu)
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
     products: { pending: 0, uploaded: 0, failed: 0 },
@@ -544,6 +551,31 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Calculate overall speed and ETA
   const currentSpeed = runningJob?.items_per_minute || 0;
   
+  // Detect shop type based on upload speed - once detected, it persists
+  useEffect(() => {
+    if (runningJob && runningJob.items_per_minute && runningJob.items_per_minute > 0) {
+      const thresholds = SPEED_THRESHOLDS[runningJob.entity_type] || SPEED_THRESHOLDS.products;
+      const isTrial = runningJob.items_per_minute <= thresholds.trialMax;
+      
+      setDetectedShopType(prev => {
+        // If we haven't detected yet, set initial detection
+        if (!prev) {
+          return {
+            type: isTrial ? 'trial' : 'paid',
+            entityType: runningJob.entity_type,
+            measuredSpeed: runningJob.items_per_minute,
+          };
+        }
+        // Update speed but keep the shop type decision
+        return {
+          ...prev,
+          entityType: runningJob.entity_type,
+          measuredSpeed: runningJob.items_per_minute,
+        };
+      });
+    }
+  }, [runningJob?.items_per_minute, runningJob?.entity_type]);
+  
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
     .filter(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused')
@@ -821,13 +853,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 </div>
               </div>
               
-              {/* Shop Type Indicator based on upload speed */}
-              {runningJob && runningJob.items_per_minute !== null && runningJob.items_per_minute > 0 && (
-                <ShopTypeIndicator 
-                  entityType={runningJob.entity_type}
-                  itemsPerMinute={runningJob.items_per_minute}
-                />
-              )}
+            </div>
+          )}
+
+          {/* Persistent Shop Type Indicator - stays visible once detected */}
+          {detectedShopType && (
+            <div className="pt-4 border-t">
+              <ShopTypeIndicator 
+                entityType={detectedShopType.entityType}
+                itemsPerMinute={detectedShopType.measuredSpeed}
+              />
             </div>
           )}
 
