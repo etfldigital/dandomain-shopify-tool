@@ -49,7 +49,11 @@ import {
   Cloud,
   CloudOff,
   SkipForward,
+  Store,
+  FlaskConicalOff,
+  Zap,
 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -121,6 +125,75 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
   { type: 'customers', icon: Users, label: 'Kunder' },
   { type: 'orders', icon: FileText, label: 'Ordrer' },
 ];
+
+// Expected speed ranges for paid vs trial stores (items per minute)
+const SPEED_THRESHOLDS: Record<EntityType, { trialMax: number; paidTypical: number }> = {
+  orders: { trialMax: 5, paidTypical: 40 },      // Trial stores have ~1-2/min hard limit for orders
+  customers: { trialMax: 10, paidTypical: 60 },  // Customers are slightly less restricted
+  products: { trialMax: 15, paidTypical: 80 },   // Products can be faster
+  categories: { trialMax: 20, paidTypical: 100 },
+  pages: { trialMax: 20, paidTypical: 100 },
+};
+
+interface ShopTypeIndicatorProps {
+  entityType: EntityType;
+  itemsPerMinute: number;
+}
+
+function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProps) {
+  const thresholds = SPEED_THRESHOLDS[entityType] || SPEED_THRESHOLDS.products;
+  const isTrial = itemsPerMinute <= thresholds.trialMax;
+  const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label.toLowerCase() || entityType;
+  
+  if (isTrial) {
+    return (
+      <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30">
+            <FlaskConicalOff className="w-3 h-3 mr-1" />
+            Trial butik
+          </Badge>
+          <span className="text-muted-foreground">
+            Begrænset til ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
+          </span>
+        </div>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="text-amber-600 cursor-help underline decoration-dotted">
+                Hvorfor så langsomt?
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              <p className="font-medium mb-1">Trial butik rate limit</p>
+              <p className="text-sm text-muted-foreground">
+                Shopify begrænser trial/development butikker til meget lave upload-hastigheder. 
+                Opgrader til en betalt plan for at fjerne denne begrænsning og øge hastigheden 10-20x.
+              </p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
+          <Zap className="w-3 h-3 mr-1" />
+          Betalt butik
+        </Badge>
+        <span className="text-muted-foreground">
+          Upload-hastighed: ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
+        </span>
+      </div>
+      <span className="text-green-600">
+        Fuld hastighed
+      </span>
+    </div>
+  );
+}
 
 export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
@@ -733,7 +806,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           })}
 
           {isUploading && (
-            <div className="pt-4 border-t">
+            <div className="pt-4 border-t space-y-3">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">
                   Total: {fixedTotalUploaded.toLocaleString('da-DK')} / {fixedTotalItems.toLocaleString('da-DK')}
@@ -747,6 +820,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   )}
                 </div>
               </div>
+              
+              {/* Shop Type Indicator based on upload speed */}
+              {runningJob && runningJob.items_per_minute !== null && runningJob.items_per_minute > 0 && (
+                <ShopTypeIndicator 
+                  entityType={runningJob.entity_type}
+                  itemsPerMinute={runningJob.items_per_minute}
+                />
+              )}
             </div>
           )}
 
