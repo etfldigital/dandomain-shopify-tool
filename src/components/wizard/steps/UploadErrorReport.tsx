@@ -46,8 +46,9 @@ interface UploadErrorReportProps {
   projectId: string;
   jobs: UploadJob[];
   statusCounts: Record<EntityType, { pending: number; uploaded: number; failed: number }>;
-  onRetryFailed?: (entityType: EntityType) => Promise<void>;
+  onRetryFailed?: (entityType: EntityType, externalIds?: string[]) => Promise<void>;
   isRetrying?: EntityType | null;
+  retryingIds?: string[] | null;
 }
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string; singular: string }[] = [
@@ -370,7 +371,7 @@ const SKIP_REASONS: Record<EntityType, { title: string; description: string }> =
   },
 };
 
-export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed, isRetrying }: UploadErrorReportProps) {
+export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed, isRetrying, retryingIds }: UploadErrorReportProps) {
   const [loadingDownload, setLoadingDownload] = useState<string | null>(null);
   const [failedItems, setFailedItems] = useState<Record<EntityType, SkippedOrFailedItem[]>>({
     products: [],
@@ -937,16 +938,16 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  onClick={() => onRetryFailed(type)}
+                                  onClick={() => onRetryFailed(type, undefined)}
                                   disabled={isRetrying === type}
                                   className="text-xs h-7 border-amber-500/50 text-amber-700 hover:bg-amber-500/10"
                                 >
-                                  {isRetrying === type ? (
+                                  {isRetrying === type && !retryingIds ? (
                                     <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                                   ) : (
                                     <RotateCcw className="w-3 h-3 mr-1" />
                                   )}
-                                  Prøv igen
+                                  Prøv alle igen
                                 </Button>
                               )}
                               <Button
@@ -999,6 +1000,25 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                       )}
                                     </div>
                                     <div className="flex items-center gap-2">
+                                      {onRetryFailed && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => {
+                                            const ids = errorItems.map(item => item.external_id);
+                                            onRetryFailed(type, ids);
+                                          }}
+                                          disabled={isRetrying === type}
+                                          className="text-xs h-6 px-2 text-amber-700 hover:bg-amber-500/10"
+                                          title="Prøv denne fejltype igen"
+                                        >
+                                          {isRetrying === type && retryingIds?.some(id => errorItems.some(e => e.external_id === id)) ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                          ) : (
+                                            <RotateCcw className="w-3 h-3" />
+                                          )}
+                                        </Button>
+                                      )}
                                       <Button
                                         variant="ghost"
                                         size="sm"

@@ -465,10 +465,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const hasFailed = jobs.some(j => j.error_count > 0);
   const [hasCelebrated, setHasCelebrated] = useState(false);
   const [retryingEntityType, setRetryingEntityType] = useState<EntityType | null>(null);
+  const [retryingIds, setRetryingIds] = useState<string[] | null>(null);
 
-  // Handle retry for failed items of a specific entity type
-  const handleRetryFailed = async (entityType: EntityType) => {
+  // Handle retry for failed items of a specific entity type (optionally with specific IDs)
+  const handleRetryFailed = async (entityType: EntityType, externalIds?: string[]) => {
     setRetryingEntityType(entityType);
+    setRetryingIds(externalIds || null);
     try {
       // First, reset failed items to pending for the specific entity type
       const response = await supabase.functions.invoke('reset-upload-status', {
@@ -476,6 +478,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           projectId: project.id,
           entityType: entityType,
           resetScope: 'failed',
+          externalIds: externalIds, // Optional: if provided, only reset these specific items
         },
       });
 
@@ -505,6 +508,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       toast.error(`Kunne ikke genstarte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setRetryingEntityType(null);
+      setRetryingIds(null);
     }
   };
 
@@ -1099,6 +1103,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         statusCounts={statusCounts}
         onRetryFailed={handleRetryFailed}
         isRetrying={retryingEntityType}
+        retryingIds={retryingIds}
       />
 
       {/* Reset Confirmation Dialog */}
