@@ -1243,28 +1243,6 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                               </Badge>
                             </div>
                           </div>
-
-                          {/* Show skipped item details if available */}
-                          {skipped.length > 0 && (
-                            <div className="space-y-2 mt-2">
-                              {Array.from(groupedSkipped.entries()).map(([reason, items]) => (
-                                <div 
-                                  key={reason} 
-                                  className="bg-amber-500/5 border border-amber-500/10 rounded-lg p-2"
-                                >
-                                  <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
-                                    {reason}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground mt-0.5">
-                                    {items.length <= 5 
-                                      ? items.map(i => getCleanIdentifier(i)).join(', ')
-                                      : `${items.slice(0, 3).map(i => getCleanIdentifier(i)).join(', ')} og ${items.length - 3} flere`
-                                    }
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
