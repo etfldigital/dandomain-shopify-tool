@@ -12,7 +12,7 @@ serve(async (req) => {
   }
 
   try {
-    const { projectId, entityType, resetScope } = await req.json();
+    const { projectId, entityType, resetScope, externalIds } = await req.json();
 
     if (!projectId || !entityType || !resetScope) {
       return new Response(
@@ -76,12 +76,28 @@ serve(async (req) => {
         );
     }
 
-    // First, count how many will be affected
-    const { count: affectedCount, error: countError } = await supabase
+    // Build the base query
+    let countQuery = supabase
       .from(tableName)
       .select('*', { count: 'exact', head: true })
       .eq('project_id', projectId)
       .in('status', statusFilter);
+
+    let updateQuery = supabase
+      .from(tableName)
+      .update(updateData)
+      .eq('project_id', projectId)
+      .in('status', statusFilter);
+
+    // If specific externalIds are provided, filter by them
+    if (externalIds && Array.isArray(externalIds) && externalIds.length > 0) {
+      console.log(`Filtering by ${externalIds.length} specific external IDs`);
+      countQuery = countQuery.in('external_id', externalIds);
+      updateQuery = updateQuery.in('external_id', externalIds);
+    }
+
+    // First, count how many will be affected
+    const { count: affectedCount, error: countError } = await countQuery;
 
     if (countError) {
       console.error('Count error:', countError);
@@ -92,11 +108,7 @@ serve(async (req) => {
     }
 
     // Perform the update
-    const { error: updateError } = await supabase
-      .from(tableName)
-      .update(updateData)
-      .eq('project_id', projectId)
-      .in('status', statusFilter);
+    const { error: updateError } = await updateQuery;
 
     if (updateError) {
       console.error('Update error:', updateError);
