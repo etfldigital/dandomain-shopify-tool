@@ -421,7 +421,10 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
 
   // Calculate totals
   const totalFailed = Object.values(statusCounts).reduce((acc, c) => acc + c.failed, 0);
-  const totalSkipped = jobs.reduce((acc, j) => acc + j.skipped_count, 0);
+  
+  // Only count actual skipped items (products without title, etc.)
+  // Don't count "linked" items like customers matched by email
+  const totalSkipped = Object.values(skippedItems).reduce((acc, items) => acc + items.length, 0);
 
   // Fetch failed and skipped items from database
   useEffect(() => {
