@@ -422,9 +422,10 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
   // Calculate totals
   const totalFailed = Object.values(statusCounts).reduce((acc, c) => acc + c.failed, 0);
   
-  // Only count actual skipped items (products without title, etc.)
+  // Only count actual skipped items from products (the only entity with real skips)
   // Don't count "linked" items like customers matched by email
-  const totalSkipped = Object.values(skippedItems).reduce((acc, items) => acc + items.length, 0);
+  const productJob = jobs.find(j => j.entity_type === 'products');
+  const totalSkipped = productJob?.skipped_count || 0;
 
   // Fetch failed and skipped items from database
   useEffect(() => {
