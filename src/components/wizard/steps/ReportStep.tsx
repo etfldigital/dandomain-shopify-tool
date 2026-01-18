@@ -6,6 +6,7 @@ import {
   CheckCircle2, 
   AlertCircle,
   Download,
+  Loader2,
   ExternalLink,
   ShoppingBag,
   Users,
@@ -31,6 +32,7 @@ interface MigrationStats {
 
 export function ReportStep({ project }: ReportStepProps) {
   const navigate = useNavigate();
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false);
   const [stats, setStats] = useState<MigrationStats>({
     products: { total: 0, success: 0, failed: 0 },
     customers: { total: 0, success: 0, failed: 0 },
@@ -152,6 +154,90 @@ export function ReportStep({ project }: ReportStepProps) {
     { key: 'categories' as const, icon: Folder, label: 'Kategorier' },
   ];
 
+  const handleDownloadErrorReport = async () => {
+    setIsDownloadingReport(true);
+
+    try {
+      const escapeCsv = (value: unknown) =>
+        `"${String(value ?? '').replace(/"/g, '""')}"`;
+
+      const sb: any = supabase;
+
+      const fetchAll = async (table: string, select: string) => {
+        const pageSize = 1000;
+        let from = 0;
+        const all: any[] = [];
+
+        while (true) {
+          const { data, error } = await sb
+            .from(table)
+            .select(select)
+            .eq('project_id', project.id)
+            .eq('status', 'failed')
+            .range(from, from + pageSize - 1);
+
+
+          if (error) throw error;
+          all.push(...(data ?? []));
+
+          if (!data || data.length < pageSize) break;
+          from += pageSize;
+        }
+
+        return all;
+      };
+
+      const [products, customers, orders, categories] = await Promise.all([
+        fetchAll('canonical_products', 'external_id, error_message, data'),
+        fetchAll('canonical_customers', 'external_id, error_message, data'),
+        fetchAll('canonical_orders', 'external_id, error_message, data'),
+        fetchAll('canonical_categories', 'external_id, error_message, name'),
+      ]);
+
+      const getTitle = (row: any) => {
+        if (row?.name) return row.name;
+        const data = row?.data ?? {};
+        return (
+          data.title ??
+          data.name ??
+          data.email ??
+          [data.first_name, data.last_name].filter(Boolean).join(' ') ??
+          ''
+        );
+      };
+
+      let csv = 'Type,External ID,Titel/Navn,Fejlbesked\n';
+
+      const appendRows = (label: string, rows: any[]) => {
+        for (const row of rows) {
+          csv += [
+            escapeCsv(label),
+            escapeCsv(row.external_id),
+            escapeCsv(getTitle(row)),
+            escapeCsv(row.error_message || 'Ukendt fejl'),
+          ].join(',') + '\n';
+        }
+      };
+
+      appendRows('Produkter', products);
+      appendRows('Kunder', customers);
+      appendRows('Ordrer', orders);
+      appendRows('Kategorier', categories);
+
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'fejlrapport.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } finally {
+      setIsDownloadingReport(false);
+    }
+  };
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="text-center mb-8">
@@ -230,8 +316,17 @@ export function ReportStep({ project }: ReportStepProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" className="w-full">
-              <Download className="w-4 h-4 mr-2" />
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleDownloadErrorReport}
+              disabled={isDownloadingReport}
+            >
+              {isDownloadingReport ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-2" />
+              )}
               Download fejlrapport (CSV)
             </Button>
           </CardContent>
