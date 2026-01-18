@@ -12,7 +12,7 @@ serve(async (req) => {
   }
 
   try {
-    const { projectId, entityType, resetScope, externalIds } = await req.json();
+    const { projectId, entityType, resetScope, recordIds, externalIds } = await req.json();
 
     if (!projectId || !entityType || !resetScope) {
       return new Response(
@@ -83,8 +83,12 @@ serve(async (req) => {
       .eq('project_id', projectId)
       .in('status', statusFilter);
 
-    // If specific externalIds are provided, filter by them
-    if (externalIds && Array.isArray(externalIds) && externalIds.length > 0) {
+    // If specific recordIds are provided, filter by them (preferred because they are short UUIDs)
+    if (recordIds && Array.isArray(recordIds) && recordIds.length > 0) {
+      console.log(`Filtering by ${recordIds.length} specific record IDs`);
+      updateQuery = updateQuery.in('id', recordIds);
+    } else if (externalIds && Array.isArray(externalIds) && externalIds.length > 0) {
+      // Backwards compatibility: externalIds can be extremely long (e.g. CSV rows) and may hit URL limits.
       console.log(`Filtering by ${externalIds.length} specific external IDs`);
       updateQuery = updateQuery.in('external_id', externalIds);
     }
