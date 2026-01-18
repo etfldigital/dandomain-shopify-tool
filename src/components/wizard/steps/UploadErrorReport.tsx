@@ -636,18 +636,92 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     return emailMatch ? emailMatch[0] : null;
   };
 
+  // Extract a clean identifier from item - prioritize name/title over external_id
+  const getCleanIdentifier = (item: SkippedOrFailedItem): string => {
+    // Try to get a human-readable name first
+    const name = item.name || item.title || (item.data as Record<string, unknown>)?.title as string;
+    if (name && typeof name === 'string' && name.length > 0 && name.length < 50) {
+      return name;
+    }
+    
+    // If external_id looks like a simple ID (no semicolons or special chars), use it
+    const externalId = item.external_id;
+    if (externalId && !externalId.includes(';') && !externalId.includes(',') && externalId.length < 30) {
+      return externalId;
+    }
+    
+    // Try to extract first meaningful part before any delimiter
+    if (externalId) {
+      const cleanId = externalId.split(/[;,\s]/)[0]?.trim();
+      if (cleanId && cleanId.length > 0 && cleanId.length < 30) {
+        return cleanId;
+      }
+    }
+    
+    return '(Ukendt ID)';
+  };
+
   // Get sample details for grouped errors (e.g., emails for customer not found)
-  const getSampleDetails = (items: SkippedOrFailedItem[], maxSamples = 3): string[] => {
+  const getSampleDetails = (items: SkippedOrFailedItem[], maxSamples = 3): { details: string[]; type: 'email' | 'name' | 'id' } => {
     const details: string[] = [];
+    let detailType: 'email' | 'name' | 'id' = 'id';
+    
     for (const item of items.slice(0, maxSamples)) {
+      // First try to find email in error message
       const email = extractEmailFromError(item.error_message || '');
       if (email) {
         details.push(email);
-      } else {
-        details.push(item.external_id);
+        detailType = 'email';
+        continue;
+      }
+      
+      // Use clean identifier
+      const identifier = getCleanIdentifier(item);
+      details.push(identifier);
+      
+      // Determine type based on what we found
+      if (item.name || item.title || (item.data as Record<string, unknown>)?.title) {
+        detailType = 'name';
       }
     }
-    return details;
+    
+    return { details, type: detailType };
+  };
+
+  // Generate CSV for a specific error type within an entity
+  const generateErrorTypeCsv = (entityType: EntityType, errorMessage: string, items: SkippedOrFailedItem[]) => {
+    const rows = [['External ID', 'Titel/Navn', 'Fejlbesked']];
+    
+    for (const item of items) {
+      const title = item.title || item.name || (item.data as Record<string, unknown>)?.title as string || '';
+      rows.push([
+        getCleanIdentifier(item),
+        title,
+        translateError(item.error_message || ''),
+      ]);
+    }
+    return rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  };
+
+  // Download handler for specific error type
+  const handleDownloadErrorType = async (entityType: EntityType, errorMessage: string, items: SkippedOrFailedItem[]) => {
+    const safeFilename = errorMessage.replace(/[^a-zæøåA-ZÆØÅ0-9]/g, '-').substring(0, 30);
+    setLoadingDownload(`${entityType}-${safeFilename}`);
+    
+    try {
+      const csv = generateErrorTypeCsv(entityType, errorMessage, items);
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${entityType}-${safeFilename}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } finally {
+      setLoadingDownload(null);
+    }
   };
 
   // Generate CSV content for failed items
@@ -895,8 +969,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                           {/* Grouped errors - with normalized messages */}
                           <div className="space-y-2">
                             {Array.from(groupedErrors.entries()).map(([message, errorItems]) => {
-                              const sampleDetails = getSampleDetails(errorItems, 3);
-                              const hasEmailDetails = errorItems.some(e => extractEmailFromError(e.error_message || ''));
+                              const { details: sampleDetails, type: detailType } = getSampleDetails(errorItems, 3);
+                              const safeFilename = message.replace(/[^a-zæøåA-ZÆØÅ0-9]/g, '-').substring(0, 30);
                               
                               return (
                                 <div 
@@ -915,18 +989,34 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                           : `${errorItems.length} ${label.toLowerCase()}`
                                         }
                                       </p>
-                                      {/* Show sample details (emails or IDs) */}
+                                      {/* Show sample details based on type */}
                                       {sampleDetails.length > 0 && (
-                                        <p className="text-xs text-muted-foreground mt-1 italic">
-                                          {hasEmailDetails ? 'Eksempler: ' : 'ID: '}
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                          {detailType === 'email' ? 'F.eks.: ' : detailType === 'name' ? 'F.eks.: ' : ''}
                                           {sampleDetails.join(', ')}
                                           {errorItems.length > 3 && ` og ${errorItems.length - 3} flere`}
                                         </p>
                                       )}
                                     </div>
-                                    <Badge variant="outline" className="text-xs bg-destructive/10 text-destructive border-destructive/30">
-                                      {errorItems.length}
-                                    </Badge>
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleDownloadErrorType(type, message, errorItems)}
+                                        disabled={loadingDownload === `${type}-${safeFilename}`}
+                                        className="text-xs h-6 px-2"
+                                        title="Download denne fejltype"
+                                      >
+                                        {loadingDownload === `${type}-${safeFilename}` ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Download className="w-3 h-3" />
+                                        )}
+                                      </Button>
+                                      <Badge variant="outline" className="text-xs bg-destructive/10 text-destructive border-destructive/30">
+                                        {errorItems.length}
+                                      </Badge>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -991,8 +1081,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                   </p>
                                   <p className="text-xs text-muted-foreground mt-0.5">
                                     {items.length <= 5 
-                                      ? items.map(i => i.title || i.external_id).join(', ')
-                                      : `${items.slice(0, 3).map(i => i.title || i.external_id).join(', ')} og ${items.length - 3} flere`
+                                      ? items.map(i => getCleanIdentifier(i)).join(', ')
+                                      : `${items.slice(0, 3).map(i => getCleanIdentifier(i)).join(', ')} og ${items.length - 3} flere`
                                     }
                                   </p>
                                 </div>
