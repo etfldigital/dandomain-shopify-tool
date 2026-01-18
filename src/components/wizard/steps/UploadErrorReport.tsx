@@ -637,6 +637,35 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     }
     return grouped;
   };
+  
+  // Clean up retriedGroups when items are successfully retried (removed from failed list)
+  useEffect(() => {
+    if (retriedGroups.size === 0) return;
+    
+    // Build a set of all current group keys
+    const currentGroupKeys = new Set<string>();
+    for (const { type } of ENTITY_CONFIG) {
+      const failed = failedItems[type];
+      const groupedErrors = groupByError(failed, type);
+      for (const [message] of groupedErrors.entries()) {
+        currentGroupKeys.add(`${type}-${message}`);
+      }
+    }
+    
+    // Remove retried groups that no longer exist (meaning retry was successful)
+    const newRetriedGroups = new Set<string>();
+    for (const groupKey of retriedGroups) {
+      if (currentGroupKeys.has(groupKey)) {
+        newRetriedGroups.add(groupKey);
+      }
+    }
+    
+    // Only update if there's a difference
+    if (newRetriedGroups.size !== retriedGroups.size) {
+      setRetriedGroups(newRetriedGroups);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failedItems]);
 
   // Extract email from error message if available
   const extractEmailFromError = (message: string): string | null => {
