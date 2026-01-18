@@ -27,6 +27,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { EntityType } from '@/types/database';
 
 interface SkippedOrFailedItem {
+  id: string;
   external_id: string;
   error_message: string | null;
   data?: Record<string, unknown>;
@@ -46,7 +47,7 @@ interface UploadErrorReportProps {
   projectId: string;
   jobs: UploadJob[];
   statusCounts: Record<EntityType, { pending: number; uploaded: number; failed: number }>;
-  onRetryFailed?: (entityType: EntityType, externalIds?: string[]) => Promise<void>;
+  onRetryFailed?: (entityType: EntityType, recordIds?: string[]) => Promise<void>;
   isRetrying?: EntityType | null;
   retryingIds?: string[] | null;
 }
@@ -428,7 +429,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (statusCounts.products.failed > 0) {
         const { data } = await supabase
           .from('canonical_products')
-          .select('external_id, error_message, data')
+          .select('id, external_id, error_message, data')
           .eq('project_id', projectId)
           .eq('status', 'failed')
           .limit(500);
@@ -440,13 +441,14 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (productJob && productJob.skipped_count > 0) {
         const { data } = await supabase
           .from('canonical_products')
-          .select('external_id, error_message, data')
+          .select('id, external_id, error_message, data')
           .eq('project_id', projectId)
           .eq('status', 'uploaded')
           .like('error_message', 'Sprunget over%')
           .limit(500);
         if (data) {
           skippedResults.products = data.map(d => ({
+            id: d.id,
             external_id: d.external_id,
             error_message: d.error_message,
             title: (d.data as Record<string, unknown>)?.title as string || '',
@@ -459,7 +461,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (statusCounts.customers.failed > 0) {
         const { data } = await supabase
           .from('canonical_customers')
-          .select('external_id, error_message, data')
+          .select('id, external_id, error_message, data')
           .eq('project_id', projectId)
           .eq('status', 'failed')
           .limit(500);
@@ -470,7 +472,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (statusCounts.orders.failed > 0) {
         const { data } = await supabase
           .from('canonical_orders')
-          .select('external_id, error_message, data')
+          .select('id, external_id, error_message, data')
           .eq('project_id', projectId)
           .eq('status', 'failed')
           .limit(500);
@@ -481,11 +483,12 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (statusCounts.categories.failed > 0) {
         const { data } = await supabase
           .from('canonical_categories')
-          .select('external_id, error_message, name')
+          .select('id, external_id, error_message, name')
           .eq('project_id', projectId)
           .eq('status', 'failed')
           .limit(500);
         if (data) failedResults.categories = data.map(d => ({ 
+          id: d.id,
           external_id: d.external_id, 
           error_message: d.error_message,
           name: d.name,
@@ -496,7 +499,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       if (statusCounts.pages.failed > 0) {
         const { data } = await supabase
           .from('canonical_pages')
-          .select('external_id, error_message, data')
+          .select('id, external_id, error_message, data')
           .eq('project_id', projectId)
           .eq('status', 'failed')
           .limit(500);
@@ -1005,14 +1008,14 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                           variant="ghost"
                                           size="sm"
                                           onClick={() => {
-                                            const ids = errorItems.map(item => item.external_id);
+                                            const ids = errorItems.map(item => item.id);
                                             onRetryFailed(type, ids);
                                           }}
                                           disabled={isRetrying === type}
                                           className="text-xs h-6 px-2 text-amber-700 hover:bg-amber-500/10"
                                           title="Prøv denne fejltype igen"
                                         >
-                                          {isRetrying === type && retryingIds?.some(id => errorItems.some(e => e.external_id === id)) ? (
+                                          {isRetrying === type && retryingIds?.some(id => errorItems.some(e => e.id === id)) ? (
                                             <Loader2 className="w-3 h-3 animate-spin" />
                                           ) : (
                                             <RotateCcw className="w-3 h-3" />

@@ -467,10 +467,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [retryingEntityType, setRetryingEntityType] = useState<EntityType | null>(null);
   const [retryingIds, setRetryingIds] = useState<string[] | null>(null);
 
-  // Handle retry for failed items of a specific entity type (optionally with specific IDs)
-  const handleRetryFailed = async (entityType: EntityType, externalIds?: string[]) => {
+  // Handle retry for failed items of a specific entity type (optionally with specific record IDs)
+  const handleRetryFailed = async (entityType: EntityType, recordIds?: string[]) => {
     setRetryingEntityType(entityType);
-    setRetryingIds(externalIds || null);
+    setRetryingIds(recordIds || null);
     try {
       // First, reset failed items to pending for the specific entity type
       const response = await supabase.functions.invoke('reset-upload-status', {
@@ -478,7 +478,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           projectId: project.id,
           entityType: entityType,
           resetScope: 'failed',
-          externalIds: externalIds, // Optional: if provided, only reset these specific items
+          recordIds: recordIds, // Optional: if provided, only reset these specific rows
         },
       });
 
