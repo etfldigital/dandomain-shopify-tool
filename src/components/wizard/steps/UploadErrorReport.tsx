@@ -511,46 +511,116 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     fetchItems();
   }, [projectId, statusCounts, jobs]);
 
+  // Extract the specific field name from error message for better grouping
+  const extractFieldFromError = (message: string): string | null => {
+    // Match patterns like "Telefonnummer er allerede i brug" or "phone has already been taken"
+    const fieldPatterns = [
+      /^(telefonnummer|phone)/i,
+      /^(e-mail|email)/i,
+      /^(navn|name|first_name|last_name)/i,
+      /^(adresse|address)/i,
+      /^(postnummer|zip|postal)/i,
+      /^(land|country)/i,
+      /^(titel|title)/i,
+      /^(varenummer|sku)/i,
+      /^(pris|price)/i,
+      /^(varelinjer|line.?items)/i,
+    ];
+    
+    for (const pattern of fieldPatterns) {
+      if (pattern.test(message)) {
+        const match = message.match(pattern);
+        return match ? match[0].toLowerCase() : null;
+      }
+    }
+    return null;
+  };
+
   // Normalize error messages for better grouping (removes specific values like emails)
-  const normalizeErrorForGrouping = (message: string): string => {
+  // entityType parameter allows for different grouping strategies per entity
+  const normalizeErrorForGrouping = (message: string, entityType: EntityType): string => {
     if (!message) return 'Ukendt fejl';
     
     // First translate the error
     const translated = translateError(message);
     
-    // For orders: group "Kunde med e-mail xxx@xxx blev ikke fundet" style errors
-    const customerEmailPattern = /Kunde med e-mail .+ blev ikke fundet/i;
-    if (customerEmailPattern.test(translated) || customerEmailPattern.test(message)) {
-      return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+    // For ORDERS: group customer not found errors together
+    if (entityType === 'orders') {
+      const customerEmailPattern = /Kunde med e-mail .+ blev ikke fundet/i;
+      if (customerEmailPattern.test(translated) || customerEmailPattern.test(message)) {
+        return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+      }
+      
+      const customerNotFoundPattern = /kunde?.+ikke.+fundet|customer.+not.+found|email.+not.+found/i;
+      if (customerNotFoundPattern.test(message)) {
+        return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+      }
+      
+      const productNotFoundPattern = /produkt.+ikke.+fundet|product.+not.+found|variant.+not.+found/i;
+      if (productNotFoundPattern.test(message)) {
+        return 'Produkt blev ikke fundet i Shopify';
+      }
+      
+      const addressPattern = /adresse.+ugyldig|address.+invalid|postnummer|zip|postal/i;
+      if (addressPattern.test(message)) {
+        return 'Adressefejl (ugyldig eller manglende adresseinformation)';
+      }
+      
+      const lineItemPattern = /varelinje|line.?item/i;
+      if (lineItemPattern.test(message) || lineItemPattern.test(translated)) {
+        return 'Ordren mangler varelinjer';
+      }
     }
     
-    // Original error patterns (before translation)
-    const customerNotFoundPattern = /kunde?.+ikke.+fundet|customer.+not.+found|email.+not.+found/i;
-    if (customerNotFoundPattern.test(message)) {
-      return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+    // For CUSTOMERS: keep field-specific errors separate (phone, email, etc.)
+    // Don't over-group - each field type should remain separate
+    if (entityType === 'customers') {
+      // Phone errors - keep together but separate from other errors
+      if (/telefon|phone/i.test(message) || /telefon|phone/i.test(translated)) {
+        if (/allerede i brug|already been taken/i.test(message)) {
+          return 'Telefonnummer er allerede i brug hos en anden kunde';
+        }
+        if (/ugyldig|invalid/i.test(message)) {
+          return 'Telefonnummeret er ugyldigt';
+        }
+        return translated;
+      }
+      
+      // Email errors
+      if (/e-mail|email/i.test(message) || /e-mail|email/i.test(translated)) {
+        if (/allerede|already/i.test(message)) {
+          return 'E-mailadressen er allerede registreret';
+        }
+        if (/ugyldig|invalid/i.test(message)) {
+          return 'E-mailadressen er ugyldig';
+        }
+        return translated;
+      }
+      
+      // Address errors
+      if (/adresse|address|postnummer|zip|postal|land|country/i.test(message)) {
+        return 'Adressefejl: ' + translated;
+      }
+      
+      // Return the translated message for other customer errors
+      return translated;
     }
     
-    // Product not found patterns
-    const productNotFoundPattern = /produkt.+ikke.+fundet|product.+not.+found|variant.+not.+found/i;
-    if (productNotFoundPattern.test(message)) {
-      return 'Produkt blev ikke fundet i Shopify';
+    // For PRODUCTS: keep translated message as-is for better specificity
+    if (entityType === 'products') {
+      return translated;
     }
     
-    // Address validation errors
-    const addressPattern = /adresse.+ugyldig|address.+invalid|postnummer|zip|postal/i;
-    if (addressPattern.test(message)) {
-      return 'Adressefejl (ugyldig eller manglende adresseinformation)';
-    }
-    
+    // For other entity types, return translated message
     return translated;
   };
 
-  // Group items by error message (normalized for better grouping)
-  const groupByError = (items: SkippedOrFailedItem[], normalize = true): Map<string, SkippedOrFailedItem[]> => {
+  // Group items by error message (with entity-aware normalization)
+  const groupByError = (items: SkippedOrFailedItem[], entityType: EntityType, normalize = true): Map<string, SkippedOrFailedItem[]> => {
     const grouped = new Map<string, SkippedOrFailedItem[]>();
     for (const item of items) {
       const key = normalize 
-        ? normalizeErrorForGrouping(item.error_message || 'Ukendt fejl')
+        ? normalizeErrorForGrouping(item.error_message || 'Ukendt fejl', entityType)
         : translateError(item.error_message || 'Ukendt fejl');
       if (!grouped.has(key)) {
         grouped.set(key, []);
@@ -743,8 +813,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
               const skippedCount = job?.skipped_count || 0;
               const failed = failedItems[type];
               const skipped = skippedItems[type];
-              const groupedErrors = groupByError(failed);
-              const groupedSkipped = groupByError(skipped);
+              const groupedErrors = groupByError(failed, type);
+              const groupedSkipped = groupByError(skipped, type);
               
               // Skip if no errors or skips for this entity
               if (failedCount === 0 && skippedCount === 0) return null;
