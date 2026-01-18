@@ -76,39 +76,21 @@ serve(async (req) => {
         );
     }
 
-    // Build the base query
-    let countQuery = supabase
-      .from(tableName)
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', projectId)
-      .in('status', statusFilter);
-
+    // Build the update query with count
     let updateQuery = supabase
       .from(tableName)
-      .update(updateData)
+      .update(updateData, { count: 'exact' })
       .eq('project_id', projectId)
       .in('status', statusFilter);
 
     // If specific externalIds are provided, filter by them
     if (externalIds && Array.isArray(externalIds) && externalIds.length > 0) {
       console.log(`Filtering by ${externalIds.length} specific external IDs`);
-      countQuery = countQuery.in('external_id', externalIds);
       updateQuery = updateQuery.in('external_id', externalIds);
     }
 
-    // First, count how many will be affected
-    const { count: affectedCount, error: countError } = await countQuery;
-
-    if (countError) {
-      console.error('Count error:', countError);
-      return new Response(
-        JSON.stringify({ error: countError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Perform the update
-    const { error: updateError } = await updateQuery;
+    // Perform the update and get count
+    const { count: affectedCount, error: updateError } = await updateQuery;
 
     if (updateError) {
       console.error('Update error:', updateError);
