@@ -21,6 +21,7 @@ import {
   ChevronRight,
   AlertTriangle,
   Loader2,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { EntityType } from '@/types/database';
@@ -45,6 +46,8 @@ interface UploadErrorReportProps {
   projectId: string;
   jobs: UploadJob[];
   statusCounts: Record<EntityType, { pending: number; uploaded: number; failed: number }>;
+  onRetryFailed?: (entityType: EntityType) => Promise<void>;
+  isRetrying?: EntityType | null;
 }
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string; singular: string }[] = [
@@ -366,7 +369,7 @@ const SKIP_REASONS: Record<EntityType, { title: string; description: string }> =
   },
 };
 
-export function UploadErrorReport({ projectId, jobs, statusCounts }: UploadErrorReportProps) {
+export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed, isRetrying }: UploadErrorReportProps) {
   const [loadingDownload, setLoadingDownload] = useState<string | null>(null);
   const [failedItems, setFailedItems] = useState<Record<EntityType, SkippedOrFailedItem[]>>({
     products: [],
@@ -779,20 +782,38 @@ export function UploadErrorReport({ projectId, jobs, statusCounts }: UploadError
                               <AlertTriangle className="w-4 h-4" />
                               Fejlede elementer ({failedCount})
                             </h4>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDownload(type, 'failed')}
-                              disabled={loadingDownload === `${type}-failed`}
-                              className="text-xs h-7"
-                            >
-                              {loadingDownload === `${type}-failed` ? (
-                                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                              ) : (
-                                <Download className="w-3 h-3 mr-1" />
+                            <div className="flex items-center gap-2">
+                              {onRetryFailed && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => onRetryFailed(type)}
+                                  disabled={isRetrying === type}
+                                  className="text-xs h-7 border-amber-500/50 text-amber-700 hover:bg-amber-500/10"
+                                >
+                                  {isRetrying === type ? (
+                                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="w-3 h-3 mr-1" />
+                                  )}
+                                  Prøv igen
+                                </Button>
                               )}
-                              Download CSV
-                            </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDownload(type, 'failed')}
+                                disabled={loadingDownload === `${type}-failed`}
+                                className="text-xs h-7"
+                              >
+                                {loadingDownload === `${type}-failed` ? (
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                ) : (
+                                  <Download className="w-3 h-3 mr-1" />
+                                )}
+                                Download CSV
+                              </Button>
+                            </div>
                           </div>
                           
                           {/* Grouped errors - with normalized messages */}

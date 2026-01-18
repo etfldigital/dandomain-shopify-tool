@@ -464,6 +464,49 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const allCompleted = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
   const hasFailed = jobs.some(j => j.error_count > 0);
   const [hasCelebrated, setHasCelebrated] = useState(false);
+  const [retryingEntityType, setRetryingEntityType] = useState<EntityType | null>(null);
+
+  // Handle retry for failed items of a specific entity type
+  const handleRetryFailed = async (entityType: EntityType) => {
+    setRetryingEntityType(entityType);
+    try {
+      // First, reset failed items to pending for the specific entity type
+      const response = await supabase.functions.invoke('reset-upload-status', {
+        body: {
+          projectId: project.id,
+          entityType: entityType,
+          resetScope: 'failed',
+        },
+      });
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label || entityType;
+      toast.success(`${response.data.resetCount} ${entityLabel.toLowerCase()} nulstillet - starter upload...`);
+      
+      // Refresh status counts
+      await fetchStatusCounts();
+      
+      // Start the upload process
+      await supabase.functions.invoke('upload-worker', {
+        body: {
+          projectId: project.id,
+          action: 'start',
+          isTestMode: false,
+        },
+      });
+      
+      // Refresh jobs
+      await fetchJobs();
+    } catch (error) {
+      console.error('Retry failed:', error);
+      toast.error(`Kunne ikke genstarte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setRetryingEntityType(null);
+    }
+  };
 
   // Celebration effect when all jobs complete
   useEffect(() => {
@@ -1054,6 +1097,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           error_details: j.error_details,
         }))}
         statusCounts={statusCounts}
+        onRetryFailed={handleRetryFailed}
+        isRetrying={retryingEntityType}
       />
 
       {/* Reset Confirmation Dialog */}
