@@ -52,7 +52,10 @@ import {
   Store,
   FlaskConicalOff,
   Zap,
+  PartyPopper,
+  ArrowRight,
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -466,6 +469,39 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const isPaused = jobs.some(j => j.status === 'paused');
   const allCompleted = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
   const hasFailed = jobs.some(j => j.error_count > 0);
+  const [hasCelebrated, setHasCelebrated] = useState(false);
+
+  // Celebration effect when all jobs complete
+  useEffect(() => {
+    if (allCompleted && !hasCelebrated) {
+      setHasCelebrated(true);
+      // Fire confetti celebration
+      const duration = 3000;
+      const end = Date.now() + duration;
+
+      const frame = () => {
+        confetti({
+          particleCount: 3,
+          angle: 60,
+          spread: 55,
+          origin: { x: 0, y: 0.8 },
+          colors: ['#22c55e', '#3b82f6', '#a855f7'],
+        });
+        confetti({
+          particleCount: 3,
+          angle: 120,
+          spread: 55,
+          origin: { x: 1, y: 0.8 },
+          colors: ['#22c55e', '#3b82f6', '#a855f7'],
+        });
+
+        if (Date.now() < end) {
+          requestAnimationFrame(frame);
+        }
+      };
+      frame();
+    }
+  }, [allCompleted, hasCelebrated]);
   
   const runningJob = jobs.find(j => j.status === 'running');
   const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
@@ -624,8 +660,29 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         </p>
       </div>
 
-      {/* Background processing info banner */}
-      {isUploading && (
+      {/* Celebration banner when all completed */}
+      {allCompleted && (
+        <Card className="border-green-500/50 bg-green-500/10">
+          <CardContent className="pt-6 pb-6">
+            <div className="flex items-center justify-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-green-500/20 flex items-center justify-center">
+                <PartyPopper className="w-6 h-6 text-green-600" />
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-green-700 dark:text-green-400">
+                  Upload færdig! 🎉
+                </p>
+                <p className="text-sm text-green-600 dark:text-green-500">
+                  Alle dine data er blevet overført til Shopify
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Background processing info banner - only show while actively uploading */}
+      {isUploading && !allCompleted && (
         <Card className="border-primary/50 bg-primary/5">
           <CardContent className="pt-4">
             <div className="flex items-start gap-3">
@@ -645,9 +702,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         <CardHeader>
           <CardTitle className="text-lg">Upload Progress</CardTitle>
           <CardDescription>
-            Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer
+            {allCompleted 
+              ? 'Upload er fuldført. Alle data er nu i Shopify.'
+              : 'Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer'
+            }
           </CardDescription>
-          {(isUploading || isStarting) && (
+          {/* Only show live stats while actively uploading, NOT when completed */}
+          {(isUploading || isStarting) && !allCompleted && (
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               <div className="flex items-center gap-2">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
@@ -658,25 +719,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
                   {formatHeartbeat(secondsSinceHeartbeat)}
                 </span>
-                {(isUploading || isStarting) && (
-                  currentSpeed > 0 ? (
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="text-primary font-medium cursor-help flex items-center gap-1">
-                            ⚡ {formatSpeed(currentSpeed)}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Aktuel upload-hastighed</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  ) : (
-                    <span className="text-muted-foreground font-medium flex items-center gap-1">
-                      ⚡ beregner…
-                    </span>
-                  )
+                {currentSpeed > 0 ? (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-primary font-medium cursor-help flex items-center gap-1">
+                          ⚡ {formatSpeed(currentSpeed)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Aktuel upload-hastighed</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : (
+                  <span className="text-muted-foreground font-medium flex items-center gap-1">
+                    ⚡ beregner…
+                  </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (
                   <TooltipProvider>
@@ -952,7 +1011,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </Button>
         )}
 
-        {isUploading && (
+        {/* Show pause/stop only while actively uploading and NOT completed */}
+        {isUploading && !allCompleted && (
           <>
             <Button variant="outline" onClick={handlePauseResume}>
               {isPaused ? (
@@ -974,10 +1034,18 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
 
+        {/* When completed: show "Start igen" and "Videre" */}
         {allCompleted && (
-          <Button onClick={onNext}>
-            Se rapport
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => handleStartUpload(false)}>
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Start igen
+            </Button>
+            <Button onClick={onNext} className="bg-green-600 hover:bg-green-700">
+              <ArrowRight className="w-4 h-4 mr-2" />
+              Videre
+            </Button>
+          </>
         )}
       </div>
 
