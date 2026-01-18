@@ -41,26 +41,26 @@ export function ProjectCard({ project, onOpen, onDelete }: ProjectCardProps) {
   const totalItems = project.product_count + project.customer_count + project.order_count;
 
   return (
-    <Card className="group hover:shadow-lg transition-all duration-200 cursor-pointer border-border hover:border-primary/20">
-      <CardContent className="p-6" onClick={() => onOpen(project.id)}>
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+    <Card className="group hover:shadow-lg transition-all duration-200 cursor-pointer border-border hover:border-primary/20 w-full">
+      <CardContent className="p-4 sm:p-6" onClick={() => onOpen(project.id)}>
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className="w-10 h-10 shrink-0 rounded-xl bg-primary/10 flex items-center justify-center">
               <ShoppingBag className="w-5 h-5 text-primary" />
             </div>
-            <div>
-              <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors truncate">
                 {project.name}
               </h3>
               {project.dandomain_shop_url && (
-                <p className="text-sm text-muted-foreground truncate max-w-[200px]">
+                <p className="text-sm text-muted-foreground truncate">
                   {project.dandomain_shop_url}
                 </p>
               )}
             </div>
           </div>
           
-          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
             <Badge variant={statusConfig.variant}>{statusConfig.label}</Badge>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -81,7 +81,7 @@ export function ProjectCard({ project, onOpen, onDelete }: ProjectCardProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-4">
           <Stat icon={ShoppingBag} label="Produkter" value={project.product_count} />
           <Stat icon={Users} label="Kunder" value={project.customer_count} />
           <Stat icon={FileText} label="Ordrer" value={project.order_count} />
@@ -89,13 +89,13 @@ export function ProjectCard({ project, onOpen, onDelete }: ProjectCardProps) {
         </div>
 
         <div className="flex items-center justify-between pt-4 border-t border-border">
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <Clock className="w-3.5 h-3.5" />
-            <span>
+          <div className="flex items-center gap-1.5 text-xs sm:text-sm text-muted-foreground">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">
               Opdateret {formatDistanceToNow(new Date(project.updated_at), { addSuffix: true, locale: da })}
             </span>
           </div>
-          <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+          <ChevronRight className="w-5 h-5 shrink-0 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
         </div>
       </CardContent>
     </Card>
