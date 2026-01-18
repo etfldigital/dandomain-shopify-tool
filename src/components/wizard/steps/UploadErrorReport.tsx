@@ -458,7 +458,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
         if (data) failedResults.products = data as SkippedOrFailedItem[];
       }
 
-      // Fetch skipped products (status=uploaded but with skip error message)
+      // Fetch skipped products (status=uploaded but with skip error message starting with "Sprunget over")
       const productJob = getJobForEntity('products');
       if (productJob && productJob.skipped_count > 0) {
         const { data } = await supabase
@@ -476,6 +476,30 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
             title: (d.data as Record<string, unknown>)?.title as string || '',
             data: d.data as Record<string, unknown>,
           }));
+        }
+      }
+
+      // ALSO fetch products with status=uploaded but with OTHER error messages (not "Sprunget over")
+      // These are products that had errors during upload but were marked as uploaded anyway
+      {
+        const { data } = await supabase
+          .from('canonical_products')
+          .select('id, external_id, error_message, data')
+          .eq('project_id', projectId)
+          .eq('status', 'uploaded')
+          .not('error_message', 'is', null)
+          .not('error_message', 'like', 'Sprunget over%')
+          .limit(500);
+        if (data && data.length > 0) {
+          // Add these to skippedResults.products for display
+          const additionalSkipped = data.map(d => ({
+            id: d.id,
+            external_id: d.external_id,
+            error_message: d.error_message,
+            title: (d.data as Record<string, unknown>)?.title as string || '',
+            data: d.data as Record<string, unknown>,
+          }));
+          skippedResults.products = [...skippedResults.products, ...additionalSkipped];
         }
       }
 
