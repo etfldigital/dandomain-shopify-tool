@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   Loader2,
   RotateCcw,
+  CheckCircle2,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { EntityType } from '@/types/database';
@@ -390,6 +391,9 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
   });
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  
+  // Track which error groups have been retried (by entity type + message hash)
+  const [retriedGroups, setRetriedGroups] = useState<Set<string>>(new Set());
 
   // Get job for entity
   const getJobForEntity = (entityType: EntityType) => {
@@ -975,18 +979,35 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                             {Array.from(groupedErrors.entries()).map(([message, errorItems]) => {
                               const { details: sampleDetails, type: detailType } = getSampleDetails(errorItems, 3);
                               const safeFilename = message.replace(/[^a-zæøåA-ZÆØÅ0-9]/g, '-').substring(0, 30);
+                              const groupKey = `${type}-${message}`;
+                              const wasRetried = retriedGroups.has(groupKey);
                               
                               return (
                                 <div 
                                   key={message} 
-                                  className="bg-destructive/5 border border-destructive/20 rounded-lg p-3"
+                                  className={`rounded-lg p-3 ${
+                                    wasRetried 
+                                      ? 'bg-amber-500/10 border border-amber-500/30' 
+                                      : 'bg-destructive/5 border border-destructive/20'
+                                  }`}
                                 >
                                   <div className="flex items-start gap-2">
-                                    <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
+                                    {wasRetried ? (
+                                      <CheckCircle2 className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                                    ) : (
+                                      <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
+                                    )}
                                     <div className="flex-1 min-w-0">
-                                      <p className="text-sm font-medium text-destructive">
-                                        {message}
-                                      </p>
+                                      <div className="flex items-center gap-2">
+                                        <p className={`text-sm font-medium ${wasRetried ? 'text-amber-700' : 'text-destructive'}`}>
+                                          {message}
+                                        </p>
+                                        {wasRetried && (
+                                          <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-700 border-amber-500/30">
+                                            Forsøgt igen
+                                          </Badge>
+                                        )}
+                                      </div>
                                       <p className="text-xs text-muted-foreground mt-1">
                                         {errorItems.length === 1 
                                           ? `1 ${singular}` 
@@ -1009,6 +1030,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                           size="sm"
                                           onClick={() => {
                                             const ids = errorItems.map(item => item.id);
+                                            // Mark this group as retried
+                                            setRetriedGroups(prev => new Set([...prev, groupKey]));
                                             onRetryFailed(type, ids);
                                           }}
                                           disabled={isRetrying === type}
@@ -1036,7 +1059,11 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                           <Download className="w-3 h-3" />
                                         )}
                                       </Button>
-                                      <Badge variant="outline" className="text-xs bg-destructive/10 text-destructive border-destructive/30">
+                                      <Badge variant="outline" className={`text-xs ${
+                                        wasRetried 
+                                          ? 'bg-amber-500/10 text-amber-700 border-amber-500/30' 
+                                          : 'bg-destructive/10 text-destructive border-destructive/30'
+                                      }`}>
                                         {errorItems.length}
                                       </Badge>
                                     </div>
