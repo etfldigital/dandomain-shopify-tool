@@ -964,7 +964,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     segments={[
                       { 
                         value: counts.uploaded, 
-                        className: "bg-green-500",
+                        className: "bg-primary",
                         label: `${counts.uploaded} uploadet` 
                       },
                       { 
