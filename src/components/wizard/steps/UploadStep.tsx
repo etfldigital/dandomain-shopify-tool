@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import { MultiProgress } from '@/components/ui/multi-progress';
 import { 
   Tooltip,
   TooltipContent,
@@ -956,7 +957,29 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     )}
                   </div>
                 </div>
-                {(isUploading || job || totalFromDb > 0) && <Progress value={percent} className="h-2" />}
+                {(isUploading || job || totalFromDb > 0) && (
+                  <MultiProgress 
+                    className="h-2"
+                    total={total}
+                    segments={[
+                      { 
+                        value: counts.uploaded, 
+                        className: "bg-green-500",
+                        label: `${counts.uploaded} uploadet` 
+                      },
+                      { 
+                        value: skipped, 
+                        className: "bg-amber-500",
+                        label: `${skipped} skipped` 
+                      },
+                      { 
+                        value: counts.failed, 
+                        className: "bg-destructive",
+                        label: `${counts.failed} fejlet` 
+                      },
+                    ]}
+                  />
+                )}
               </div>
             );
           })}
@@ -980,8 +1003,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             </div>
           )}
 
-          {/* Persistent Shop Type Indicator - stays visible once detected */}
-          {detectedShopType && (
+          {/* Persistent Shop Type Indicator - only show during active upload */}
+          {detectedShopType && isUploading && (
             <div className="pt-4 border-t">
               <ShopTypeIndicator 
                 entityType={detectedShopType.entityType}
