@@ -391,9 +391,27 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
   });
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const retriedStorageKey = `uploadErrorReport.retriedItemIds.${projectId}`;
   
-  // Track which error groups have been retried (by entity type + message hash)
-  const [retriedGroups, setRetriedGroups] = useState<Set<string>>(new Set());
+  // Track which specific items have been retried (by record id)
+  const [retriedItemIds, setRetriedItemIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(retriedStorageKey);
+      const ids = raw ? (JSON.parse(raw) as string[]) : [];
+      return new Set(ids);
+    } catch {
+      return new Set();
+    }
+  });
+
+  // Persist markers so they don't disappear during retry cycles / refresh
+  useEffect(() => {
+    try {
+      localStorage.setItem(retriedStorageKey, JSON.stringify(Array.from(retriedItemIds)));
+    } catch {
+      // ignore
+    }
+  }, [retriedStorageKey, retriedItemIds]);
 
   // Get job for entity
   const getJobForEntity = (entityType: EntityType) => {
@@ -638,34 +656,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     return grouped;
   };
   
-  // Clean up retriedGroups when items are successfully retried (removed from failed list)
-  useEffect(() => {
-    if (retriedGroups.size === 0) return;
-    
-    // Build a set of all current group keys
-    const currentGroupKeys = new Set<string>();
-    for (const { type } of ENTITY_CONFIG) {
-      const failed = failedItems[type];
-      const groupedErrors = groupByError(failed, type);
-      for (const [message] of groupedErrors.entries()) {
-        currentGroupKeys.add(`${type}-${message}`);
-      }
-    }
-    
-    // Remove retried groups that no longer exist (meaning retry was successful)
-    const newRetriedGroups = new Set<string>();
-    for (const groupKey of retriedGroups) {
-      if (currentGroupKeys.has(groupKey)) {
-        newRetriedGroups.add(groupKey);
-      }
-    }
-    
-    // Only update if there's a difference
-    if (newRetriedGroups.size !== retriedGroups.size) {
-      setRetriedGroups(newRetriedGroups);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [failedItems]);
+  // We track retried item IDs so the “Forsøgt igen” marker persists even if items
+  // temporarily move out of the failed list while a retry is running.
 
   // Extract email from error message if available
   const extractEmailFromError = (message: string): string | null => {
@@ -975,9 +967,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                   variant="outline"
                                   size="sm"
                                   onClick={() => {
-                                    // Mark all error groups for this entity type as retried
-                                    const allGroupKeys = Array.from(groupedErrors.keys()).map(msg => `${type}-${msg}`);
-                                    setRetriedGroups(prev => new Set([...prev, ...allGroupKeys]));
+                                    const ids = failed.map(item => item.id);
+                                    setRetriedItemIds(prev => new Set([...prev, ...ids]));
                                     onRetryFailed(type, undefined);
                                   }}
                                   disabled={isRetrying === type}
@@ -1012,9 +1003,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                           <div className="space-y-2">
                             {Array.from(groupedErrors.entries()).map(([message, errorItems]) => {
                               const { details: sampleDetails, type: detailType } = getSampleDetails(errorItems, 3);
-                              const safeFilename = message.replace(/[^a-zæøåA-ZÆØÅ0-9]/g, '-').substring(0, 30);
-                              const groupKey = `${type}-${message}`;
-                              const wasRetried = retriedGroups.has(groupKey);
+                               const safeFilename = message.replace(/[^a-zæøåA-ZÆØÅ0-9]/g, '-').substring(0, 30);
+                               const wasRetried = errorItems.every(item => retriedItemIds.has(item.id));
                               
                               return (
                                 <div 
@@ -1064,8 +1054,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                           size="sm"
                                           onClick={() => {
                                             const ids = errorItems.map(item => item.id);
-                                            // Mark this group as retried
-                                            setRetriedGroups(prev => new Set([...prev, groupKey]));
+                                            setRetriedItemIds(prev => new Set([...prev, ...ids]));
                                             onRetryFailed(type, ids);
                                           }}
                                           disabled={isRetrying === type}
