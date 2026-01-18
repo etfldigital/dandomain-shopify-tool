@@ -974,7 +974,12 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  onClick={() => onRetryFailed(type, undefined)}
+                                  onClick={() => {
+                                    // Mark all error groups for this entity type as retried
+                                    const allGroupKeys = Array.from(groupedErrors.keys()).map(msg => `${type}-${msg}`);
+                                    setRetriedGroups(prev => new Set([...prev, ...allGroupKeys]));
+                                    onRetryFailed(type, undefined);
+                                  }}
                                   disabled={isRetrying === type}
                                   className="text-xs h-7 border-amber-500/50 text-amber-700 hover:bg-amber-500/10"
                                 >
