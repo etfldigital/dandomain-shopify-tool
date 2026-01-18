@@ -777,21 +777,46 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     }
   };
 
-  // Generate CSV content for failed items
+  // Generate CSV content for failed items - include all original data fields
   const generateFailedCsv = (entityType: EntityType) => {
     const items = failedItems[entityType];
-    const rows = [['External ID', 'Titel/Navn', 'Fejlbesked', 'Brugervenlig fejl']];
     
-    for (const item of items) {
-      const title = item.title || item.name || (item.data as Record<string, unknown>)?.title as string || '';
-      rows.push([
-        item.external_id,
-        title,
-        item.error_message || 'Ukendt fejl',
-        translateError(item.error_message || ''),
-      ]);
+    if (items.length > 0) {
+      // Export ALL fields from the original data plus error info
+      // Collect all unique keys from all data objects
+      const allKeys = new Set<string>();
+      for (const item of items) {
+        const data = item.data as Record<string, unknown> || {};
+        Object.keys(data).forEach(key => allKeys.add(key));
+      }
+      
+      // Build header row with all fields + error info
+      const dataFields = Array.from(allKeys);
+      const headers = ['external_id', ...dataFields, 'error_message', 'error_friendly'];
+      
+      const rows: string[][] = [headers];
+      
+      for (const item of items) {
+        const data = item.data as Record<string, unknown> || {};
+        const row: string[] = [
+          item.external_id || '',
+          ...dataFields.map(field => {
+            const value = data[field];
+            if (value === null || value === undefined) return '';
+            if (typeof value === 'object') return JSON.stringify(value);
+            return String(value);
+          }),
+          item.error_message || 'Ukendt fejl',
+          translateError(item.error_message || ''),
+        ];
+        rows.push(row);
+      }
+      
+      return rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
     }
-    return rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    
+    // Fallback for empty items
+    return [['External ID', 'Titel/Navn', 'Fejlbesked', 'Brugervenlig fejl']].map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
   };
 
   // Generate CSV content for skipped items - include all original product data
@@ -831,17 +856,33 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       return rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
     }
     
-    // For other entity types, use simple format
-    const rows = [['External ID', 'Titel/Navn', 'Årsag']];
+    // For other entity types (orders, customers, categories), also export all fields
+    const allKeys = new Set<string>();
+    for (const item of items) {
+      const data = item.data as Record<string, unknown> || {};
+      Object.keys(data).forEach(key => allKeys.add(key));
+    }
+    
+    const dataFields = Array.from(allKeys);
+    const headers = ['external_id', ...dataFields, 'skip_reason'];
+    
+    const rows: string[][] = [headers];
     
     for (const item of items) {
-      const title = item.title || item.name || (item.data as Record<string, unknown>)?.title as string || '';
-      rows.push([
-        item.external_id,
-        title,
+      const data = item.data as Record<string, unknown> || {};
+      const row: string[] = [
+        item.external_id || '',
+        ...dataFields.map(field => {
+          const value = data[field];
+          if (value === null || value === undefined) return '';
+          if (typeof value === 'object') return JSON.stringify(value);
+          return String(value);
+        }),
         item.error_message || SKIP_REASONS[entityType].description,
-      ]);
+      ];
+      rows.push(row);
     }
+    
     return rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
   };
 
