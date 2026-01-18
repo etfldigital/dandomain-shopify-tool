@@ -86,6 +86,7 @@ const ERROR_TRANSLATIONS: Record<string, string> = {
   // Order errors
   'customer not found': 'Kunden blev ikke fundet i Shopify',
   'line items can\'t be blank': 'Ordren skal indeholde mindst én varelinje',
+  'must have at least one line item': 'Ordren skal indeholde mindst én varelinje',
   'order not found': 'Ordren blev ikke fundet',
   'no line items': 'Ordren har ingen varelinjer',
   
