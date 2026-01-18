@@ -385,7 +385,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     categories: [],
     pages: [],
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
   // Get job for entity
   const getJobForEntity = (entityType: EntityType) => {
@@ -400,7 +401,10 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
   // Fetch failed and skipped items from database
   useEffect(() => {
     const fetchItems = async () => {
-      setIsLoading(true);
+      // Only show loading spinner on initial load
+      if (!hasLoadedOnce) {
+        setIsInitialLoading(true);
+      }
       
       const failedResults: Record<EntityType, SkippedOrFailedItem[]> = {
         products: [],
@@ -499,7 +503,8 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
 
       setFailedItems(failedResults);
       setSkippedItems(skippedResults);
-      setIsLoading(false);
+      setIsInitialLoading(false);
+      setHasLoadedOnce(true);
     };
 
     fetchItems();
@@ -725,7 +730,7 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
       </CardHeader>
       
       <CardContent>
-        {isLoading ? (
+        {isInitialLoading && !hasLoadedOnce ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
           </div>
