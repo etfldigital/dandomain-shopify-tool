@@ -8,12 +8,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { 
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,7 +38,6 @@ import {
   Pause,
   RotateCcw,
   FlaskConical,
-  XCircle,
   MoreVertical,
   Cloud,
   CloudOff,
@@ -60,6 +53,7 @@ import { Badge } from '@/components/ui/badge';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { UploadErrorReport } from './UploadErrorReport';
 
 interface UploadStepProps {
   project: Project;
@@ -1049,106 +1043,18 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         )}
       </div>
 
-      {/* Skipped Details Section */}
-      {totalSkipped > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <SkipForward className="w-5 h-5 text-amber-600" />
-              Sprunget over ({totalSkipped})
-            </CardTitle>
-            <CardDescription>
-              Disse elementer blev sprunget over under upload
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {ENTITY_CONFIG.map(({ type, label }) => {
-                const job = getJobForEntity(type);
-                const skippedCount = job?.skipped_count || 0;
-                if (skippedCount === 0) return null;
-
-                return (
-                  <div key={type} className="border-l-2 border-amber-400/50 pl-3">
-                    <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
-                      {label}: {skippedCount.toLocaleString('da-DK')} sprunget over
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {type === 'products' && 'Produkter uden titel eller med titel "Untitled" blev sprunget over.'}
-                      {type === 'customers' && 'Kunder der allerede eksisterede i Shopify blev linket i stedet for oprettet.'}
-                      {type === 'orders' && 'Ordrer med ugyldige data blev sprunget over.'}
-                      {type === 'categories' && 'Kategorier markeret som "exclude" blev sprunget over.'}
-                      {type === 'pages' && 'Sider uden indhold blev sprunget over.'}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Error Details Section */}
-      {totalErrors > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-destructive" />
-              Fejl under upload ({totalErrors})
-            </CardTitle>
-            <CardDescription>
-              Disse elementer kunne ikke uploades til Shopify
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Accordion type="multiple" className="w-full">
-              {ENTITY_CONFIG.map(({ type, label }) => {
-                const job = getJobForEntity(type);
-                const errorDetails = job?.error_details || [];
-                if (errorDetails.length === 0) return null;
-
-                // Group errors by message
-                const groupedErrors = errorDetails.reduce((acc, err) => {
-                  const key = err.message;
-                  if (!acc[key]) {
-                    acc[key] = [];
-                  }
-                  acc[key].push(err.externalId);
-                  return acc;
-                }, {} as Record<string, string[]>);
-
-                return (
-                  <AccordionItem key={type} value={type}>
-                    <AccordionTrigger className="text-left">
-                      <div className="flex items-center gap-2">
-                        <XCircle className="w-4 h-4 text-destructive" />
-                        <span>{label}: {errorDetails.length} fejl</span>
-                      </div>
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="space-y-4">
-                        {Object.entries(groupedErrors).map(([message, ids]) => (
-                          <div key={message} className="border-l-2 border-destructive/30 pl-3">
-                            <p className="text-sm font-medium text-destructive mb-1">
-                              {message}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {ids.length > 5 
-                                ? `ID'er: ${ids.slice(0, 5).join(', ')} og ${ids.length - 5} flere.`
-                                : `ID'er: ${ids.join(', ')}`
-                              }
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                );
-              })}
-            </Accordion>
-          </CardContent>
-        </Card>
-      )}
+      {/* Error and Skipped Report Section */}
+      <UploadErrorReport 
+        projectId={project.id}
+        jobs={jobs.map(j => ({
+          id: j.id,
+          entity_type: j.entity_type,
+          skipped_count: j.skipped_count,
+          error_count: j.error_count,
+          error_details: j.error_details,
+        }))}
+        statusCounts={statusCounts}
+      />
 
       {/* Reset Confirmation Dialog */}
       <AlertDialog open={resetDialog.open} onOpenChange={(open) => !open && setResetDialog({ open: false, entityType: null, scope: null, count: 0 })}>
