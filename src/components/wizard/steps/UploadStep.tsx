@@ -956,7 +956,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     )}
                   </div>
                 </div>
-                {(isUploading || job) && <Progress value={percent} className="h-2" />}
+                {(isUploading || job || totalFromDb > 0) && <Progress value={percent} className="h-2" />}
               </div>
             );
           })}
