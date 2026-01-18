@@ -61,38 +61,78 @@ const ERROR_TRANSLATIONS: Record<string, string> = {
   'phone has already been taken': 'Telefonnummeret er allerede i brug hos en anden kunde',
   'has already been taken': 'er allerede i brug',
   'phone is invalid': 'Telefonnummeret er ugyldigt',
+  'invalid phone': 'Telefonnummeret er ugyldigt',
+  'phone number is invalid': 'Telefonnummeret er ugyldigt',
   
   // Email errors
   'email has already been taken': 'E-mailadressen er allerede registreret',
   'email is invalid': 'E-mailadressen er ugyldig',
   'email is required': 'E-mailadresse er påkrævet',
+  'invalid email': 'E-mailadressen er ugyldig',
+  'email not found': 'E-mailadressen blev ikke fundet',
   
   // Product errors
-  'title can\'t be blank': 'Produkttitel mangler',
-  'title has already been taken': 'Et produkt med denne titel findes allerede',
+  'title can\'t be blank': 'Titel mangler',
+  'title has already been taken': 'Et element med denne titel findes allerede',
   'sku has already been taken': 'Et produkt med dette varenummer (SKU) findes allerede',
-  'price must be greater than or equal to 0': 'Prisen skal være større end eller lig med 0',
-  'inventory_quantity must be greater than or equal to 0': 'Lagerbeholdningen skal være større end eller lig med 0',
+  'price must be greater than or equal to 0': 'Prisen skal være mindst 0 kr.',
+  'inventory_quantity must be greater than or equal to 0': 'Lagerbeholdningen skal være mindst 0',
+  'product not found': 'Produktet blev ikke fundet i Shopify',
+  'variant not found': 'Produktvarianten blev ikke fundet i Shopify',
   
   // Order errors
-  'customer not found': 'Kunden kunne ikke findes i Shopify',
-  'product not found': 'Produktet kunne ikke findes i Shopify',
+  'customer not found': 'Kunden blev ikke fundet i Shopify',
   'line items can\'t be blank': 'Ordren skal indeholde mindst én varelinje',
+  'order not found': 'Ordren blev ikke fundet',
+  'no line items': 'Ordren har ingen varelinjer',
+  
+  // Customer errors
+  'customer already exists': 'Kunden eksisterer allerede i Shopify',
+  'duplicate customer': 'Kunden er allerede oprettet',
   
   // Image errors
-  'image url is invalid': 'Billedets URL er ugyldig eller kan ikke hentes',
-  'image could not be downloaded': 'Billedet kunne ikke downloades',
+  'image url is invalid': 'Billedets URL er ugyldig eller utilgængelig',
+  'image could not be downloaded': 'Billedet kunne ikke hentes',
+  'invalid image': 'Billedet er ugyldigt',
+  'image too large': 'Billedet er for stort',
+  
+  // Address errors
+  'address is invalid': 'Adressen er ugyldig',
+  'invalid address': 'Adressen er ugyldig',
+  'zip is invalid': 'Postnummeret er ugyldigt',
+  'postal code is invalid': 'Postnummeret er ugyldigt',
+  'country is invalid': 'Landet er ugyldigt',
+  'province is invalid': 'Region/delstat er ugyldig',
+  
+  // Rate limiting
+  'rate limit': 'For mange forespørgsler - prøv igen senere',
+  'too many requests': 'For mange forespørgsler - prøv igen senere',
+  'throttled': 'Shopify API er midlertidigt begrænset',
   
   // General errors
   'is invalid': 'er ugyldig',
   'can\'t be blank': 'må ikke være tom',
   'is too long': 'er for lang',
   'is too short': 'er for kort',
+  'is required': 'er påkrævet',
+  'not found': 'blev ikke fundet',
+  'already exists': 'eksisterer allerede',
+  'must be unique': 'skal være unik',
+  'internal server error': 'Serverfejl hos Shopify',
+  'timeout': 'Forbindelsen tog for lang tid',
+  'connection error': 'Forbindelsesfejl til Shopify',
+  'unauthorized': 'Manglende adgang - tjek API-nøgle',
+  'forbidden': 'Adgang nægtet',
 };
 
 // Translate a technical error message to a user-friendly version
 function translateError(message: string): string {
   if (!message) return 'Ukendt fejl';
+  
+  // Check for "Kunde med e-mail xxx blev ikke fundet" pattern
+  if (/kunde med e-mail .+ blev ikke fundet/i.test(message)) {
+    return 'Kunden blev ikke fundet i Shopify';
+  }
   
   // Check for Shopify API JSON errors like: Shopify API error: 422 - {"errors":{"phone":["has already been taken"]}}
   const jsonMatch = message.match(/\{"errors":\s*(\{[^}]+\})\}/);
@@ -162,16 +202,36 @@ function translateError(message: string): string {
       // Not JSON, continue
     }
     
-    // Return cleaned version
+    // Return cleaned version based on status code
     if (statusCode === '422') {
-      return `Valideringsfejl: ${errorBody}`;
+      // Try to extract meaningful part from error body
+      const cleanedBody = errorBody.replace(/[{}"[\]]/g, '').trim();
+      if (cleanedBody.length < 100) {
+        return `Valideringsfejl: ${translateErrorMessage(cleanedBody)}`;
+      }
+      return 'Valideringsfejl i data';
     } else if (statusCode === '429') {
       return 'For mange forespørgsler - prøv igen senere';
     } else if (statusCode === '404') {
-      return 'Ressourcen blev ikke fundet';
-    } else if (statusCode === '500') {
+      return 'Ressourcen blev ikke fundet i Shopify';
+    } else if (statusCode === '500' || statusCode === '502' || statusCode === '503') {
       return 'Shopify serverfejl - prøv igen senere';
+    } else if (statusCode === '401') {
+      return 'Manglende adgang - tjek API-nøgle';
+    } else if (statusCode === '403') {
+      return 'Adgang nægtet til denne ressource';
     }
+  }
+  
+  // Clean up any remaining technical-looking messages
+  if (message.includes('Error:') || message.includes('error:')) {
+    const cleanedMessage = message.replace(/Error:|error:/gi, '').trim();
+    return translateError(cleanedMessage);
+  }
+  
+  // If message contains JSON-like structures, simplify it
+  if (message.includes('{') && message.includes('}')) {
+    return 'Der opstod en fejl under behandling';
   }
   
   return message;
@@ -186,21 +246,53 @@ function translateFieldName(field: string): string {
     price: 'Pris',
     name: 'Navn',
     address: 'Adresse',
+    address1: 'Adresse',
+    address2: 'Adresse 2',
     city: 'By',
     zip: 'Postnummer',
+    postal_code: 'Postnummer',
     country: 'Land',
+    country_code: 'Landekode',
+    province: 'Region',
+    province_code: 'Regionskode',
     customer: 'Kunde',
     product: 'Produkt',
     variant: 'Variant',
+    variants: 'Varianter',
     inventory: 'Lagerbeholdning',
+    inventory_quantity: 'Lagerbeholdning',
     image: 'Billede',
+    images: 'Billeder',
     line_items: 'Varelinjer',
+    line_item: 'Varelinje',
     first_name: 'Fornavn',
     last_name: 'Efternavn',
     company: 'Firma',
+    note: 'Note',
+    tags: 'Tags',
+    vendor: 'Leverandør',
+    product_type: 'Produkttype',
+    handle: 'URL-navn',
+    body_html: 'Beskrivelse',
+    weight: 'Vægt',
+    weight_unit: 'Vægtenhed',
+    shipping_address: 'Leveringsadresse',
+    billing_address: 'Faktureringsadresse',
+    financial_status: 'Betalingsstatus',
+    fulfillment_status: 'Leveringsstatus',
+    order: 'Ordre',
+    quantity: 'Antal',
+    tax: 'Moms',
+    discount: 'Rabat',
+    currency: 'Valuta',
+    base: 'Basis',
   };
   
-  return fieldTranslations[field.toLowerCase()] || field;
+  return fieldTranslations[field.toLowerCase()] || capitalizeFirst(field.replace(/_/g, ' '));
+}
+
+function capitalizeFirst(str: string): string {
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 }
 
 function translateErrorMessage(msg: string): string {
@@ -208,12 +300,32 @@ function translateErrorMessage(msg: string): string {
     'has already been taken': 'er allerede i brug',
     'is invalid': 'er ugyldig',
     'can\'t be blank': 'må ikke være tom',
+    'cannot be blank': 'må ikke være tom',
+    'is blank': 'er tom',
     'is too long': 'er for lang',
     'is too short': 'er for kort',
     'is required': 'er påkrævet',
+    'is missing': 'mangler',
     'not found': 'blev ikke fundet',
+    'was not found': 'blev ikke fundet',
+    'does not exist': 'eksisterer ikke',
     'must be greater than or equal to 0': 'skal være mindst 0',
+    'must be greater than 0': 'skal være større end 0',
     'must be a number': 'skal være et tal',
+    'must be an integer': 'skal være et heltal',
+    'must be positive': 'skal være et positivt tal',
+    'is not a number': 'er ikke et tal',
+    'is not valid': 'er ikke gyldig',
+    'already exists': 'eksisterer allerede',
+    'must be unique': 'skal være unik',
+    'is a duplicate': 'er en duplikat',
+    'exceeds maximum': 'overskrider maksimum',
+    'is below minimum': 'er under minimum',
+    'failed to process': 'kunne ikke behandles',
+    'could not be processed': 'kunne ikke behandles',
+    'could not be created': 'kunne ikke oprettes',
+    'could not be updated': 'kunne ikke opdateres',
+    'could not be saved': 'kunne ikke gemmes',
   };
   
   const lowerMsg = msg.toLowerCase();
@@ -221,6 +333,11 @@ function translateErrorMessage(msg: string): string {
     if (lowerMsg.includes(pattern.toLowerCase())) {
       return translation;
     }
+  }
+  
+  // If message still looks technical, try to clean it up
+  if (/^[a-z_]+$/.test(msg)) {
+    return capitalizeFirst(msg.replace(/_/g, ' '));
   }
   
   return msg;
