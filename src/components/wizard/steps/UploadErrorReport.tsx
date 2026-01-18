@@ -385,17 +385,73 @@ export function UploadErrorReport({ projectId, jobs, statusCounts }: UploadError
     fetchItems();
   }, [projectId, statusCounts, jobs]);
 
-  // Group items by error message (translated)
-  const groupByError = (items: SkippedOrFailedItem[]): Map<string, SkippedOrFailedItem[]> => {
+  // Normalize error messages for better grouping (removes specific values like emails)
+  const normalizeErrorForGrouping = (message: string): string => {
+    if (!message) return 'Ukendt fejl';
+    
+    // First translate the error
+    const translated = translateError(message);
+    
+    // For orders: group "Kunde med e-mail xxx@xxx blev ikke fundet" style errors
+    const customerEmailPattern = /Kunde med e-mail .+ blev ikke fundet/i;
+    if (customerEmailPattern.test(translated) || customerEmailPattern.test(message)) {
+      return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+    }
+    
+    // Original error patterns (before translation)
+    const customerNotFoundPattern = /kunde?.+ikke.+fundet|customer.+not.+found|email.+not.+found/i;
+    if (customerNotFoundPattern.test(message)) {
+      return 'Kunde blev ikke fundet i Shopify (e-mail eksisterer ikke)';
+    }
+    
+    // Product not found patterns
+    const productNotFoundPattern = /produkt.+ikke.+fundet|product.+not.+found|variant.+not.+found/i;
+    if (productNotFoundPattern.test(message)) {
+      return 'Produkt blev ikke fundet i Shopify';
+    }
+    
+    // Address validation errors
+    const addressPattern = /adresse.+ugyldig|address.+invalid|postnummer|zip|postal/i;
+    if (addressPattern.test(message)) {
+      return 'Adressefejl (ugyldig eller manglende adresseinformation)';
+    }
+    
+    return translated;
+  };
+
+  // Group items by error message (normalized for better grouping)
+  const groupByError = (items: SkippedOrFailedItem[], normalize = true): Map<string, SkippedOrFailedItem[]> => {
     const grouped = new Map<string, SkippedOrFailedItem[]>();
     for (const item of items) {
-      const translatedKey = translateError(item.error_message || 'Ukendt fejl');
-      if (!grouped.has(translatedKey)) {
-        grouped.set(translatedKey, []);
+      const key = normalize 
+        ? normalizeErrorForGrouping(item.error_message || 'Ukendt fejl')
+        : translateError(item.error_message || 'Ukendt fejl');
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
       }
-      grouped.get(translatedKey)!.push(item);
+      grouped.get(key)!.push(item);
     }
     return grouped;
+  };
+
+  // Extract email from error message if available
+  const extractEmailFromError = (message: string): string | null => {
+    const emailMatch = message.match(/[\w.-]+@[\w.-]+\.\w+/);
+    return emailMatch ? emailMatch[0] : null;
+  };
+
+  // Get sample details for grouped errors (e.g., emails for customer not found)
+  const getSampleDetails = (items: SkippedOrFailedItem[], maxSamples = 3): string[] => {
+    const details: string[] = [];
+    for (const item of items.slice(0, maxSamples)) {
+      const email = extractEmailFromError(item.error_message || '');
+      if (email) {
+        details.push(email);
+      } else {
+        details.push(item.external_id);
+      }
+    }
+    return details;
   };
 
   // Generate CSV content for failed items
@@ -622,42 +678,45 @@ export function UploadErrorReport({ projectId, jobs, statusCounts }: UploadError
                             </Button>
                           </div>
                           
-                          {/* Grouped errors - with translated messages */}
+                          {/* Grouped errors - with normalized messages */}
                           <div className="space-y-2">
-                            {Array.from(groupedErrors.entries()).map(([message, errorItems]) => (
-                              <div 
-                                key={message} 
-                                className="bg-destructive/5 border border-destructive/20 rounded-lg p-3"
-                              >
-                                <div className="flex items-start gap-2">
-                                  <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-destructive">
-                                      {message}
-                                    </p>
-                                    <p className="text-xs text-muted-foreground mt-1">
-                                      {errorItems.length === 1 
-                                        ? `1 ${singular}` 
-                                        : `${errorItems.length} ${label.toLowerCase()}`
-                                      }
-                                      {errorItems.length <= 10 && (
-                                        <span className="ml-1">
-                                          (ID: {errorItems.map(e => e.external_id).join(', ')})
-                                        </span>
+                            {Array.from(groupedErrors.entries()).map(([message, errorItems]) => {
+                              const sampleDetails = getSampleDetails(errorItems, 3);
+                              const hasEmailDetails = errorItems.some(e => extractEmailFromError(e.error_message || ''));
+                              
+                              return (
+                                <div 
+                                  key={message} 
+                                  className="bg-destructive/5 border border-destructive/20 rounded-lg p-3"
+                                >
+                                  <div className="flex items-start gap-2">
+                                    <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-medium text-destructive">
+                                        {message}
+                                      </p>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        {errorItems.length === 1 
+                                          ? `1 ${singular}` 
+                                          : `${errorItems.length} ${label.toLowerCase()}`
+                                        }
+                                      </p>
+                                      {/* Show sample details (emails or IDs) */}
+                                      {sampleDetails.length > 0 && (
+                                        <p className="text-xs text-muted-foreground mt-1 italic">
+                                          {hasEmailDetails ? 'Eksempler: ' : 'ID: '}
+                                          {sampleDetails.join(', ')}
+                                          {errorItems.length > 3 && ` og ${errorItems.length - 3} flere`}
+                                        </p>
                                       )}
-                                      {errorItems.length > 10 && (
-                                        <span className="ml-1">
-                                          (ID: {errorItems.slice(0, 5).map(e => e.external_id).join(', ')} og {errorItems.length - 5} flere)
-                                        </span>
-                                      )}
-                                    </p>
+                                    </div>
+                                    <Badge variant="outline" className="text-xs bg-destructive/10 text-destructive border-destructive/30">
+                                      {errorItems.length}
+                                    </Badge>
                                   </div>
-                                  <Badge variant="outline" className="text-xs bg-destructive/10 text-destructive border-destructive/30">
-                                    {errorItems.length}
-                                  </Badge>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       )}
