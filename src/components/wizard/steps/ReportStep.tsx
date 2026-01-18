@@ -194,35 +194,79 @@ export function ReportStep({ project }: ReportStepProps) {
         fetchAll('canonical_categories', 'external_id, error_message, name'),
       ]);
 
-      const getTitle = (row: any) => {
-        if (row?.name) return row.name;
-        const data = row?.data ?? {};
-        return (
-          data.title ??
-          data.name ??
-          data.email ??
-          [data.first_name, data.last_name].filter(Boolean).join(' ') ??
-          ''
-        );
-      };
+      // Build separate CSV sections with entity-specific columns for clarity
+      let csv = '';
 
-      let csv = 'Type,External ID,Titel/Navn,Fejlbesked\n';
-
-      const appendRows = (label: string, rows: any[]) => {
-        for (const row of rows) {
+      // --- PRODUKTER ---
+      if (products.length > 0) {
+        csv += 'PRODUKTER\n';
+        csv += 'External ID,Titel,SKU,Pris,Fejlbesked\n';
+        for (const row of products) {
+          const d = row.data ?? {};
           csv += [
-            escapeCsv(label),
             escapeCsv(row.external_id),
-            escapeCsv(getTitle(row)),
+            escapeCsv(d.title ?? ''),
+            escapeCsv(d.sku ?? d.variant_sku ?? ''),
+            escapeCsv(d.price ?? d.variant_price ?? ''),
             escapeCsv(row.error_message || 'Ukendt fejl'),
           ].join(',') + '\n';
         }
-      };
+        csv += '\n';
+      }
 
-      appendRows('Produkter', products);
-      appendRows('Kunder', customers);
-      appendRows('Ordrer', orders);
-      appendRows('Kategorier', categories);
+      // --- KUNDER ---
+      if (customers.length > 0) {
+        csv += 'KUNDER\n';
+        csv += 'External ID,Fornavn,Efternavn,Email,Telefon,Adresse,Postnummer,By,Land,Fejlbesked\n';
+        for (const row of customers) {
+          const d = row.data ?? {};
+          const addr = d.default_address ?? d.address ?? {};
+          csv += [
+            escapeCsv(row.external_id),
+            escapeCsv(d.first_name ?? ''),
+            escapeCsv(d.last_name ?? ''),
+            escapeCsv(d.email ?? ''),
+            escapeCsv(d.phone ?? addr.phone ?? ''),
+            escapeCsv(addr.address1 ?? d.address1 ?? ''),
+            escapeCsv(addr.zip ?? d.zip ?? d.postal_code ?? ''),
+            escapeCsv(addr.city ?? d.city ?? ''),
+            escapeCsv(addr.country ?? addr.country_code ?? d.country ?? ''),
+            escapeCsv(row.error_message || 'Ukendt fejl'),
+          ].join(',') + '\n';
+        }
+        csv += '\n';
+      }
+
+      // --- ORDRER ---
+      if (orders.length > 0) {
+        csv += 'ORDRER\n';
+        csv += 'External ID,Kunde Email,Kunde ID,Total,Valuta,Fejlbesked\n';
+        for (const row of orders) {
+          const d = row.data ?? {};
+          csv += [
+            escapeCsv(row.external_id),
+            escapeCsv(d.email ?? d.customer_email ?? ''),
+            escapeCsv(d.customer_id ?? d.customer_external_id ?? ''),
+            escapeCsv(d.total_price ?? d.total ?? ''),
+            escapeCsv(d.currency ?? ''),
+            escapeCsv(row.error_message || 'Ukendt fejl'),
+          ].join(',') + '\n';
+        }
+        csv += '\n';
+      }
+
+      // --- KATEGORIER ---
+      if (categories.length > 0) {
+        csv += 'KATEGORIER\n';
+        csv += 'External ID,Navn,Fejlbesked\n';
+        for (const row of categories) {
+          csv += [
+            escapeCsv(row.external_id),
+            escapeCsv(row.name ?? ''),
+            escapeCsv(row.error_message || 'Ukendt fejl'),
+          ].join(',') + '\n';
+        }
+      }
 
       const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
