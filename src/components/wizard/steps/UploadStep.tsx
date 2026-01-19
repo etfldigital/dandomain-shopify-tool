@@ -462,11 +462,36 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Compute UI state from jobs
   const isUploading = jobs.some(j => j.status === 'running' || j.status === 'paused');
   const isPaused = jobs.some(j => j.status === 'paused');
-  const allCompleted = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
+  // Jobs are "done" when their status is completed or cancelled
+  const allJobsDone = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
   const hasFailed = jobs.some(j => j.error_count > 0);
-  // Check if we only have test mode jobs (no full upload has been started yet)
-  const hasOnlyTestJobs = jobs.length > 0 && jobs.every(j => j.is_test_mode);
+  // Check if a real (non-test) upload is currently running or paused
+  const hasActiveRealUpload = jobs.some(j => !j.is_test_mode && (j.status === 'running' || j.status === 'paused'));
+  // Check if any real upload jobs exist (running, completed, or cancelled)
   const hasStartedRealUpload = jobs.some(j => !j.is_test_mode);
+  
+  // Calculate totals from statusCounts (the source of truth from database) - EARLY for allCompleted
+  const fixedTotalItems = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed, 
+    0
+  );
+  const fixedTotalUploaded = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.uploaded, 
+    0
+  );
+  const fixedTotalFailed = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.failed, 
+    0
+  );
+  const fixedTotalPending = Object.values(statusCounts).reduce(
+    (acc, counts) => acc + counts.pending, 
+    0
+  );
+  
+  // All entities are truly completed when zero pending items remain across all entity types
+  // AND there's at least some data that has been uploaded
+  const allCompleted = fixedTotalPending === 0 && fixedTotalItems > 0 && fixedTotalUploaded > 0;
+  
   const [hasCelebrated, setHasCelebrated] = useState(false);
   const [retryingEntityType, setRetryingEntityType] = useState<EntityType | null>(null);
   const [retryingIds, setRetryingIds] = useState<string[] | null>(null);
@@ -576,24 +601,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return Math.max(base, Math.min(est, hardCap));
   };
 
-  // Calculate totals from statusCounts (the source of truth from database)
-  // This gives us fixed, accurate totals that don't change based on job iterations
-  const fixedTotalItems = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed, 
-    0
-  );
-  const fixedTotalUploaded = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.uploaded, 
-    0
-  );
-  const fixedTotalFailed = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.failed, 
-    0
-  );
-  const fixedTotalPending = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending, 
-    0
-  );
 
   // For live progress during upload, use the running job's processed count
   const runningJobProcessed = runningJob ? getLiveProcessedCount(runningJob, runningJob.processed_count) : 0;
@@ -1042,8 +1049,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
       {/* Action Buttons */}
       <div className="flex justify-end gap-3">
-        {/* Show Test + Start buttons when not uploading and either no jobs yet OR only test jobs completed */}
-        {!isUploading && !hasStartedRealUpload && (
+        {/* Show Test + Start buttons when not uploading and not fully completed */}
+        {!isUploading && !allCompleted && (
           <>
             <TooltipProvider>
               <Tooltip>
@@ -1072,8 +1079,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
 
-        {/* Show retry button when a real upload has failed items */}
-        {hasFailed && !isUploading && hasStartedRealUpload && (
+        {/* Show retry button when there are failed items and not currently uploading */}
+        {hasFailed && !isUploading && !allCompleted && (
           <Button onClick={handleRetry} variant="outline">
             <RotateCcw className="w-4 h-4 mr-2" />
             Prøv igen
@@ -1103,8 +1110,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
 
-        {/* When a real upload is completed: show "Start igen" and "Videre" */}
-        {allCompleted && hasStartedRealUpload && (
+        {/* When ALL entity types are 100% uploaded (no pending): show "Start igen" and "Videre" */}
+        {allCompleted && (
           <>
             <Button variant="outline" onClick={() => handleStartUpload(false)}>
               <RotateCcw className="w-4 h-4 mr-2" />
