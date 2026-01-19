@@ -275,6 +275,11 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       vendor: row['MANUFAC_ID'] || null,
       vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
       language: row['LANGUAGE_ID'] || 'da',
+      // Custom fields for metafield mapping (FIELD_1 to FIELD_20)
+      field_1: row['FIELD_1'] || null,
+      field_2: row['FIELD_2'] || null,
+      field_3: row['FIELD_3'] || null,
+      barcode: row['PROD_BARCODE_NUMBER'] || row['BARCODE'] || null,
     }))
     // Filter out invalid rows
     .filter(product => {
