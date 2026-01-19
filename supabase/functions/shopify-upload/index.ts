@@ -848,6 +848,61 @@ async function uploadProductsWithVariants(
       // Add to cache
       existingProducts.set(titleLower, shopifyId);
 
+      // Create metafields for the product (FIELD_1 -> Materiale, FIELD_2 -> Farve)
+      const metafieldsToCreate: Array<{ namespace: string; key: string; value: string; type: string }> = [];
+      
+      if (data.field_1 && String(data.field_1).trim()) {
+        metafieldsToCreate.push({
+          namespace: 'custom',
+          key: 'materiale',
+          value: String(data.field_1).trim(),
+          type: 'single_line_text_field'
+        });
+      }
+      
+      if (data.field_2 && String(data.field_2).trim()) {
+        metafieldsToCreate.push({
+          namespace: 'custom',
+          key: 'farve',
+          value: String(data.field_2).trim(),
+          type: 'single_line_text_field'
+        });
+      }
+      
+      // Create metafields via Shopify API
+      for (const metafield of metafieldsToCreate) {
+        try {
+          const metafieldPayload = {
+            metafield: {
+              namespace: metafield.namespace,
+              key: metafield.key,
+              value: metafield.value,
+              type: metafield.type
+            }
+          };
+          
+          const { response: metaResp, body: metaBody } = await shopifyFetch(
+            `${shopifyUrl}/products/${shopifyId}/metafields.json`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Shopify-Access-Token': token,
+              },
+              body: JSON.stringify(metafieldPayload),
+            }
+          );
+          
+          if (!metaResp.ok) {
+            console.log(`Could not create metafield ${metafield.key} for product ${shopifyId}: ${metaBody}`);
+          } else {
+            console.log(`Created metafield "${metafield.key}" for product "${transformedTitle}"`);
+          }
+        } catch (metaError) {
+          console.log(`Error creating metafield ${metafield.key}:`, metaError instanceof Error ? metaError.message : String(metaError));
+        }
+      }
+
       // Update cost price (inventory cost) per variant via InventoryItem API
       // NOTE: This frequently fails with 403 unless the store has approved write_inventory.
       // When we detect that, we disable further cost update attempts to keep uploads fast.
