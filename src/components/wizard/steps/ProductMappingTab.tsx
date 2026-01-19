@@ -827,6 +827,63 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
             </div>
 
             <div className="space-y-4">
+              {/* Image preview - FIRST */}
+              <Card>
+                <CardContent className="pt-4">
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    Billeder ({product.original.images.length})
+                  </label>
+                  {product.original.images.length > 0 ? (
+                    <div className="space-y-2">
+                      {/* Primary image */}
+                      <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-background">
+                        <img 
+                          src={product.original.images[0].startsWith('http') 
+                            ? product.original.images[0] 
+                            : `https://maggiesgemakker.dk${product.original.images[0]}`} 
+                          alt="Primært produktbillede"
+                          className="object-contain w-full h-full"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.src = '/placeholder.svg';
+                          }}
+                        />
+                      </div>
+                      {/* Gallery thumbnails */}
+                      {product.original.images.length > 1 && (
+                        <div className="grid grid-cols-4 gap-1">
+                          {product.original.images.slice(1, 5).map((img, i) => (
+                            <div key={i} className="aspect-square overflow-hidden rounded border bg-background">
+                              <img 
+                                src={img.startsWith('http') ? img : `https://maggiesgemakker.dk${img}`} 
+                                alt={`Galleri billede ${i + 2}`}
+                                className="object-contain w-full h-full"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  target.src = '/placeholder.svg';
+                                }}
+                              />
+                            </div>
+                          ))}
+                          {product.original.images.length > 5 && (
+                            <div className="aspect-square flex items-center justify-center rounded border bg-muted text-xs text-muted-foreground">
+                              +{product.original.images.length - 5}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center aspect-square w-full rounded-lg border border-dashed bg-muted/50 text-muted-foreground">
+                      <div className="text-center">
+                        <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                        <span className="text-xs">Intet billede</span>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium">Produktorganisering</CardTitle>
@@ -933,59 +990,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
                       <Check className="w-3 h-3" />
                       Fra {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Image preview */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    Billeder ({product.original.images.length})
-                  </label>
-                  {product.original.images.length > 0 ? (
-                    <div className="space-y-2">
-                      {/* Primary image */}
-                      <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-muted">
-                        <img 
-                          src={product.original.images[0]} 
-                          alt="Primært produktbillede"
-                          className="object-cover w-full h-full"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      </div>
-                      {/* Gallery thumbnails */}
-                      {product.original.images.length > 1 && (
-                        <div className="grid grid-cols-4 gap-1">
-                          {product.original.images.slice(1, 5).map((img, i) => (
-                            <div key={i} className="aspect-square overflow-hidden rounded border bg-muted">
-                              <img 
-                                src={img} 
-                                alt={`Galleri billede ${i + 2}`}
-                                className="object-cover w-full h-full"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).style.display = 'none';
-                                }}
-                              />
-                            </div>
-                          ))}
-                          {product.original.images.length > 5 && (
-                            <div className="aspect-square flex items-center justify-center rounded border bg-muted text-xs text-muted-foreground">
-                              +{product.original.images.length - 5}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center aspect-square w-full rounded-lg border border-dashed bg-muted/50 text-muted-foreground">
-                      <div className="text-center">
-                        <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                        <span className="text-xs">Intet billede</span>
-                      </div>
                     </div>
                   )}
                 </CardContent>
