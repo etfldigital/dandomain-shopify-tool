@@ -738,7 +738,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                                         {sid}
                                         {entityType === 'products' && (
                                           <a 
-                                            href={`https://${project.shopify_store_domain}/admin/products/${sid}`}
+                                            href={`https://admin.shopify.com/store/${project.shopify_store_domain?.replace('.myshopify.com', '')}/products/${sid}`}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="text-primary hover:underline"
