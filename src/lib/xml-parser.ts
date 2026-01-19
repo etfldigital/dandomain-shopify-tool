@@ -10,7 +10,13 @@ import { ProductData, CustomerData, OrderData, Address, LineItem } from '@/types
  */
 function parsePrice(priceStr: string): number {
   if (!priceStr) return 0;
-  return parseFloat(priceStr.replace(',', '.').replace(/[^\\d.-]/g, '')) || 0;
+  // Handle Danish format: "220,00" -> 220.00
+  const normalized = priceStr.replace(',', '.').replace(/[^\d.-]/g, '');
+  const result = parseFloat(normalized) || 0;
+  if (priceStr && result === 0 && priceStr !== '0' && priceStr !== '0,00') {
+    console.warn('Price parse warning:', priceStr, '->', normalized, '->', result);
+  }
+  return result;
 }
 
 /**

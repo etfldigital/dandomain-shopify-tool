@@ -941,13 +941,51 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
               {/* Image preview */}
               <Card>
                 <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">Billeder</label>
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    Billeder ({product.original.images.length})
+                  </label>
                   {product.original.images.length > 0 ? (
-                    <Badge variant="secondary">{product.original.images.length} billede(r)</Badge>
+                    <div className="space-y-2">
+                      {/* Primary image */}
+                      <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-muted">
+                        <img 
+                          src={product.original.images[0]} 
+                          alt="Primært produktbillede"
+                          className="object-cover w-full h-full"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      </div>
+                      {/* Gallery thumbnails */}
+                      {product.original.images.length > 1 && (
+                        <div className="grid grid-cols-4 gap-1">
+                          {product.original.images.slice(1, 5).map((img, i) => (
+                            <div key={i} className="aspect-square overflow-hidden rounded border bg-muted">
+                              <img 
+                                src={img} 
+                                alt={`Galleri billede ${i + 2}`}
+                                className="object-cover w-full h-full"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            </div>
+                          ))}
+                          {product.original.images.length > 5 && (
+                            <div className="aspect-square flex items-center justify-center rounded border bg-muted text-xs text-muted-foreground">
+                              +{product.original.images.length - 5}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <ImageIcon className="w-4 h-4" />
-                      <span className="text-sm">Intet billede</span>
+                    <div className="flex items-center justify-center aspect-square w-full rounded-lg border border-dashed bg-muted/50 text-muted-foreground">
+                      <div className="text-center">
+                        <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                        <span className="text-xs">Intet billede</span>
+                      </div>
                     </div>
                   )}
                 </CardContent>
