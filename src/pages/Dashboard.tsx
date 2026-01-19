@@ -41,11 +41,11 @@ export default function Dashboard() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-2xl font-semibold text-foreground">Mine Projekter</h1>
-            <p className="text-muted-foreground mt-1">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 lg:py-12">
+        <div className="flex items-start sm:items-center justify-between gap-4 mb-10">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-semibold text-foreground tracking-tight">Mine Projekter</h1>
+            <p className="text-muted-foreground text-sm">
               Administrer dine DanDomain til Shopify migreringer
             </p>
           </div>
@@ -56,18 +56,18 @@ export default function Dashboard() {
         </div>
 
         {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <div className="flex items-center justify-center py-20">
+            <Loader2 className="w-7 h-7 animate-spin text-primary" />
           </div>
         ) : projects.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
-              <FolderOpen className="w-8 h-8 text-muted-foreground" />
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-5">
+              <FolderOpen className="w-7 h-7 text-muted-foreground" />
             </div>
-            <h3 className="text-lg font-medium text-foreground mb-1">
+            <h3 className="text-lg font-medium text-foreground mb-1.5">
               Ingen projekter endnu
             </h3>
-            <p className="text-muted-foreground mb-6 max-w-sm">
+            <p className="text-muted-foreground mb-8 max-w-sm text-sm leading-relaxed">
               Opret dit første projekt for at starte migreringen fra DanDomain til Shopify
             </p>
             <CreateProjectDialog 
@@ -76,7 +76,7 @@ export default function Dashboard() {
             />
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
             {projects.map(project => (
               <ProjectCard
                 key={project.id}
@@ -90,19 +90,19 @@ export default function Dashboard() {
       </main>
 
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="rounded-2xl">
           <AlertDialogHeader>
             <AlertDialogTitle>Slet projekt?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogDescription className="leading-relaxed">
               Dette vil permanent slette projektet og alle tilhørende data. 
               Denne handling kan ikke fortrydes.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Annuller</AlertDialogCancel>
+          <AlertDialogFooter className="gap-3 sm:gap-2">
+            <AlertDialogCancel className="rounded-xl">Annuller</AlertDialogCancel>
             <AlertDialogAction 
               onClick={handleDeleteProject}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-xl"
             >
               Slet projekt
             </AlertDialogAction>

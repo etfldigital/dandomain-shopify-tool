@@ -38,19 +38,19 @@ export function AuthForm() {
 
   return (
     <div className="w-full max-w-md mx-auto">
-      <div className="bg-card rounded-2xl card-shadow-lg p-8 border border-border">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/10 mb-4">
+      <div className="bg-card rounded-2xl shadow-elevated p-8 sm:p-10 border border-border/60">
+        <div className="text-center mb-9">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/10 mb-5">
             <svg className="w-7 h-7 text-primary" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
               <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
               <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
-          <h1 className="text-2xl font-semibold text-foreground">
+          <h1 className="text-2xl font-semibold text-foreground tracking-tight">
             {mode === 'login' ? 'Velkommen tilbage' : 'Opret konto'}
           </h1>
-          <p className="text-muted-foreground mt-2">
+          <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
             {mode === 'login' 
               ? 'Log ind for at fortsætte til dine projekter' 
               : 'Start din migrering fra DanDomain til Shopify'}
@@ -64,14 +64,14 @@ export function AuthForm() {
                 Fulde navn
               </Label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <User className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   id="fullName"
                   type="text"
                   placeholder="Dit navn"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  className="pl-10 h-12 rounded-xl"
+                  className="pl-10 h-12"
                   required
                 />
               </div>
@@ -83,14 +83,14 @@ export function AuthForm() {
               E-mail
             </Label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 id="email"
                 type="email"
                 placeholder="din@email.dk"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="pl-10 h-12 rounded-xl"
+                className="pl-10 h-12"
                 required
               />
             </div>
@@ -101,14 +101,14 @@ export function AuthForm() {
               Adgangskode
             </Label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 id="password"
                 type="password"
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="pl-10 h-12 rounded-xl"
+                className="pl-10 h-12"
                 required
                 minLength={6}
               />
@@ -116,14 +116,14 @@ export function AuthForm() {
           </div>
 
           {error && (
-            <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-sm">
+            <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-sm">
               {error}
             </div>
           )}
 
           <Button
             type="submit"
-            className="w-full h-12 rounded-xl text-base font-medium"
+            className="w-full h-12 text-base font-medium mt-2"
             disabled={loading}
           >
             {loading ? (
@@ -137,11 +137,11 @@ export function AuthForm() {
           </Button>
         </form>
 
-        <div className="mt-6 text-center">
+        <div className="mt-7 text-center">
           <button
             type="button"
             onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-200"
           >
             {mode === 'login' 
               ? 'Har du ikke en konto? Opret en her' 

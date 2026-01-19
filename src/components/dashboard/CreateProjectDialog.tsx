@@ -34,7 +34,7 @@ export function CreateProjectDialog({ onCreateProject, isCreating }: CreateProje
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="gap-2">
+        <Button className="gap-2 shadow-sm">
           <Plus className="w-4 h-4" />
           Nyt projekt
         </Button>
@@ -47,8 +47,8 @@ export function CreateProjectDialog({ onCreateProject, isCreating }: CreateProje
               Giv dit migrationsprojekt et navn, så du nemt kan finde det igen.
             </DialogDescription>
           </DialogHeader>
-          <div className="my-6">
-            <Label htmlFor="projectName">Projektnavn</Label>
+          <div className="my-7">
+            <Label htmlFor="projectName" className="text-sm font-medium">Projektnavn</Label>
             <Input
               id="projectName"
               placeholder="f.eks. MinWebshop.dk"

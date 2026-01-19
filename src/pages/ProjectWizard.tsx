@@ -46,7 +46,6 @@ export default function ProjectWizard() {
       const step = STATUS_TO_STEP[project.status];
       setCurrentStep(step);
       
-      // Mark all previous steps as completed
       const stepIndex = STEP_ORDER.indexOf(step);
       setCompletedSteps(STEP_ORDER.slice(0, stepIndex));
     }
@@ -80,7 +79,7 @@ export default function ProjectWizard() {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <Loader2 className="w-7 h-7 animate-spin text-primary" />
       </div>
     );
   }
@@ -89,7 +88,7 @@ export default function ProjectWizard() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-xl font-semibold mb-2">Projekt ikke fundet</h2>
+          <h2 className="text-xl font-semibold mb-3">Projekt ikke fundet</h2>
           <Button onClick={() => navigate('/')}>Tilbage til projekter</Button>
         </div>
       </div>
@@ -100,19 +99,19 @@ export default function ProjectWizard() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-10">
+        <div className="mb-10">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => navigate('/')}
-            className="mb-4"
+            className="mb-5 -ml-2 text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
             Tilbage til projekter
           </Button>
           
-          <h1 className="text-2xl font-semibold text-foreground mb-6">{project.name}</h1>
+          <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-8">{project.name}</h1>
           
           <WizardStepper
             currentStep={currentStep}
@@ -121,7 +120,7 @@ export default function ProjectWizard() {
           />
         </div>
 
-        <div className="mt-12">
+        <div className="mt-14">
           {currentStep === 'connect-dandomain' && (
             <ConnectDanDomainStep
               project={project}
