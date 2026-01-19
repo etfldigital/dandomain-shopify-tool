@@ -85,27 +85,10 @@ export const KNOWN_SOURCE_FIELDS = [
   'TITLE',
   // MANUFACTURERS
   'MANUFAC_ID',
-  // CUSTOM FIELDS (FIELD_1 to FIELD_20)
+  // CUSTOM FIELDS (kun de anvendte)
   'FIELD_1',
   'FIELD_2',
   'FIELD_3',
-  'FIELD_4',
-  'FIELD_5',
-  'FIELD_6',
-  'FIELD_7',
-  'FIELD_8',
-  'FIELD_9',
-  'FIELD_10',
-  'FIELD_11',
-  'FIELD_12',
-  'FIELD_13',
-  'FIELD_14',
-  'FIELD_15',
-  'FIELD_16',
-  'FIELD_17',
-  'FIELD_18',
-  'FIELD_19',
-  'FIELD_20',
 ];
 
 export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }: FieldMappingEditorProps) {
