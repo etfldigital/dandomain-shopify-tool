@@ -111,12 +111,20 @@ interface ProductPreviewData {
     images: string[];
     vendor: string | null;
     category_ids: string[];
+    rawData: Record<string, any>; // Store raw data for field mapping
   };
   transformed: {
     title: string;
     vendor: string;
+    sku: string;
+    price: number;
+    compare_at_price: number | null;
+    weight: number | null;
+    stock_quantity: number;
+    body_html: string;
   };
   categoryNames: string[];
+  mappedFields: { field: string; value: any; source: string }[];
 }
 
 const defaultMappingRules: MappingRules = {
@@ -270,15 +278,79 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           images: data.images || [],
           vendor: data.vendor,
           category_ids: categoryIds,
+          rawData: data, // Store raw data for field mapping
         },
         transformed: {
           title: transformedTitle,
           vendor: vendor,
+          sku: data.sku || '',
+          price: data.price || 0,
+          compare_at_price: null,
+          weight: data.weight || null,
+          stock_quantity: data.stock_quantity || 0,
+          body_html: data.body_html || '',
         },
         categoryNames,
+        mappedFields: [],
       });
     }
   };
+
+  // Apply field mappings to preview when they change
+  useEffect(() => {
+    if (!product) return;
+
+    const rawData = product.original.rawData;
+    const mappedFields: { field: string; value: any; source: string }[] = [];
+    
+    // Start with original values
+    const transformed = { ...product.transformed };
+
+    for (const mapping of fieldMappings) {
+      const sourceValue = rawData[mapping.sourceField];
+      if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') {
+        mappedFields.push({
+          field: mapping.targetField,
+          value: sourceValue,
+          source: mapping.sourceField,
+        });
+
+        // Apply mapping to transformed data
+        switch (mapping.targetField) {
+          case 'variants[0].sku':
+            transformed.sku = String(sourceValue);
+            break;
+          case 'variants[0].price':
+            transformed.price = parseFloat(sourceValue) || 0;
+            break;
+          case 'variants[0].compare_at_price':
+            transformed.compare_at_price = parseFloat(sourceValue) || null;
+            break;
+          case 'variants[0].weight':
+            transformed.weight = parseFloat(sourceValue) || null;
+            break;
+          case 'variants[0].inventory_quantity':
+            transformed.stock_quantity = parseInt(sourceValue) || 0;
+            break;
+          case 'body_html':
+            transformed.body_html = String(sourceValue);
+            break;
+          case 'vendor':
+            transformed.vendor = String(sourceValue);
+            break;
+          case 'title':
+            transformed.title = String(sourceValue);
+            break;
+        }
+      }
+    }
+
+    setProduct(prev => prev ? {
+      ...prev,
+      transformed,
+      mappedFields,
+    } : null);
+  }, [fieldMappings]);
 
   const handlePrevious = () => {
     setCurrentIndex(prev => Math.max(0, prev - 1));
@@ -693,12 +765,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 <CardContent className="pt-4">
                   <label className="text-sm font-medium text-foreground mb-2 block">Beskrivelse</label>
                   <div className="min-h-[100px] p-3 border rounded-md bg-background text-sm">
-                    {product.original.body_html ? (
-                      <div dangerouslySetInnerHTML={{ __html: product.original.body_html.substring(0, 300) + (product.original.body_html.length > 300 ? '...' : '') }} />
+                    {product.transformed.body_html ? (
+                      <div dangerouslySetInnerHTML={{ __html: product.transformed.body_html.substring(0, 300) + (product.transformed.body_html.length > 300 ? '...' : '') }} />
                     ) : (
                       <span className="text-muted-foreground italic">Ingen beskrivelse</span>
                     )}
                   </div>
+                  {product.mappedFields.some(m => m.field === 'body_html') && (
+                    <div className="mt-2 text-xs text-green-600 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Mappet fra {product.mappedFields.find(m => m.field === 'body_html')?.source}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -706,13 +784,27 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
               <Card>
                 <CardContent className="pt-4">
                   <label className="text-sm font-medium text-foreground mb-2 block">Pris</label>
-                  <div className="flex items-center gap-2">
-                    <Input 
-                      value={product.original.price.toFixed(2)} 
-                      readOnly 
-                      className="w-32 bg-background"
-                    />
+                  <div className="flex items-center gap-4">
+                    <div>
+                      <Input 
+                        value={product.transformed.price.toFixed(2)} 
+                        readOnly 
+                        className="w-32 bg-background"
+                      />
+                      {product.mappedFields.some(m => m.field === 'variants[0].price') && (
+                        <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          Fra {product.mappedFields.find(m => m.field === 'variants[0].price')?.source}
+                        </div>
+                      )}
+                    </div>
                     <span className="text-muted-foreground">kr.</span>
+                    {product.transformed.compare_at_price && (
+                      <div className="text-muted-foreground">
+                        <span className="text-xs">Før: </span>
+                        <span className="line-through">{product.transformed.compare_at_price.toFixed(2)} kr.</span>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -763,10 +855,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 <CardContent className="pt-4">
                   <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
                   <Input 
-                    value={product.original.sku} 
+                    value={product.transformed.sku} 
                     readOnly 
                     className="bg-background h-9 font-mono text-sm"
                   />
+                  {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
+                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Fra {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -775,10 +873,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 <CardContent className="pt-4">
                   <label className="text-xs text-muted-foreground mb-1 block">Lagerbeholdning</label>
                   <Input 
-                    value={(product.original.stock_quantity ?? 0).toString()} 
+                    value={product.transformed.stock_quantity.toString()} 
                     readOnly 
                     className="bg-background h-9 font-mono text-sm"
                   />
+                  {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
+                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Fra {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
