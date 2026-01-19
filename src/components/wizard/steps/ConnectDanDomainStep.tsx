@@ -145,31 +145,7 @@ export function ConnectDanDomainStep({ project, onUpdateProject, onNext }: Conne
         </CardContent>
       </Card>
 
-      <div className="relative">
-        <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-border" />
-        </div>
-        <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">eller</span>
-        </div>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Upload className="w-5 h-5 text-primary" />
-            CSV Import
-          </CardTitle>
-          <CardDescription>
-            Har du ikke API-adgang? Du kan uploade CSV-filer direkte
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button variant="outline" onClick={handleSkipToCSV} className="w-full">
-            Spring til CSV import
-          </Button>
-        </CardContent>
-      </Card>
+      {/* XML import sker i næste trin efter forbindelse */}
     </div>
   );
 }
