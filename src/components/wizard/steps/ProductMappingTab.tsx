@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   Table,
   TableBody,
@@ -15,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2 } from 'lucide-react';
+import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2, Settings, Link2, Eye } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductData } from '@/types/database';
 import { toast } from 'sonner';
@@ -500,13 +501,13 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <div className="text-2xl font-bold text-green-600">{totalCount}</div>
+            <div className="text-2xl font-bold text-success">{totalCount}</div>
             <div className="text-sm text-muted-foreground">Klar til upload</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <div className="text-2xl font-bold text-amber-600">{untitledCount}</div>
+            <div className="text-2xl font-bold text-warning">{untitledCount}</div>
             <div className="text-sm text-muted-foreground">"Untitled" produkter</div>
           </CardContent>
         </Card>
@@ -518,514 +519,541 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         </Card>
       </div>
 
-      {/* Transformation Rules */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Transformationsregler</CardTitle>
-          <CardDescription>
-            Konfigurer hvordan produktdata transformeres til Shopify
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>Fjern brand fra titel</Label>
-              <p className="text-sm text-muted-foreground">
-                "Mads Nørgaard - T-shirt" → "T-shirt" (brand i Vendor felt)
-              </p>
-            </div>
-            <Switch
-              checked={mappingRules.stripVendorFromTitle}
-              onCheckedChange={(checked) => setMappingRules({ ...mappingRules, stripVendorFromTitle: checked })}
-            />
-          </div>
-          
-          {mappingRules.stripVendorFromTitle && (
-            <div className="pl-4 border-l-2 border-muted">
-              <Label>Separator mellem brand og titel</Label>
-              <Input
-                value={mappingRules.vendorSeparator}
-                onChange={(e) => setMappingRules({ ...mappingRules, vendorSeparator: e.target.value })}
-                placeholder=" - "
-                className="w-24 mt-1"
-              />
-            </div>
-          )}
+      {/* Inner Tabs for Transformation, Mapping, Preview */}
+      <Tabs defaultValue="transform" className="w-full">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="transform" className="flex items-center gap-2">
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">Transformationsregler</span>
+            <span className="sm:hidden">Regler</span>
+          </TabsTrigger>
+          <TabsTrigger value="mapping" className="flex items-center gap-2">
+            <Link2 className="w-4 h-4" />
+            <span className="hidden sm:inline">Felt-mapping</span>
+            <span className="sm:hidden">Mapping</span>
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="flex items-center gap-2">
+            <Eye className="w-4 h-4" />
+            <span className="hidden sm:inline">Shopify Preview</span>
+            <span className="sm:hidden">Preview</span>
+          </TabsTrigger>
+        </TabsList>
 
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>Ekskluder "Untitled" produkter</Label>
-              <p className="text-sm text-muted-foreground">
-                {untitledCount} produkter uden navn vil ikke blive oprettet
-              </p>
-            </div>
-            <Switch
-              checked={mappingRules.excludeUntitled}
-              onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeUntitled: checked })}
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>Ekskluder produkter med pris 0</Label>
-              <p className="text-sm text-muted-foreground">
-                Produkter uden pris vil ikke blive oprettet
-              </p>
-            </div>
-            <Switch
-              checked={mappingRules.excludeZeroPrice}
-              onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeZeroPrice: checked })}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Extra Field Mappings */}
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
-          <div>
-            <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
-            <CardDescription>
-              Map ekstra felter fra DanDomain XML til Shopify felter
-            </CardDescription>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={autoMapFields}
-            className="flex items-center gap-2"
-          >
-            <Wand2 className="w-4 h-4" />
-            Auto-map
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Add new mapping */}
-          <div className="flex gap-3 items-end">
-            <div className="flex-1">
-              <Label className="text-xs">Kilde felt (DanDomain)</Label>
-              <Select
-                value={newMapping.sourceField}
-                onValueChange={(v) => setNewMapping(prev => ({ ...prev, sourceField: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Vælg kilde felt..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {KNOWN_SOURCE_FIELDS.map(field => (
-                    <SelectItem key={field} value={field}>
-                      {field}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <ArrowRight className="w-5 h-5 text-muted-foreground mb-2" />
-            <div className="flex-1">
-              <Label className="text-xs">Mål felt (Shopify)</Label>
-              <Select
-                value={newMapping.targetField}
-                onValueChange={(v) => setNewMapping(prev => ({ ...prev, targetField: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Vælg mål felt..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {SHOPIFY_PRODUCT_FIELDS.map(field => (
-                    <SelectItem key={field.value} value={field.value}>
-                      {field.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button onClick={addFieldMapping} size="icon">
-              <Plus className="w-4 h-4" />
-            </Button>
-          </div>
-
-          {/* Existing mappings */}
-          {fieldMappings.length > 0 ? (
-            <div className="border rounded-lg overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Kilde felt (DanDomain)</TableHead>
-                    <TableHead></TableHead>
-                    <TableHead>Mål felt (Shopify)</TableHead>
-                    <TableHead className="w-16"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {fieldMappings.map(mapping => (
-                    <TableRow key={mapping.id}>
-                      <TableCell className="font-mono text-sm">
-                        {mapping.sourceField}
-                      </TableCell>
-                      <TableCell className="w-12">
-                        <ArrowRight className="w-4 h-4 text-muted-foreground" />
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary">
-                          {SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => removeFieldMapping(mapping.id)}
-                          className="text-destructive hover:text-destructive"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <div className="text-center py-4 text-muted-foreground text-sm">
-              Ingen ekstra felt-mappings tilføjet endnu
-            </div>
-          )}
-
-          {/* Suggestion */}
-          {fieldMappings.length === 0 && (
-            <Card className="bg-muted/50 border-dashed">
-              <CardContent className="py-4">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-sm">Forslag: Stregkode mapping</p>
-                    <p className="text-sm text-muted-foreground">
-                      Hvis dine produkter har stregkoder i PROD_BARCODE_NUMBER, kan du mappe dem til Shopify stregkode-feltet ovenfor.
-                    </p>
-                  </div>
+        {/* Transformation Rules Tab */}
+        <TabsContent value="transform" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Transformationsregler</CardTitle>
+              <CardDescription>
+                Konfigurer hvordan produktdata transformeres til Shopify
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Fjern brand fra titel</Label>
+                  <p className="text-sm text-muted-foreground">
+                    "Mads Nørgaard - T-shirt" → "T-shirt" (brand i Vendor felt)
+                  </p>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-        </CardContent>
-      </Card>
+                <Switch
+                  checked={mappingRules.stripVendorFromTitle}
+                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, stripVendorFromTitle: checked })}
+                />
+              </div>
+              
+              {mappingRules.stripVendorFromTitle && (
+                <div className="pl-4 border-l-2 border-muted">
+                  <Label>Separator mellem brand og titel</Label>
+                  <Input
+                    value={mappingRules.vendorSeparator}
+                    onChange={(e) => setMappingRules({ ...mappingRules, vendorSeparator: e.target.value })}
+                    placeholder=" - "
+                    className="w-24 mt-1"
+                  />
+                </div>
+              )}
 
-      <Separator />
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Ekskluder "Untitled" produkter</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {untitledCount} produkter uden navn vil ikke blive oprettet
+                  </p>
+                </div>
+                <Switch
+                  checked={mappingRules.excludeUntitled}
+                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeUntitled: checked })}
+                />
+              </div>
 
-      {/* Product Preview */}
-      {product && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium">Shopify Preview</h3>
-            <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Ekskluder produkter med pris 0</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Produkter uden pris vil ikke blive oprettet
+                  </p>
+                </div>
+                <Switch
+                  checked={mappingRules.excludeZeroPrice}
+                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeZeroPrice: checked })}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Field Mapping Tab */}
+        <TabsContent value="mapping" className="mt-6">
+          <Card>
+            <CardHeader className="flex flex-row items-start justify-between space-y-0">
+              <div>
+                <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
+                <CardDescription>
+                  Map ekstra felter fra DanDomain XML til Shopify felter
+                </CardDescription>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handlePrevious}
-                disabled={currentIndex === 0}
+                onClick={autoMapFields}
+                className="flex items-center gap-2"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <Wand2 className="w-4 h-4" />
+                Auto-map
               </Button>
-              <span className="text-sm text-muted-foreground min-w-[80px] text-center">
-                {currentIndex + 1} / {productIds.length}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleNext}
-                disabled={currentIndex === productIds.length - 1}
-              >
-                <ChevronRight className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRandom}
-              >
-                <Shuffle className="w-4 h-4" />
-              </Button>
-            </div>
-          </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Add new mapping */}
+              <div className="flex gap-3 items-end">
+                <div className="flex-1">
+                  <Label className="text-xs">Kilde felt (DanDomain)</Label>
+                  <Select
+                    value={newMapping.sourceField}
+                    onValueChange={(v) => setNewMapping(prev => ({ ...prev, sourceField: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Vælg kilde felt..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {KNOWN_SOURCE_FIELDS.map(field => (
+                        <SelectItem key={field} value={field}>
+                          {field}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <ArrowRight className="w-5 h-5 text-muted-foreground mb-2" />
+                <div className="flex-1">
+                  <Label className="text-xs">Mål felt (Shopify)</Label>
+                  <Select
+                    value={newMapping.targetField}
+                    onValueChange={(v) => setNewMapping(prev => ({ ...prev, targetField: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Vælg mål felt..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SHOPIFY_PRODUCT_FIELDS.map(field => (
+                        <SelectItem key={field.value} value={field.value}>
+                          {field.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button onClick={addFieldMapping} size="icon">
+                  <Plus className="w-4 h-4" />
+                </Button>
+              </div>
 
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className="font-medium">CSV Data</span>
-            <ArrowRight className="w-4 h-4" />
-            <span className="font-medium">Shopify Felter</span>
-          </div>
+              {/* Existing mappings */}
+              {fieldMappings.length > 0 ? (
+                <div className="border rounded-lg overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Kilde felt (DanDomain)</TableHead>
+                        <TableHead></TableHead>
+                        <TableHead>Mål felt (Shopify)</TableHead>
+                        <TableHead className="w-16"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fieldMappings.map(mapping => (
+                        <TableRow key={mapping.id}>
+                          <TableCell className="font-mono text-sm">
+                            {mapping.sourceField}
+                          </TableCell>
+                          <TableCell className="w-12">
+                            <ArrowRight className="w-4 h-4 text-muted-foreground" />
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => removeFieldMapping(mapping.id)}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="text-center py-4 text-muted-foreground text-sm">
+                  Ingen ekstra felt-mappings tilføjet endnu
+                </div>
+              )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 space-y-4">
-              {/* Title Field */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-sm font-medium text-foreground mb-2 block">Titel</label>
-                  <div className="relative">
-                    <Input 
-                      value={product.transformed.title} 
-                      readOnly 
-                      className="bg-background"
-                    />
-                    {product.original.title !== product.transformed.title && (
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        <span className="text-amber-600">Original:</span> {product.original.title}
-                        <br />
-                        <span className="text-green-600">→ Vendor fjernet fra titel</span>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Description Field */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-sm font-medium text-foreground mb-2 block">Beskrivelse</label>
-                  <div className="min-h-[100px] p-3 border rounded-md bg-background text-sm">
-                    {product.transformed.body_html ? (
-                      <div dangerouslySetInnerHTML={{ __html: product.transformed.body_html.substring(0, 300) + (product.transformed.body_html.length > 300 ? '...' : '') }} />
-                    ) : (
-                      <span className="text-muted-foreground italic">Ingen beskrivelse</span>
-                    )}
-                  </div>
-                  {product.mappedFields.some(m => m.field === 'body_html') && (
-                    <div className="mt-2 text-xs text-green-600 flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      Mappet fra {product.mappedFields.find(m => m.field === 'body_html')?.source}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Price & Variant Details */}
-              <Card>
-                <CardContent className="pt-4 space-y-4">
-                  <div>
-                    <label className="text-sm font-medium text-foreground mb-2 block">Pris</label>
-                    <div className="flex items-center gap-4">
+              {/* Suggestion */}
+              {fieldMappings.length === 0 && (
+                <Card className="bg-muted/50 border-dashed">
+                  <CardContent className="py-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-warning mt-0.5" />
                       <div>
+                        <p className="font-medium text-sm">Forslag: Stregkode mapping</p>
+                        <p className="text-sm text-muted-foreground">
+                          Hvis dine produkter har stregkoder i PROD_BARCODE_NUMBER, kan du mappe dem til Shopify stregkode-feltet ovenfor.
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Shopify Preview Tab */}
+        <TabsContent value="preview" className="mt-6">
+          {product ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-medium">Shopify Preview</h3>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePrevious}
+                    disabled={currentIndex === 0}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+                  <span className="text-sm text-muted-foreground min-w-[80px] text-center">
+                    {currentIndex + 1} / {productIds.length}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleNext}
+                    disabled={currentIndex === productIds.length - 1}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleRandom}
+                  >
+                    <Shuffle className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="font-medium">XML Data</span>
+                <ArrowRight className="w-4 h-4" />
+                <span className="font-medium">Shopify Felter</span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-2 space-y-4">
+                  {/* Title Field */}
+                  <Card>
+                    <CardContent className="pt-4">
+                      <label className="text-sm font-medium text-foreground mb-2 block">Titel</label>
+                      <div className="relative">
                         <Input 
-                          value={product.transformed.price.toFixed(2)} 
+                          value={product.transformed.title} 
                           readOnly 
-                          className="w-32 bg-background"
+                          className="bg-background"
                         />
-                        {product.mappedFields.some(m => m.field === 'variants[0].price') && (
-                          <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
-                            <Check className="w-3 h-3" />
-                            Fra {product.mappedFields.find(m => m.field === 'variants[0].price')?.source}
+                        {product.original.title !== product.transformed.title && (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            <span className="text-warning">Original:</span> {product.original.title}
+                            <br />
+                            <span className="text-success">→ Vendor fjernet fra titel</span>
                           </div>
                         )}
                       </div>
-                      <span className="text-muted-foreground">kr.</span>
-                      {product.transformed.compare_at_price && (
-                        <div className="text-muted-foreground">
-                          <span className="text-xs">Før: </span>
-                          <span className="line-through">{product.transformed.compare_at_price.toFixed(2)} kr.</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                    </CardContent>
+                  </Card>
 
-                  <Separator />
-
-                  {/* Variant details grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {/* SKU */}
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
-                      <Input 
-                        value={product.transformed.sku} 
-                        readOnly 
-                        className="bg-background h-8 font-mono text-xs"
-                      />
-                      {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
-                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
-                          <Check className="w-2.5 h-2.5" />
-                          {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Lagerbeholdning */}
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">Lager</label>
-                      <Input 
-                        value={product.transformed.stock_quantity.toString()} 
-                        readOnly 
-                        className="bg-background h-8 font-mono text-xs"
-                      />
-                      {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
-                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
-                          <Check className="w-2.5 h-2.5" />
-                          {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Stregkode */}
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
-                      <Input 
-                        value={product.transformed.barcode || '(ingen)'} 
-                        readOnly 
-                        className="bg-background h-8 font-mono text-xs"
-                      />
-                      {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
-                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
-                          <Check className="w-2.5 h-2.5" />
-                          {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Kostpris */}
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
-                      <Input 
-                        value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
-                        readOnly 
-                        className="bg-background h-8 font-mono text-xs"
-                      />
-                      {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
-                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
-                          <Check className="w-2.5 h-2.5" />
-                          {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="space-y-4">
-              {/* Image preview - FIRST */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    Billeder ({product.original.images.length})
-                  </label>
-                  {product.original.images.length > 0 ? (
-                    <div className="space-y-2">
-                      {/* Primary image */}
-                      <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-background">
-                        <img 
-                          src={product.original.images[0].startsWith('http') 
-                            ? product.original.images[0] 
-                            : `https://maggiesgemakker.dk${product.original.images[0]}`} 
-                          alt="Primært produktbillede"
-                          className="object-contain w-full h-full"
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.src = '/placeholder.svg';
-                          }}
-                        />
+                  {/* Description Field */}
+                  <Card>
+                    <CardContent className="pt-4">
+                      <label className="text-sm font-medium text-foreground mb-2 block">Beskrivelse</label>
+                      <div className="min-h-[100px] p-3 border rounded-md bg-background text-sm">
+                        {product.transformed.body_html ? (
+                          <div dangerouslySetInnerHTML={{ __html: product.transformed.body_html.substring(0, 300) + (product.transformed.body_html.length > 300 ? '...' : '') }} />
+                        ) : (
+                          <span className="text-muted-foreground italic">Ingen beskrivelse</span>
+                        )}
                       </div>
-                      {/* Gallery thumbnails */}
-                      {product.original.images.length > 1 && (
-                        <div className="grid grid-cols-4 gap-1">
-                          {product.original.images.slice(1, 5).map((img, i) => (
-                            <div key={i} className="aspect-square overflow-hidden rounded border bg-background">
-                              <img 
-                                src={img.startsWith('http') ? img : `https://maggiesgemakker.dk${img}`} 
-                                alt={`Galleri billede ${i + 2}`}
-                                className="object-contain w-full h-full"
-                                onError={(e) => {
-                                  const target = e.target as HTMLImageElement;
-                                  target.src = '/placeholder.svg';
-                                }}
-                              />
-                            </div>
-                          ))}
-                          {product.original.images.length > 5 && (
-                            <div className="aspect-square flex items-center justify-center rounded border bg-muted text-xs text-muted-foreground">
-                              +{product.original.images.length - 5}
+                      {product.mappedFields.some(m => m.field === 'body_html') && (
+                        <div className="mt-2 text-xs text-success flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          Mappet fra {product.mappedFields.find(m => m.field === 'body_html')?.source}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Price & Variant Details */}
+                  <Card>
+                    <CardContent className="pt-4 space-y-4">
+                      <div>
+                        <label className="text-sm font-medium text-foreground mb-2 block">Pris</label>
+                        <div className="flex items-center gap-4">
+                          <div>
+                            <Input 
+                              value={product.transformed.price.toFixed(2)} 
+                              readOnly 
+                              className="w-32 bg-background"
+                            />
+                            {product.mappedFields.some(m => m.field === 'variants[0].price') && (
+                              <div className="mt-1 text-xs text-success flex items-center gap-1">
+                                <Check className="w-3 h-3" />
+                                Fra {product.mappedFields.find(m => m.field === 'variants[0].price')?.source}
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-muted-foreground">kr.</span>
+                          {product.transformed.compare_at_price && (
+                            <div className="text-muted-foreground">
+                              <span className="text-xs">Før: </span>
+                              <span className="line-through">{product.transformed.compare_at_price.toFixed(2)} kr.</span>
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center aspect-square w-full rounded-lg border border-dashed bg-muted/50 text-muted-foreground">
-                      <div className="text-center">
-                        <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                        <span className="text-xs">Intet billede</span>
                       </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Produktorganisering</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Vendor */}
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">Forhandler</label>
-                    <Input 
-                      value={product.transformed.vendor || '(tom)'} 
-                      readOnly 
-                      className="bg-background h-9"
-                    />
-                  </div>
+                      <Separator />
 
-                  <Separator />
+                      {/* Variant details grid */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {/* SKU */}
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
+                          <Input 
+                            value={product.transformed.sku} 
+                            readOnly 
+                            className="bg-background h-8 font-mono text-xs"
+                          />
+                          {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
+                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                              <Check className="w-2.5 h-2.5" />
+                              {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
+                            </div>
+                          )}
+                        </div>
 
-                  {/* Tags */}
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">Tags</label>
-                    {product.categoryNames.length > 0 ? (
-                      <div className="flex flex-wrap gap-1 p-2 border rounded-md bg-background min-h-[38px]">
-                        {product.categoryNames.map((name, i) => (
-                          <Badge key={i} variant="outline" className="text-xs">
-                            {name}
-                          </Badge>
-                        ))}
+                        {/* Lagerbeholdning */}
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">Lager</label>
+                          <Input 
+                            value={product.transformed.stock_quantity.toString()} 
+                            readOnly 
+                            className="bg-background h-8 font-mono text-xs"
+                          />
+                          {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
+                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                              <Check className="w-2.5 h-2.5" />
+                              {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Stregkode */}
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
+                          <Input 
+                            value={product.transformed.barcode || '(ingen)'} 
+                            readOnly 
+                            className="bg-background h-8 font-mono text-xs"
+                          />
+                          {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
+                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                              <Check className="w-2.5 h-2.5" />
+                              {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Kostpris */}
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
+                          <Input 
+                            value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
+                            readOnly 
+                            className="bg-background h-8 font-mono text-xs"
+                          />
+                          {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
+                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                              <Check className="w-2.5 h-2.5" />
+                              {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    ) : (
-                      <Input 
-                        value="(ingen tags)" 
-                        readOnly 
-                        className="bg-background h-9 text-muted-foreground"
-                      />
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-            </div>
-          </div>
-
-          {/* Applied Field Mappings in Preview */}
-          {fieldMappings.length > 0 && (
-            <Card className="bg-primary/5 border-primary/20">
-              <CardContent className="pt-4">
-                <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
-                  <Check className="w-4 h-4 text-primary" />
-                  Ekstra felt-mappings anvendt
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {fieldMappings.map(mapping => (
-                    <Badge key={mapping.id} variant="outline" className="gap-1">
-                      <span className="font-mono text-xs">{mapping.sourceField}</span>
-                      <ArrowRight className="w-3 h-3" />
-                      <span>{SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}</span>
-                    </Badge>
-                  ))}
+                    </CardContent>
+                  </Card>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      )}
 
-      {!product && totalCount === 0 && (
-        <div className="text-center py-8 text-muted-foreground">
-          <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
-          <p>Ingen produkter fundet til preview</p>
-        </div>
-      )}
+                <div className="space-y-4">
+                  {/* Image preview */}
+                  <Card>
+                    <CardContent className="pt-4">
+                      <label className="text-xs text-muted-foreground mb-1 block">
+                        Billeder ({product.original.images.length})
+                      </label>
+                      {product.original.images.length > 0 ? (
+                        <div className="space-y-2">
+                          {/* Primary image */}
+                          <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-background">
+                            <img 
+                              src={product.original.images[0].startsWith('http') 
+                                ? product.original.images[0] 
+                                : `https://maggiesgemakker.dk${product.original.images[0]}`} 
+                              alt="Primært produktbillede"
+                              className="object-contain w-full h-full"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.src = '/placeholder.svg';
+                              }}
+                            />
+                          </div>
+                          {/* Gallery thumbnails */}
+                          {product.original.images.length > 1 && (
+                            <div className="grid grid-cols-4 gap-1">
+                              {product.original.images.slice(1, 5).map((img, i) => (
+                                <div key={i} className="aspect-square overflow-hidden rounded border bg-background">
+                                  <img 
+                                    src={img.startsWith('http') ? img : `https://maggiesgemakker.dk${img}`} 
+                                    alt={`Galleri billede ${i + 2}`}
+                                    className="object-contain w-full h-full"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement;
+                                      target.src = '/placeholder.svg';
+                                    }}
+                                  />
+                                </div>
+                              ))}
+                              {product.original.images.length > 5 && (
+                                <div className="aspect-square flex items-center justify-center rounded border bg-muted text-xs text-muted-foreground">
+                                  +{product.original.images.length - 5}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center aspect-square w-full rounded-lg border border-dashed bg-muted/50 text-muted-foreground">
+                          <div className="text-center">
+                            <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                            <span className="text-xs">Intet billede</span>
+                          </div>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium">Produktorganisering</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {/* Vendor */}
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Forhandler</label>
+                        <Input 
+                          value={product.transformed.vendor || '(tom)'} 
+                          readOnly 
+                          className="bg-background h-9"
+                        />
+                      </div>
+
+                      <Separator />
+
+                      {/* Tags */}
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Tags</label>
+                        {product.categoryNames.length > 0 ? (
+                          <div className="flex flex-wrap gap-1 p-2 border rounded-md bg-background min-h-[38px]">
+                            {product.categoryNames.map((name, i) => (
+                              <Badge key={i} variant="outline" className="text-xs">
+                                {name}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <Input 
+                            value="(ingen tags)" 
+                            readOnly 
+                            className="bg-background h-9 text-muted-foreground"
+                          />
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                </div>
+              </div>
+
+              {/* Applied Field Mappings in Preview */}
+              {fieldMappings.length > 0 && (
+                <Card className="bg-primary/5 border-primary/20">
+                  <CardContent className="pt-4">
+                    <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                      <Check className="w-4 h-4 text-primary" />
+                      Ekstra felt-mappings anvendt
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {fieldMappings.map(mapping => (
+                        <Badge key={mapping.id} variant="outline" className="gap-1">
+                          <span className="font-mono text-xs">{mapping.sourceField}</span>
+                          <ArrowRight className="w-3 h-3" />
+                          <span>{SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}</span>
+                        </Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          ) : totalCount === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+              <p>Ingen produkter fundet til preview</p>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
