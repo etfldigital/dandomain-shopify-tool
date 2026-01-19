@@ -7,6 +7,7 @@ import { ExtractStep } from '@/components/wizard/steps/ExtractStep';
 import { MappingStep } from '@/components/wizard/steps/MappingStep';
 import { ConnectShopifyStep } from '@/components/wizard/steps/ConnectShopifyStep';
 import { UploadStep } from '@/components/wizard/steps/UploadStep';
+import { ReviewStep } from '@/components/wizard/steps/ReviewStep';
 import { ReportStep } from '@/components/wizard/steps/ReportStep';
 import { useProject } from '@/hooks/useProjects';
 import { supabase } from '@/integrations/supabase/client';
@@ -20,7 +21,7 @@ const STATUS_TO_STEP: Record<ProjectStatus, WizardStep> = {
   extracted: 'mapping',
   mapped: 'connect-shopify',
   migrating: 'upload',
-  completed: 'report',
+  completed: 'review',
 };
 
 const STEP_ORDER: WizardStep[] = [
@@ -29,6 +30,7 @@ const STEP_ORDER: WizardStep[] = [
   'mapping',
   'connect-shopify',
   'upload',
+  'review',
   'report',
 ];
 
@@ -150,6 +152,13 @@ export default function ProjectWizard() {
           )}
           {currentStep === 'upload' && (
             <UploadStep
+              project={project}
+              onUpdateProject={handleUpdateProject}
+              onNext={handleNext}
+            />
+          )}
+          {currentStep === 'review' && (
+            <ReviewStep
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}
