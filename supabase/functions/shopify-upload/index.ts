@@ -704,6 +704,11 @@ async function uploadProductsWithVariants(
           position: index + 1,
         };
         
+        // Add barcode if available
+        if (variantData?.barcode) {
+          variant.barcode = String(variantData.barcode);
+        }
+        
         // Shopify uses 'cost' for inventory cost (cost price)
         if (variantData?.cost_price) {
           variant.cost = String(variantData.cost_price);
