@@ -90,11 +90,11 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const barcode = advanced ? getElementText(advanced, 'PROD_BARCODE_NUMBER') : '';
       const internalId = advanced ? getElementText(advanced, 'INTERNAL_ID') : '';
       
-      // FIELD section - custom fields FIELD_1 to FIELD_20
-      const fieldSection = product.getElementsByTagName('FIELD')[0];
-      const field1 = fieldSection ? getElementText(fieldSection, 'FIELD_1') : '';
-      const field2 = fieldSection ? getElementText(fieldSection, 'FIELD_2') : '';
-      const field3 = fieldSection ? getElementText(fieldSection, 'FIELD_3') : '';
+      // CUSTOM_FIELDS section - custom fields FIELD_1 to FIELD_20
+      const customFieldsSection = product.getElementsByTagName('CUSTOM_FIELDS')[0];
+      const field1 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_1') : '';
+      const field2 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_2') : '';
+      const field3 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_3') : '';
       
       // STOCK section
       const stock = product.getElementsByTagName('STOCK')[0];
