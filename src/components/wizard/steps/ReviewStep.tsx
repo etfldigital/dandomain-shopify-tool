@@ -163,60 +163,57 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
       const duplicateGroups: DuplicateGroup[] = [];
       
       if (entityType === 'products') {
-        // Check for duplicate titles among items that have shopify_id (actually created in Shopify)
-        const titleMap = new Map<string, any[]>();
+        // For products: Find actual duplicates in Shopify by looking for
+        // multiple DIFFERENT Shopify product IDs with the same title.
+        // Multiple DB records with the same shopify_id = variants of same product (OK, not duplicates)
+        
+        // Step 1: Get unique Shopify product IDs with their titles
+        const shopifyProductMap = new Map<string, { shopifyId: string; title: string; items: any[] }>();
+        
         for (const item of allItems) {
-          const title = item.data?.title?.toLowerCase()?.trim();
-          if (title && title !== 'untitled') {
-            if (!titleMap.has(title)) {
-              titleMap.set(title, []);
-            }
-            titleMap.get(title)!.push(item);
-          }
-        }
-        
-        for (const [title, items] of titleMap) {
-          if (items.length > 1) {
-            duplicateGroups.push({
-              key: title,
-              count: items.length,
-              ids: items.map(i => i.id),
-              externalIds: items.map(i => i.external_id),
-              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
-              title: items[0].data?.title,
-              items: items,
-            });
-          }
-        }
-        
-        // Check for duplicate SKUs
-        const skuMap = new Map<string, any[]>();
-        for (const item of allItems) {
-          const sku = item.data?.sku?.toLowerCase()?.trim();
-          if (sku) {
-            if (!skuMap.has(sku)) {
-              skuMap.set(sku, []);
-            }
-            skuMap.get(sku)!.push(item);
-          }
-        }
-        
-        for (const [sku, items] of skuMap) {
-          if (items.length > 1) {
-            const existing = duplicateGroups.find(g => 
-              g.ids.some(id => items.some(i => i.id === id))
-            );
-            if (!existing) {
-              duplicateGroups.push({
-                key: `SKU: ${sku}`,
-                count: items.length,
-                ids: items.map(i => i.id),
-                externalIds: items.map(i => i.external_id),
-                shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
-                title: items[0].data?.title,
-                items: items,
+          const shopifyId = item.shopify_id;
+          
+          if (shopifyId) {
+            if (!shopifyProductMap.has(shopifyId)) {
+              shopifyProductMap.set(shopifyId, {
+                shopifyId,
+                title: item.data?.title || 'Ukendt',
+                items: [item],
               });
+            } else {
+              // Same Shopify ID = variants, add to existing group
+              shopifyProductMap.get(shopifyId)!.items.push(item);
             }
+          }
+        }
+        
+        // Step 2: Group unique Shopify products by title
+        const titleToShopifyProducts = new Map<string, { shopifyId: string; title: string; items: any[] }[]>();
+        
+        for (const product of shopifyProductMap.values()) {
+          const titleKey = product.title.toLowerCase().trim();
+          if (titleKey && titleKey !== 'untitled') {
+            if (!titleToShopifyProducts.has(titleKey)) {
+              titleToShopifyProducts.set(titleKey, []);
+            }
+            titleToShopifyProducts.get(titleKey)!.push(product);
+          }
+        }
+        
+        // Step 3: Only report as duplicates if there are multiple DIFFERENT Shopify products with same title
+        for (const [titleKey, products] of titleToShopifyProducts) {
+          if (products.length > 1) {
+            // Multiple unique Shopify products with same title = real duplicates in Shopify
+            const allItemsInGroup = products.flatMap(p => p.items);
+            duplicateGroups.push({
+              key: titleKey,
+              count: products.length, // Count of unique Shopify products, not DB rows/variants
+              ids: allItemsInGroup.map(i => i.id),
+              externalIds: allItemsInGroup.map(i => i.external_id),
+              shopifyIds: products.map(p => p.shopifyId), // Unique Shopify product IDs
+              title: products[0].title,
+              items: allItemsInGroup,
+            });
           }
         }
       } else if (entityType === 'customers') {
