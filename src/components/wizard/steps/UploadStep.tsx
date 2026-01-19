@@ -464,6 +464,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const isPaused = jobs.some(j => j.status === 'paused');
   const allCompleted = jobs.length > 0 && jobs.every(j => j.status === 'completed' || j.status === 'cancelled');
   const hasFailed = jobs.some(j => j.error_count > 0);
+  // Check if we only have test mode jobs (no full upload has been started yet)
+  const hasOnlyTestJobs = jobs.length > 0 && jobs.every(j => j.is_test_mode);
+  const hasStartedRealUpload = jobs.some(j => !j.is_test_mode);
   const [hasCelebrated, setHasCelebrated] = useState(false);
   const [retryingEntityType, setRetryingEntityType] = useState<EntityType | null>(null);
   const [retryingIds, setRetryingIds] = useState<string[] | null>(null);
@@ -1039,7 +1042,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
       {/* Action Buttons */}
       <div className="flex justify-end gap-3">
-        {!isUploading && !allCompleted && !hasFailed && (
+        {/* Show Test + Start buttons when not uploading and either no jobs yet OR only test jobs completed */}
+        {!isUploading && !hasStartedRealUpload && (
           <>
             <TooltipProvider>
               <Tooltip>
@@ -1068,7 +1072,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
 
-        {hasFailed && !isUploading && (
+        {/* Show retry button when a real upload has failed items */}
+        {hasFailed && !isUploading && hasStartedRealUpload && (
           <Button onClick={handleRetry} variant="outline">
             <RotateCcw className="w-4 h-4 mr-2" />
             Prøv igen
@@ -1098,8 +1103,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
 
-        {/* When completed: show "Start igen" and "Videre" */}
-        {allCompleted && (
+        {/* When a real upload is completed: show "Start igen" and "Videre" */}
+        {allCompleted && hasStartedRealUpload && (
           <>
             <Button variant="outline" onClick={() => handleStartUpload(false)}>
               <RotateCcw className="w-4 h-4 mr-2" />
