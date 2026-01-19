@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsCSV, parseCustomersCSV, parseOrdersCSV, parseCategoriesCSV } from '@/lib/csv-parser';
+import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML } from '@/lib/xml-parser';
 import { useAuth } from '@/hooks/useAuth';
 
 interface ExtractStepProps {
@@ -45,11 +45,11 @@ interface ProjectFile {
 }
 
 const ENTITY_CONFIG: Record<EntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
-  products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'products.csv' },
-  categories: { icon: Folder, label: 'Produktgrupper / Kategorier', acceptedLabel: 'categories.csv' },
-  customers: { icon: Users, label: 'Kunder', acceptedLabel: 'customers.csv' },
-  orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'orders.csv' },
-  pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'pages.csv' },
+  products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'PRODUCTS.xml' },
+  categories: { icon: Folder, label: 'Produktgrupper / Kategorier', acceptedLabel: 'PRODUCTCATEGORIES.xml' },
+  customers: { icon: Users, label: 'Kunder', acceptedLabel: 'ORDERS.xml (kunder ekstraheres)' },
+  orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'ORDERS.xml' },
+  pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'pages.xml' },
 };
 
 export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepProps) {
@@ -114,7 +114,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
     try {
       // Upload to storage
-      const storagePath = `${user.id}/${project.id}/${currentUploadType}.csv`;
+      const storagePath = `${user.id}/${project.id}/${currentUploadType}.xml`;
       
       const { error: uploadError } = await supabase.storage
         .from('csv-uploads')
@@ -264,7 +264,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         
         switch (uploadedFile.type) {
           case 'products':
-            parsedData = parseProductsCSV(text);
+            parsedData = parseProductsXML(text);
             
             // Deduplicate by SKU - keep last occurrence
             const productMap = new Map<string, typeof parsedData[0]>();
@@ -326,7 +326,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             break;
 
           case 'customers':
-            parsedData = parseCustomersCSV(text);
+            parsedData = parseCustomersXML(text);
             
             // Deduplicate by email - keep last occurrence
             const customerMap = new Map<string, typeof parsedData[0]>();
@@ -357,7 +357,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             break;
 
           case 'orders':
-            parsedData = parseOrdersCSV(text);
+            parsedData = parseOrdersXML(text);
             
             // Deduplicate by order ID - keep last occurrence
             const orderMap = new Map<string, typeof parsedData[0]>();
@@ -387,7 +387,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             break;
 
           case 'categories':
-            parsedData = parseCategoriesCSV(text);
+            parsedData = parseCategoriesXML(text);
             console.log('Parsed categories:', parsedData.length, 'First few:', parsedData.slice(0, 3));
             
             // Deduplicate by category ID - keep last occurrence
@@ -495,14 +495,14 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       <div className="text-center mb-8">
         <h2 className="text-2xl font-semibold mb-2">Udtræk data</h2>
         <p className="text-muted-foreground">
-          Upload CSV-filer fra DanDomain for at starte migreringen
+          Upload XML-filer fra DanDomain for at starte migreringen
         </p>
       </div>
 
       <input
         type="file"
         ref={fileInputRef}
-        accept=".csv"
+        accept=".xml"
         onChange={handleFileChange}
         className="hidden"
       />
