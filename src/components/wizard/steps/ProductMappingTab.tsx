@@ -49,6 +49,7 @@ const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].barcode', label: 'Stregkode' },
   { value: 'variants[0].price', label: 'Pris' },
   { value: 'variants[0].compare_at_price', label: 'Sammenlign ved pris' },
+  { value: 'variants[0].cost', label: 'Kostpris' },
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
@@ -88,6 +89,7 @@ const AUTO_MAP_SUGGESTIONS: { source: string; target: string }[] = [
   { source: 'PROD_BARCODE_NUMBER', target: 'variants[0].barcode' },
   { source: 'UNIT_PRICE', target: 'variants[0].price' },
   { source: 'SPECIAL_OFFER_PRICE', target: 'variants[0].compare_at_price' },
+  { source: 'PROD_COST_PRICE', target: 'variants[0].cost' },
   { source: 'PROD_WEIGHT', target: 'variants[0].weight' },
   { source: 'STOCK_COUNT', target: 'variants[0].inventory_quantity' },
   { source: 'MANUFAC_ID', target: 'vendor' },
@@ -106,19 +108,23 @@ interface ProductPreviewData {
     sku: string;
     price: number;
     cost_price: number | null;
+    compare_at_price: number | null;
     stock_quantity: number;
     weight: number | null;
     images: string[];
     vendor: string | null;
     category_ids: string[];
+    barcode: string | null;
     rawData: Record<string, any>; // Store raw data for field mapping
   };
   transformed: {
     title: string;
     vendor: string;
     sku: string;
+    barcode: string;
     price: number;
     compare_at_price: number | null;
+    cost_price: number | null;
     weight: number | null;
     stock_quantity: number;
     body_html: string;
@@ -273,19 +279,23 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           sku: data.sku || '',
           price: data.price || 0,
           cost_price: data.cost_price || null,
+          compare_at_price: data.compare_at_price || null,
           stock_quantity: data.stock_quantity || 0,
           weight: data.weight || null,
           images: data.images || [],
           vendor: data.vendor,
           category_ids: categoryIds,
+          barcode: data.barcode || null,
           rawData: data, // Store raw data for field mapping
         },
         transformed: {
           title: transformedTitle,
           vendor: vendor,
           sku: data.sku || '',
+          barcode: data.barcode || '',
           price: data.price || 0,
-          compare_at_price: null,
+          compare_at_price: data.compare_at_price || null,
+          cost_price: data.cost_price || null,
           weight: data.weight || null,
           stock_quantity: data.stock_quantity || 0,
           body_html: data.body_html || '',
@@ -320,11 +330,17 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           case 'variants[0].sku':
             transformed.sku = String(sourceValue);
             break;
+          case 'variants[0].barcode':
+            transformed.barcode = String(sourceValue);
+            break;
           case 'variants[0].price':
             transformed.price = parseFloat(sourceValue) || 0;
             break;
           case 'variants[0].compare_at_price':
             transformed.compare_at_price = parseFloat(sourceValue) || null;
+            break;
+          case 'variants[0].cost':
+            transformed.cost_price = parseFloat(sourceValue) || null;
             break;
           case 'variants[0].weight':
             transformed.weight = parseFloat(sourceValue) || null;
@@ -881,6 +897,42 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
                       <Check className="w-3 h-3" />
                       Fra {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Barcode */}
+              <Card>
+                <CardContent className="pt-4">
+                  <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
+                  <Input 
+                    value={product.transformed.barcode || '(ingen)'} 
+                    readOnly 
+                    className="bg-background h-9 font-mono text-sm"
+                  />
+                  {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
+                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Fra {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Cost Price */}
+              <Card>
+                <CardContent className="pt-4">
+                  <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
+                  <Input 
+                    value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
+                    readOnly 
+                    className="bg-background h-9 font-mono text-sm"
+                  />
+                  {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
+                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Fra {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
                     </div>
                   )}
                 </CardContent>
