@@ -86,9 +86,10 @@ export const KNOWN_SOURCE_FIELDS = [
   // MANUFACTURERS
   'MANUFAC_ID',
   // CUSTOM FIELDS (kun de anvendte)
-  'FIELD_1',
-  'FIELD_2',
-  'FIELD_3',
+  'FIELD_1',  // Materiale
+  'FIELD_2',  // Farve
+  'FIELD_3',  // Pasform
+  'FIELD_9',  // Vaskeanvisning
 ];
 
 export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }: FieldMappingEditorProps) {
