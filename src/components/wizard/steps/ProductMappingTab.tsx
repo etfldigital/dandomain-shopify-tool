@@ -56,17 +56,28 @@ const SHOPIFY_PRODUCT_FIELDS = [
 
 // Known source fields from DanDomain XML exports
 const KNOWN_SOURCE_FIELDS = [
+  // GENERAL section
   'PROD_NUM',
   'PROD_NAME',
   'PROD_WEIGHT',
-  'PROD_BARCODE_NUMBER',
+  'PROD_PHOTO_URL',
   'PROD_COST_PRICE',
+  // PRICES section
+  'UNIT_PRICE',
+  'SPECIAL_OFFER_PRICE',
+  // ADVANCED section
+  'PROD_BARCODE_NUMBER',
   'INTERNAL_ID',
+  'PROD_HIDDEN',
+  // STOCK section
   'STOCK_COUNT',
+  // DESCRIPTION section
   'DESC_SHORT',
   'DESC_LONG',
   'META_DESCRIPTION',
+  // MANUFACTURERS
   'MANUFAC_ID',
+  // INFO section
   'PROD_CREATED',
   'PROD_SALES_COUNT',
 ];
