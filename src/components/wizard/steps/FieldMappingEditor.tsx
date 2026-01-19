@@ -44,6 +44,10 @@ export const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
+  // Shopify metafields (custom fields created in Shopify admin)
+  { value: 'metafields.custom.materiale', label: 'Materiale (metafelt)', isMetafield: true },
+  { value: 'metafields.custom.farve', label: 'Farve (metafelt)', isMetafield: true },
+  { value: 'metafields.custom.pasform', label: 'Pasform (metafelt)', isMetafield: true },
 ];
 
 // Known source fields from DanDomain XML exports
@@ -81,6 +85,27 @@ export const KNOWN_SOURCE_FIELDS = [
   'TITLE',
   // MANUFACTURERS
   'MANUFAC_ID',
+  // CUSTOM FIELDS (FIELD_1 to FIELD_20)
+  'FIELD_1',
+  'FIELD_2',
+  'FIELD_3',
+  'FIELD_4',
+  'FIELD_5',
+  'FIELD_6',
+  'FIELD_7',
+  'FIELD_8',
+  'FIELD_9',
+  'FIELD_10',
+  'FIELD_11',
+  'FIELD_12',
+  'FIELD_13',
+  'FIELD_14',
+  'FIELD_15',
+  'FIELD_16',
+  'FIELD_17',
+  'FIELD_18',
+  'FIELD_19',
+  'FIELD_20',
 ];
 
 export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }: FieldMappingEditorProps) {
@@ -251,7 +276,14 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
               <SelectContent>
                 {SHOPIFY_PRODUCT_FIELDS.map(field => (
                   <SelectItem key={field.value} value={field.value}>
-                    {field.label}
+                    <span className="flex items-center gap-2">
+                      {field.label}
+                      {'isMetafield' in field && field.isMetafield && (
+                        <Badge variant="outline" className="text-xs py-0 px-1.5 font-normal">
+                          meta
+                        </Badge>
+                      )}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
