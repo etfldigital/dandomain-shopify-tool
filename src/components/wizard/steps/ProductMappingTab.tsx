@@ -54,6 +54,10 @@ const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
+  // Shopify metafields (custom fields created in Shopify admin)
+  { value: 'metafields.custom.materiale', label: 'Materiale (metafelt)', isMetafield: true },
+  { value: 'metafields.custom.farve', label: 'Farve (metafelt)', isMetafield: true },
+  { value: 'metafields.custom.pasform', label: 'Pasform (metafelt)', isMetafield: true },
 ];
 
 // Known source fields from DanDomain XML exports
@@ -82,6 +86,27 @@ const KNOWN_SOURCE_FIELDS = [
   // INFO section
   'PROD_CREATED',
   'PROD_SALES_COUNT',
+  // CUSTOM FIELDS (FIELD_1 to FIELD_20)
+  'FIELD_1',
+  'FIELD_2',
+  'FIELD_3',
+  'FIELD_4',
+  'FIELD_5',
+  'FIELD_6',
+  'FIELD_7',
+  'FIELD_8',
+  'FIELD_9',
+  'FIELD_10',
+  'FIELD_11',
+  'FIELD_12',
+  'FIELD_13',
+  'FIELD_14',
+  'FIELD_15',
+  'FIELD_16',
+  'FIELD_17',
+  'FIELD_18',
+  'FIELD_19',
+  'FIELD_20',
 ];
 
 // Auto-map suggestions: DanDomain field -> Shopify field
