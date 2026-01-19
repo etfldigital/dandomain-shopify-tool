@@ -55,9 +55,9 @@ const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
   // Shopify metafields (custom fields created in Shopify admin)
-  { value: 'metafields.custom.materiale', label: 'Materiale (metafelt)', isMetafield: true },
-  { value: 'metafields.custom.farve', label: 'Farve (metafelt)', isMetafield: true },
-  { value: 'metafields.custom.pasform', label: 'Pasform (metafelt)', isMetafield: true },
+  { value: 'metafields.custom.materiale', label: 'Materiale', isMetafield: true },
+  { value: 'metafields.custom.farve', label: 'Farve', isMetafield: true },
+  { value: 'metafields.custom.pasform', label: 'Pasform', isMetafield: true },
 ];
 
 // Known source fields from DanDomain XML exports
@@ -682,7 +682,14 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     <SelectContent>
                       {SHOPIFY_PRODUCT_FIELDS.map(field => (
                         <SelectItem key={field.value} value={field.value}>
-                          {field.label}
+                          <span className="flex items-center gap-2">
+                            {field.label}
+                            {'isMetafield' in field && field.isMetafield && (
+                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                                Metafelt
+                              </Badge>
+                            )}
+                          </span>
                         </SelectItem>
                       ))}
                     </SelectContent>
