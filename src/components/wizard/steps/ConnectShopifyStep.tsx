@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -164,7 +165,15 @@ export function ConnectShopifyStep({ project, onUpdateProject, onNext }: Connect
             'read_orders', 'write_orders',
             'read_content', 'write_content',
           ].map(scope => (
-            <code key={scope} className="px-2 py-1 rounded bg-secondary text-xs">
+            <code 
+              key={scope} 
+              className="px-2 py-1 rounded bg-secondary text-xs cursor-pointer hover:bg-secondary/80 transition-colors"
+              onClick={() => {
+                navigator.clipboard.writeText(scope);
+                toast.success(`Kopieret: ${scope}`);
+              }}
+              title="Klik for at kopiere"
+            >
               {scope}
             </code>
           ))}
