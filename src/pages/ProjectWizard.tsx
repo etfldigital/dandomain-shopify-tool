@@ -2,10 +2,9 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Header } from '@/components/layout/Header';
 import { WizardStepper } from '@/components/wizard/WizardStepper';
-import { ConnectDanDomainStep } from '@/components/wizard/steps/ConnectDanDomainStep';
+import { ConnectStep } from '@/components/wizard/steps/ConnectStep';
 import { ExtractStep } from '@/components/wizard/steps/ExtractStep';
 import { MappingStep } from '@/components/wizard/steps/MappingStep';
-import { ConnectShopifyStep } from '@/components/wizard/steps/ConnectShopifyStep';
 import { UploadStep } from '@/components/wizard/steps/UploadStep';
 import { ReviewStep } from '@/components/wizard/steps/ReviewStep';
 import { ReportStep } from '@/components/wizard/steps/ReportStep';
@@ -16,19 +15,18 @@ import { Button } from '@/components/ui/button';
 import { Loader2, ArrowLeft } from 'lucide-react';
 
 const STATUS_TO_STEP: Record<ProjectStatus, WizardStep> = {
-  draft: 'connect-dandomain',
+  draft: 'connect',
   connected: 'extract',
   extracted: 'mapping',
-  mapped: 'connect-shopify',
+  mapped: 'upload',
   migrating: 'upload',
   completed: 'review',
 };
 
 const STEP_ORDER: WizardStep[] = [
-  'connect-dandomain',
+  'connect',
   'extract',
   'mapping',
-  'connect-shopify',
   'upload',
   'review',
   'report',
@@ -38,7 +36,7 @@ export default function ProjectWizard() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { project, isLoading, error } = useProject(projectId);
-  const [currentStep, setCurrentStep] = useState<WizardStep>('connect-dandomain');
+  const [currentStep, setCurrentStep] = useState<WizardStep>('connect');
   const [completedSteps, setCompletedSteps] = useState<WizardStep[]>([]);
 
   useEffect(() => {
@@ -121,8 +119,8 @@ export default function ProjectWizard() {
         </div>
 
         <div className="mt-14">
-          {currentStep === 'connect-dandomain' && (
-            <ConnectDanDomainStep
+          {currentStep === 'connect' && (
+            <ConnectStep
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}
@@ -137,13 +135,6 @@ export default function ProjectWizard() {
           )}
           {currentStep === 'mapping' && (
             <MappingStep
-              project={project}
-              onUpdateProject={handleUpdateProject}
-              onNext={handleNext}
-            />
-          )}
-          {currentStep === 'connect-shopify' && (
-            <ConnectShopifyStep
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}

@@ -225,20 +225,18 @@ export interface JobError {
 
 // Wizard steps
 export type WizardStep = 
-  | 'connect-dandomain' 
+  | 'connect' 
   | 'extract' 
   | 'mapping' 
-  | 'connect-shopify' 
   | 'upload' 
   | 'review'
   | 'report';
 
 export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] = [
-  { id: 'connect-dandomain', label: 'Forbind DanDomain', number: 1 },
+  { id: 'connect', label: 'Forbind', number: 1 },
   { id: 'extract', label: 'Udtræk', number: 2 },
   { id: 'mapping', label: 'Mapping', number: 3 },
-  { id: 'connect-shopify', label: 'Forbind Shopify', number: 4 },
-  { id: 'upload', label: 'Upload', number: 5 },
-  { id: 'review', label: 'Gennemgang', number: 6 },
-  { id: 'report', label: 'Rapport', number: 7 },
+  { id: 'upload', label: 'Upload', number: 4 },
+  { id: 'review', label: 'Gennemgang', number: 5 },
+  { id: 'report', label: 'Rapport', number: 6 },
 ];
