@@ -13,11 +13,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Save, ArrowRight, Folder, Tag, Package, Eye } from 'lucide-react';
+import { Loader2, Save, ArrowRight, Folder, Tag, Package, Eye, Settings2 } from 'lucide-react';
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingPreview, MappingRules } from './ProductMappingPreview';
 import { ShopifyFieldPreview } from './ShopifyFieldPreview';
+import { FieldMappingEditor } from './FieldMappingEditor';
 
 interface MappingStepProps {
   project: Project;
@@ -39,7 +40,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [mappingRules, setMappingRules] = useState<MappingRules>(defaultMappingRules);
-  const [activeTab, setActiveTab] = useState('products');
+  const [activeTab, setActiveTab] = useState('preview');
 
   useEffect(() => {
     loadCategories();
@@ -134,10 +135,14 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="preview" className="gap-2">
             <Eye className="w-4 h-4" />
             Shopify Preview
+          </TabsTrigger>
+          <TabsTrigger value="field-mappings" className="gap-2">
+            <Settings2 className="w-4 h-4" />
+            Felt-Mappings
           </TabsTrigger>
           <TabsTrigger value="products" className="gap-2">
             <Package className="w-4 h-4" />
@@ -151,6 +156,10 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
 
         <TabsContent value="preview" className="mt-6">
           <ShopifyFieldPreview projectId={project.id} />
+        </TabsContent>
+
+        <TabsContent value="field-mappings" className="mt-6">
+          <FieldMappingEditor projectId={project.id} />
         </TabsContent>
 
         <TabsContent value="products" className="mt-6">

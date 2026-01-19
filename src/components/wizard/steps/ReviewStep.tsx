@@ -3,9 +3,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { 
   Table,
@@ -24,9 +21,7 @@ import {
   Users, 
   ShoppingCart, 
   Folder,
-  Plus,
   ArrowRight,
-  Search,
   CheckCircle2,
   Download,
   ExternalLink
@@ -34,6 +29,7 @@ import {
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { FieldMappingEditor } from './FieldMappingEditor';
 
 interface ReviewStepProps {
   project: Project;
@@ -51,48 +47,8 @@ interface DuplicateGroup {
   items: any[];
 }
 
-interface FieldMapping {
-  id: string;
-  sourceField: string;
-  targetField: string;
-  entityType: EntityType;
-}
-
-// Common Shopify product fields that can be mapped
-const SHOPIFY_PRODUCT_FIELDS = [
-  { value: 'title', label: 'Titel' },
-  { value: 'body_html', label: 'Beskrivelse (HTML)' },
-  { value: 'vendor', label: 'Leverandør' },
-  { value: 'product_type', label: 'Produkttype' },
-  { value: 'tags', label: 'Tags' },
-  { value: 'variants[0].sku', label: 'SKU' },
-  { value: 'variants[0].barcode', label: 'Stregkode' },
-  { value: 'variants[0].price', label: 'Pris' },
-  { value: 'variants[0].compare_at_price', label: 'Sammenlign ved pris' },
-  { value: 'variants[0].weight', label: 'Vægt' },
-  { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
-  { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
-];
-
-// Known source fields from DanDomain CSV
-const KNOWN_SOURCE_FIELDS = [
-  'PROD_BARCODE_NUMBER',
-  'PROD_EAN',
-  'PROD_MANUFACTURER',
-  'PROD_SUPPLIER',
-  'PROD_COST_PRICE',
-  'PROD_WEIGHT',
-  'PROD_WIDTH',
-  'PROD_HEIGHT',
-  'PROD_DEPTH',
-  'PROD_META_TITLE',
-  'PROD_META_DESCRIPTION',
-  'PROD_META_KEYWORDS',
-];
-
 export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps) {
   const [activeTab, setActiveTab] = useState('duplicates');
-  const [loading, setLoading] = useState(false);
   const [duplicates, setDuplicates] = useState<Record<EntityType, DuplicateGroup[]>>({
     products: [],
     customers: [],
@@ -101,37 +57,10 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     pages: [],
   });
   const [scanning, setScanning] = useState<EntityType | null>(null);
-  const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
-  const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
   const [saving, setSaving] = useState(false);
   const [expandedEntity, setExpandedEntity] = useState<EntityType | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState<EntityType | null>(null);
   const [deletingAll, setDeletingAll] = useState<EntityType | null>(null);
-
-  // Load existing field mappings from project or mapping_profiles
-  useEffect(() => {
-    loadFieldMappings();
-  }, [project.id]);
-
-  const loadFieldMappings = async () => {
-    const { data } = await supabase
-      .from('mapping_profiles')
-      .select('*')
-      .eq('project_id', project.id)
-      .eq('is_active', true)
-      .single();
-
-    if (data?.mappings) {
-      // Parse field mappings from the profile
-      const mappings = (data.mappings as any[]).filter(m => m.type === 'field');
-      setFieldMappings(mappings.map((m, i) => ({
-        id: `mapping-${i}`,
-        sourceField: m.sourceField,
-        targetField: m.targetField,
-        entityType: m.entityType || 'products',
-      })));
-    }
-  };
 
   const scanForDuplicates = async (entityType: EntityType) => {
     setScanning(entityType);
@@ -338,82 +267,8 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     }
   };
 
-  const addFieldMapping = async () => {
-    if (!newMapping.sourceField || !newMapping.targetField) {
-      toast.error('Vælg både kilde- og målfelt');
-      return;
-    }
-
-    const mapping: FieldMapping = {
-      id: `mapping-${Date.now()}`,
-      sourceField: newMapping.sourceField,
-      targetField: newMapping.targetField,
-      entityType: 'products',
-    };
-
-    setFieldMappings(prev => [...prev, mapping]);
-    setNewMapping({ sourceField: '', targetField: '' });
-    toast.success('Felt-mapping tilføjet');
-  };
-
-  const removeFieldMapping = (id: string) => {
-    setFieldMappings(prev => prev.filter(m => m.id !== id));
-  };
-
-  const saveFieldMappings = async () => {
-    setSaving(true);
-    
-    try {
-      // Get or create mapping profile
-      const { data: existing } = await supabase
-        .from('mapping_profiles')
-        .select('*')
-        .eq('project_id', project.id)
-        .eq('is_active', true)
-        .single();
-
-      const mappingsData = fieldMappings.map(m => ({
-        type: 'field',
-        sourceField: m.sourceField,
-        targetField: m.targetField,
-        entityType: m.entityType,
-      }));
-
-      if (existing) {
-        // Merge with existing mappings
-        const existingMappings = (existing.mappings as any[]) || [];
-        const otherMappings = existingMappings.filter(m => m.type !== 'field');
-        
-        await supabase
-          .from('mapping_profiles')
-          .update({ 
-            mappings: [...otherMappings, ...mappingsData],
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', existing.id);
-      } else {
-        await supabase
-          .from('mapping_profiles')
-          .insert({
-            project_id: project.id,
-            name: 'Standard',
-            mappings: mappingsData,
-            is_active: true,
-          });
-      }
-
-      toast.success('Felt-mappings gemt');
-    } catch (error) {
-      console.error('Error saving field mappings:', error);
-      toast.error('Fejl ved gemning af felt-mappings');
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleContinue = async () => {
     setSaving(true);
-    await saveFieldMappings();
     await onUpdateProject({ status: 'completed' });
     setSaving(false);
     onNext();
@@ -775,7 +630,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
 
               {Object.values(duplicates).every(g => g.length === 0) && (
                 <div className="text-center py-8 text-muted-foreground">
-                  <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <Copy className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p>Klik på en entity-type ovenfor for at scanne for duplikater</p>
                   <p className="text-sm mt-2">Scanningen viser alle duplikater inkl. dem der er oprettet i Shopify</p>
                 </div>
@@ -784,125 +639,8 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
           </Card>
         </TabsContent>
 
-        <TabsContent value="field-mappings" className="mt-6 space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Tilføj felt-mappings</CardTitle>
-              <CardDescription>
-                Map ekstra felter fra DanDomain CSV til Shopify felter
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Add new mapping */}
-              <div className="flex gap-3 items-end">
-                <div className="flex-1">
-                  <Label className="text-xs">Kilde felt (DanDomain)</Label>
-                  <Select
-                    value={newMapping.sourceField}
-                    onValueChange={(v) => setNewMapping(prev => ({ ...prev, sourceField: v }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Vælg kilde felt..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {KNOWN_SOURCE_FIELDS.map(field => (
-                        <SelectItem key={field} value={field}>
-                          {field}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <ArrowRight className="w-5 h-5 text-muted-foreground mb-2" />
-                <div className="flex-1">
-                  <Label className="text-xs">Mål felt (Shopify)</Label>
-                  <Select
-                    value={newMapping.targetField}
-                    onValueChange={(v) => setNewMapping(prev => ({ ...prev, targetField: v }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Vælg mål felt..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SHOPIFY_PRODUCT_FIELDS.map(field => (
-                        <SelectItem key={field.value} value={field.value}>
-                          {field.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button onClick={addFieldMapping} size="icon">
-                  <Plus className="w-4 h-4" />
-                </Button>
-              </div>
-
-              {/* Existing mappings */}
-              {fieldMappings.length > 0 ? (
-                <div className="border rounded-lg overflow-hidden">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Kilde felt (DanDomain)</TableHead>
-                        <TableHead></TableHead>
-                        <TableHead>Mål felt (Shopify)</TableHead>
-                        <TableHead className="w-16"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {fieldMappings.map(mapping => (
-                        <TableRow key={mapping.id}>
-                          <TableCell className="font-mono text-sm">
-                            {mapping.sourceField}
-                          </TableCell>
-                          <TableCell className="w-12">
-                            <ArrowRight className="w-4 h-4 text-muted-foreground" />
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="secondary">
-                              {SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeFieldMapping(mapping.id)}
-                              className="text-destructive hover:text-destructive"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground border rounded-lg">
-                  <Plus className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                  <p>Ingen ekstra felt-mappings tilføjet endnu</p>
-                  <p className="text-sm">Brug dropdown ovenfor til at tilføje mappings</p>
-                </div>
-              )}
-
-              {/* Common mapping suggestion */}
-              <Card className="bg-muted/50 border-dashed">
-                <CardContent className="py-4">
-                  <div className="flex items-start gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5" />
-                    <div>
-                      <p className="font-medium text-sm">Forslag: Stregkode mapping</p>
-                      <p className="text-sm text-muted-foreground">
-                        Du nævnte at PROD_BARCODE_NUMBER skal mappes til Shopify stregkode. 
-                        Tilføj denne mapping ovenfor.
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </CardContent>
-          </Card>
+        <TabsContent value="field-mappings" className="mt-6">
+          <FieldMappingEditor projectId={project.id} />
         </TabsContent>
       </Tabs>
 
