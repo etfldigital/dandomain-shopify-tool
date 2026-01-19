@@ -230,6 +230,7 @@ export type WizardStep =
   | 'mapping' 
   | 'connect-shopify' 
   | 'upload' 
+  | 'review'
   | 'report';
 
 export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] = [
@@ -238,5 +239,6 @@ export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] =
   { id: 'mapping', label: 'Mapping', number: 3 },
   { id: 'connect-shopify', label: 'Forbind Shopify', number: 4 },
   { id: 'upload', label: 'Upload', number: 5 },
-  { id: 'report', label: 'Rapport', number: 6 },
+  { id: 'review', label: 'Gennemgang', number: 6 },
+  { id: 'report', label: 'Rapport', number: 7 },
 ];
