@@ -20,7 +20,7 @@ const STATUS_TO_STEP: Record<ProjectStatus, WizardStep> = {
   extracted: 'mapping',
   mapped: 'upload',
   migrating: 'upload',
-  completed: 'review',
+  completed: 'upload', // Stay on upload step - user must manually click "Videre" to proceed
 };
 
 const STEP_ORDER: WizardStep[] = [
