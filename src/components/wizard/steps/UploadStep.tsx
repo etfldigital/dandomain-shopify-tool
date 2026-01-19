@@ -336,23 +336,39 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  const handleStartUpload = async (isTestMode: boolean = false) => {
+  const handleStartUpload = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
     setIsStarting(true);
     try {
+      const body: {
+        projectId: string;
+        action: string;
+        isTestMode: boolean;
+        entityTypes?: string[];
+      } = {
+        projectId: project.id,
+        action: 'start',
+        isTestMode,
+      };
+      
+      // If a single entity type is specified, only upload that type
+      if (singleEntityType) {
+        body.entityTypes = [singleEntityType];
+      }
+      
       const response = await supabase.functions.invoke('upload-worker', {
-        body: {
-          projectId: project.id,
-          action: 'start',
-          isTestMode,
-        },
+        body,
       });
 
       if (response.error) {
         throw new Error(response.error.message);
       }
 
+      const entityLabel = singleEntityType 
+        ? ENTITY_CONFIG.find(e => e.type === singleEntityType)?.label.toLowerCase() || singleEntityType
+        : null;
+
       toast.success(isTestMode 
-        ? 'Test-upload startet i baggrunden' 
+        ? `Test-upload startet${entityLabel ? ` for ${entityLabel}` : ''} i baggrunden` 
         : 'Upload startet i baggrunden - du kan lukke browseren');
       
       // Refresh jobs
@@ -940,6 +956,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="bg-popover">
+                          <DropdownMenuItem 
+                            onClick={() => handleStartUpload(true, type)}
+                            disabled={counts.pending === 0 || isStarting}
+                          >
+                            <FlaskConical className="w-4 h-4 mr-2" />
+                            Test upload (3 stk)
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleResetRequest(type, 'all')}
                             disabled={totalFromDb === 0}
