@@ -923,75 +923,77 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 </CardContent>
               </Card>
 
-              {/* SKU Info */}
+              {/* Variant detaljer - kompakt grid */}
               <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
-                  <Input 
-                    value={product.transformed.sku} 
-                    readOnly 
-                    className="bg-background h-9 font-mono text-sm"
-                  />
-                  {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
-                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      Fra {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Variant detaljer</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* SKU */}
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
+                      <Input 
+                        value={product.transformed.sku} 
+                        readOnly 
+                        className="bg-background h-8 font-mono text-xs"
+                      />
+                      {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
+                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" />
+                          {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
 
-              {/* Stock */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">Lagerbeholdning</label>
-                  <Input 
-                    value={product.transformed.stock_quantity.toString()} 
-                    readOnly 
-                    className="bg-background h-9 font-mono text-sm"
-                  />
-                  {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
-                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      Fra {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
+                    {/* Lagerbeholdning */}
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Lager</label>
+                      <Input 
+                        value={product.transformed.stock_quantity.toString()} 
+                        readOnly 
+                        className="bg-background h-8 font-mono text-xs"
+                      />
+                      {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
+                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" />
+                          {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
 
-              {/* Barcode */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
-                  <Input 
-                    value={product.transformed.barcode || '(ingen)'} 
-                    readOnly 
-                    className="bg-background h-9 font-mono text-sm"
-                  />
-                  {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
-                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      Fra {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
+                    {/* Stregkode */}
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
+                      <Input 
+                        value={product.transformed.barcode || '(ingen)'} 
+                        readOnly 
+                        className="bg-background h-8 font-mono text-xs"
+                      />
+                      {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
+                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" />
+                          {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
 
-              {/* Cost Price */}
-              <Card>
-                <CardContent className="pt-4">
-                  <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
-                  <Input 
-                    value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
-                    readOnly 
-                    className="bg-background h-9 font-mono text-sm"
-                  />
-                  {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
-                    <div className="mt-1 text-xs text-green-600 flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      Fra {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
+                    {/* Kostpris */}
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
+                      <Input 
+                        value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
+                        readOnly 
+                        className="bg-background h-8 font-mono text-xs"
+                      />
+                      {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
+                        <div className="mt-0.5 text-[10px] text-green-600 flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" />
+                          {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </CardContent>
               </Card>
             </div>
