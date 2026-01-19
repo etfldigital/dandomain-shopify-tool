@@ -142,6 +142,10 @@ interface ProductPreviewData {
     category_ids: string[];
     barcode: string | null;
     rawData: Record<string, any>; // Store raw data for field mapping
+    // Custom fields for metafield display
+    field_1: string | null;
+    field_2: string | null;
+    field_3: string | null;
   };
   transformed: {
     title: string;
@@ -313,6 +317,10 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           category_ids: categoryIds,
           barcode: data.barcode || null,
           rawData: data, // Store raw data for field mapping
+          // Custom fields for metafields
+          field_1: data.field_1 || null,
+          field_2: data.field_2 || null,
+          field_3: data.field_3 || null,
         },
         transformed: {
           title: transformedTitle,
@@ -949,6 +957,70 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           )}
                         </div>
                       </div>
+
+                      {/* Metafields section */}
+                      {(product.original.field_1 || product.original.field_2 || product.original.field_3) && (
+                        <>
+                          <Separator />
+                          <div>
+                            <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
+                              Metafelter
+                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                                Shopify
+                              </Badge>
+                            </label>
+                            <div className="grid grid-cols-3 gap-3">
+                              {/* Materiale */}
+                              {product.original.field_1 && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Materiale</label>
+                                  <Input 
+                                    value={product.original.field_1} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    FIELD_1
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Farve */}
+                              {product.original.field_2 && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Farve</label>
+                                  <Input 
+                                    value={product.original.field_2} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    FIELD_2
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Pasform */}
+                              {product.original.field_3 && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Pasform</label>
+                                  <Input 
+                                    value={product.original.field_3} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    FIELD_3
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
