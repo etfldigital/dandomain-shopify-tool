@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { 
   Table,
   TableBody,
@@ -26,7 +27,9 @@ import {
   Plus,
   ArrowRight,
   Search,
-  CheckCircle2
+  CheckCircle2,
+  Download,
+  ExternalLink
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -43,7 +46,9 @@ interface DuplicateGroup {
   count: number;
   ids: string[];
   externalIds: string[];
+  shopifyIds: string[];
   title?: string;
+  items: any[];
 }
 
 interface FieldMapping {
@@ -99,6 +104,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
   const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
   const [saving, setSaving] = useState(false);
+  const [expandedEntity, setExpandedEntity] = useState<EntityType | null>(null);
+  const [downloadingCsv, setDownloadingCsv] = useState<EntityType | null>(null);
+  const [deletingAll, setDeletingAll] = useState<EntityType | null>(null);
 
   // Load existing field mappings from project or mapping_profiles
   useEffect(() => {
@@ -155,7 +163,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
       const duplicateGroups: DuplicateGroup[] = [];
       
       if (entityType === 'products') {
-        // Check for duplicate titles
+        // Check for duplicate titles among items that have shopify_id (actually created in Shopify)
         const titleMap = new Map<string, any[]>();
         for (const item of allItems) {
           const title = item.data?.title?.toLowerCase()?.trim();
@@ -174,7 +182,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               count: items.length,
               ids: items.map(i => i.id),
               externalIds: items.map(i => i.external_id),
+              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
               title: items[0].data?.title,
+              items: items,
             });
           }
         }
@@ -202,7 +212,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                 count: items.length,
                 ids: items.map(i => i.id),
                 externalIds: items.map(i => i.external_id),
+                shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
                 title: items[0].data?.title,
+                items: items,
               });
             }
           }
@@ -227,7 +239,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               count: items.length,
               ids: items.map(i => i.id),
               externalIds: items.map(i => i.external_id),
+              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
               title: `${items[0].data?.first_name} ${items[0].data?.last_name}`,
+              items: items,
             });
           }
         }
@@ -251,6 +265,8 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               count: items.length,
               ids: items.map(i => i.id),
               externalIds: items.map(i => i.external_id),
+              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
+              items: items,
             });
           }
         }
@@ -274,7 +290,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               count: items.length,
               ids: items.map(i => i.id),
               externalIds: items.map(i => i.external_id),
+              shopifyIds: items.map(i => (i as any).shopify_collection_id).filter(Boolean),
               title: (items[0] as any).name,
+              items: items,
             });
           }
         }
@@ -316,7 +334,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         [entityType]: prev[entityType].filter(g => g.key !== group.key),
       }));
       
-      toast.success(`Slettede ${idsToDelete.length} duplikater`);
+      toast.success(`Slettede ${idsToDelete.length} duplikater fra databasen. Bemærk: Produkter i Shopify skal slettes manuelt.`);
     } catch (error) {
       console.error('Error deleting duplicates:', error);
       toast.error('Fejl ved sletning af duplikater');
@@ -404,6 +422,148 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     onNext();
   };
 
+  const downloadDuplicatesCsv = async (entityType: EntityType) => {
+    const groups = duplicates[entityType];
+    if (groups.length === 0) {
+      toast.error('Ingen duplikater at downloade');
+      return;
+    }
+
+    setDownloadingCsv(entityType);
+
+    try {
+      let csv = '';
+      
+      if (entityType === 'products') {
+        csv = 'Gruppe,Titel,External ID,Shopify ID,SKU,Pris,Status\n';
+        for (const group of groups) {
+          for (const item of group.items) {
+            const d = item.data || {};
+            csv += [
+              `"${group.key.replace(/"/g, '""')}"`,
+              `"${(d.title || '').replace(/"/g, '""')}"`,
+              `"${item.external_id || ''}"`,
+              `"${item.shopify_id || 'Ikke oprettet'}"`,
+              `"${d.sku || ''}"`,
+              `"${d.price || ''}"`,
+              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
+            ].join(',') + '\n';
+          }
+        }
+      } else if (entityType === 'customers') {
+        csv = 'Gruppe,Navn,Email,External ID,Shopify ID,Status\n';
+        for (const group of groups) {
+          for (const item of group.items) {
+            const d = item.data || {};
+            csv += [
+              `"${group.key.replace(/"/g, '""')}"`,
+              `"${(d.first_name || '')} ${(d.last_name || '')}"`,
+              `"${d.email || ''}"`,
+              `"${item.external_id || ''}"`,
+              `"${item.shopify_id || 'Ikke oprettet'}"`,
+              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
+            ].join(',') + '\n';
+          }
+        }
+      } else if (entityType === 'orders') {
+        csv = 'Gruppe,Ordre ID,External ID,Shopify ID,Status\n';
+        for (const group of groups) {
+          for (const item of group.items) {
+            csv += [
+              `"${group.key.replace(/"/g, '""')}"`,
+              `"${item.external_id || ''}"`,
+              `"${item.external_id || ''}"`,
+              `"${item.shopify_id || 'Ikke oprettet'}"`,
+              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
+            ].join(',') + '\n';
+          }
+        }
+      } else if (entityType === 'categories') {
+        csv = 'Gruppe,Navn,External ID,Shopify Collection ID,Status\n';
+        for (const group of groups) {
+          for (const item of group.items) {
+            csv += [
+              `"${group.key.replace(/"/g, '""')}"`,
+              `"${(item as any).name || ''}"`,
+              `"${item.external_id || ''}"`,
+              `"${(item as any).shopify_collection_id || 'Ikke oprettet'}"`,
+              `"${(item as any).shopify_collection_id ? 'I Shopify' : 'Kun i database'}"`,
+            ].join(',') + '\n';
+          }
+        }
+      }
+
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `duplikater_${entityType}_${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success('CSV downloadet');
+    } finally {
+      setDownloadingCsv(null);
+    }
+  };
+
+  const deleteAllDuplicates = async (entityType: EntityType) => {
+    const groups = duplicates[entityType];
+    if (groups.length === 0) return;
+
+    setDeletingAll(entityType);
+
+    try {
+      // Collect all IDs to delete (keep first of each group)
+      const allIdsToDelete: string[] = [];
+      for (const group of groups) {
+        allIdsToDelete.push(...group.ids.slice(1));
+      }
+
+      if (allIdsToDelete.length === 0) {
+        toast.info('Ingen duplikater at slette');
+        return;
+      }
+
+      const tableName = `canonical_${entityType}` as const;
+
+      // Delete in batches
+      const batchSize = 100;
+      for (let i = 0; i < allIdsToDelete.length; i += batchSize) {
+        const batch = allIdsToDelete.slice(i, i + batchSize);
+        const { error } = await supabase
+          .from(tableName)
+          .delete()
+          .in('id', batch);
+
+        if (error) throw error;
+      }
+
+      // Clear duplicates for this entity type
+      setDuplicates(prev => ({
+        ...prev,
+        [entityType]: [],
+      }));
+
+      toast.success(`Slettede ${allIdsToDelete.length} duplikater fra databasen`);
+    } catch (error) {
+      console.error('Error deleting all duplicates:', error);
+      toast.error('Fejl ved sletning af duplikater');
+    } finally {
+      setDeletingAll(null);
+    }
+  };
+
+  const getTotalDuplicateCount = (entityType: EntityType) => {
+    return duplicates[entityType].reduce((sum, g) => sum + g.count - 1, 0);
+  };
+
+  const getShopifyDuplicateCount = (entityType: EntityType) => {
+    return duplicates[entityType].reduce((sum, g) => sum + (g.shopifyIds.length > 1 ? g.shopifyIds.length - 1 : 0), 0);
+  };
+
   const entityIcons: Record<EntityType, React.ReactNode> = {
     products: <Package className="w-4 h-4" />,
     customers: <Users className="w-4 h-4" />,
@@ -481,38 +641,119 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                 groups.length > 0 && (
                   <Card key={entityType} className="border-destructive/50">
                     <CardHeader className="py-3">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-destructive" />
-                        <CardTitle className="text-sm">
-                          {entityLabels[entityType as EntityType]} - {groups.length} duplikatgrupper
-                        </CardTitle>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-destructive" />
+                          <CardTitle className="text-sm">
+                            {entityLabels[entityType as EntityType]} - {groups.length} duplikatgrupper
+                          </CardTitle>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {getTotalDuplicateCount(entityType as EntityType)} ekstra i DB
+                          </Badge>
+                          {getShopifyDuplicateCount(entityType as EntityType) > 0 && (
+                            <Badge variant="destructive" className="text-xs">
+                              {getShopifyDuplicateCount(entityType as EntityType)} ekstra i Shopify
+                            </Badge>
+                          )}
+                        </div>
                       </div>
+                      <CardDescription className="text-xs mt-1">
+                        Produkter med Shopify ID er oprettet i din Shopify butik og skal slettes manuelt der.
+                      </CardDescription>
                     </CardHeader>
-                    <CardContent className="py-0 pb-3">
-                      <div className="max-h-64 overflow-auto">
+                    <CardContent className="py-0 pb-3 space-y-3">
+                      {/* Action buttons */}
+                      <div className="flex gap-2 flex-wrap">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => downloadDuplicatesCsv(entityType as EntityType)}
+                          disabled={downloadingCsv === entityType}
+                        >
+                          {downloadingCsv === entityType ? (
+                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4 mr-1" />
+                          )}
+                          Download alle ({groups.length} grupper) som CSV
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => deleteAllDuplicates(entityType as EntityType)}
+                          disabled={deletingAll === entityType}
+                        >
+                          {deletingAll === entityType ? (
+                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-4 h-4 mr-1" />
+                          )}
+                          Slet alle {getTotalDuplicateCount(entityType as EntityType)} duplikater fra DB
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setExpandedEntity(expandedEntity === entityType ? null : entityType as EntityType)}
+                        >
+                          {expandedEntity === entityType ? 'Skjul detaljer' : `Vis alle ${groups.length} grupper`}
+                        </Button>
+                      </div>
+                      
+                      {/* Scrollable table */}
+                      <ScrollArea className={expandedEntity === entityType ? "h-[500px]" : "h-64"}>
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Nøgle/Titel</TableHead>
+                              <TableHead>Titel/Nøgle</TableHead>
                               <TableHead className="w-20">Antal</TableHead>
-                              <TableHead className="w-48">External IDs</TableHead>
-                              <TableHead className="w-24">Handling</TableHead>
+                              <TableHead className="w-32">I Shopify?</TableHead>
+                              <TableHead className="w-48">Shopify IDs</TableHead>
+                              <TableHead className="w-28">Handling</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {groups.slice(0, 20).map(group => (
+                            {groups.map(group => (
                               <TableRow key={group.key}>
-                                <TableCell className="font-medium">
+                                <TableCell className="font-medium max-w-xs truncate" title={group.title || group.key}>
                                   {group.title || group.key}
                                 </TableCell>
                                 <TableCell>
                                   <Badge variant="destructive">{group.count}x</Badge>
                                 </TableCell>
                                 <TableCell>
-                                  <span className="text-xs text-muted-foreground font-mono">
-                                    {group.externalIds.slice(0, 3).join(', ')}
-                                    {group.externalIds.length > 3 && '...'}
-                                  </span>
+                                  {group.shopifyIds.length > 0 ? (
+                                    <Badge variant="default" className="bg-green-600">
+                                      {group.shopifyIds.length}x i Shopify
+                                    </Badge>
+                                  ) : (
+                                    <Badge variant="secondary">Kun i DB</Badge>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  <div className="flex flex-col gap-0.5">
+                                    {group.shopifyIds.slice(0, 2).map((sid, i) => (
+                                      <span key={i} className="text-xs text-muted-foreground font-mono flex items-center gap-1">
+                                        {sid}
+                                        {entityType === 'products' && (
+                                          <a 
+                                            href={`https://${project.shopify_store_domain}/admin/products/${sid}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-primary hover:underline"
+                                          >
+                                            <ExternalLink className="w-3 h-3" />
+                                          </a>
+                                        )}
+                                      </span>
+                                    ))}
+                                    {group.shopifyIds.length > 2 && (
+                                      <span className="text-xs text-muted-foreground">
+                                        +{group.shopifyIds.length - 2} mere
+                                      </span>
+                                    )}
+                                  </div>
                                 </TableCell>
                                 <TableCell>
                                   <Button
@@ -529,12 +770,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                             ))}
                           </TableBody>
                         </Table>
-                        {groups.length > 20 && (
-                          <p className="text-xs text-muted-foreground text-center py-2">
-                            Viser 20 af {groups.length} grupper
-                          </p>
-                        )}
-                      </div>
+                      </ScrollArea>
                     </CardContent>
                   </Card>
                 )
@@ -544,6 +780,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                 <div className="text-center py-8 text-muted-foreground">
                   <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p>Klik på en entity-type ovenfor for at scanne for duplikater</p>
+                  <p className="text-sm mt-2">Scanningen viser alle duplikater inkl. dem der er oprettet i Shopify</p>
                 </div>
               )}
             </CardContent>
