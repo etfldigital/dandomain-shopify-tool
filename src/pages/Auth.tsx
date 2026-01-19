@@ -16,20 +16,20 @@ export default function Auth() {
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <div className="w-7 h-7 border-2 border-primary border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <div className="flex-1 flex items-center justify-center p-4">
+      <div className="flex-1 flex items-center justify-center p-6 sm:p-8">
         <div className="w-full max-w-md">
-          <div className="text-center mb-8">
-            <h2 className="text-sm font-medium text-primary uppercase tracking-wide mb-2">
+          <div className="text-center mb-10">
+            <h2 className="text-sm font-medium text-primary uppercase tracking-wider mb-2">
               DanDomain → Shopify
             </h2>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               Migrér din webshop på få minutter
             </p>
           </div>
@@ -37,7 +37,7 @@ export default function Auth() {
         </div>
       </div>
       
-      <footer className="text-center py-4 text-sm text-muted-foreground">
+      <footer className="text-center py-6 text-sm text-muted-foreground">
         © {new Date().getFullYear()} Migration Tool
       </footer>
     </div>

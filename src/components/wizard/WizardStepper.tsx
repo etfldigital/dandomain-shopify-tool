@@ -15,7 +15,6 @@ export function WizardStepper({ currentStep, completedSteps, onStepClick }: Wiza
     <nav className="w-full">
       <ol className="flex items-center justify-between">
         {WIZARD_STEPS.map((step, index) => {
-          // Only show as completed if it's before the current step
           const isCompleted = completedSteps.includes(step.id) && index < currentIndex;
           const isCurrent = step.id === currentStep;
           const isPast = index < currentIndex;
@@ -28,22 +27,22 @@ export function WizardStepper({ currentStep, completedSteps, onStepClick }: Wiza
                   onClick={() => isClickable && onStepClick?.(step.id)}
                   disabled={!isClickable}
                   className={cn(
-                    "w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all",
-                    isCompleted && "bg-primary text-primary-foreground",
-                    isCurrent && !isCompleted && "bg-primary text-primary-foreground ring-4 ring-primary/20",
+                    "w-10 h-10 rounded-xl flex items-center justify-center text-sm font-medium transition-all duration-200 ease-out",
+                    isCompleted && "bg-primary text-primary-foreground shadow-sm",
+                    isCurrent && !isCompleted && "bg-primary text-primary-foreground shadow-sm ring-4 ring-primary/15",
                     !isCurrent && !isCompleted && "bg-muted text-muted-foreground",
-                    isClickable && "cursor-pointer hover:ring-2 hover:ring-primary/30"
+                    isClickable && "cursor-pointer hover:ring-2 hover:ring-primary/20"
                   )}
                 >
                   {isCompleted ? (
-                    <Check className="w-5 h-5" />
+                    <Check className="w-4.5 h-4.5" strokeWidth={2.5} />
                   ) : (
                     step.number
                   )}
                 </button>
                 <span 
                   className={cn(
-                    "mt-2 text-xs font-medium text-center max-w-[80px]",
+                    "mt-2.5 text-xs font-medium text-center max-w-[80px] leading-tight",
                     isCurrent ? "text-foreground" : "text-muted-foreground"
                   )}
                 >
@@ -55,7 +54,7 @@ export function WizardStepper({ currentStep, completedSteps, onStepClick }: Wiza
               {index < WIZARD_STEPS.length - 1 && (
                 <div 
                   className={cn(
-                    "absolute top-5 left-[calc(50%+24px)] w-[calc(100%-48px)] h-0.5",
+                    "absolute top-5 left-[calc(50%+24px)] w-[calc(100%-48px)] h-0.5 rounded-full transition-colors duration-200",
                     isPast || isCompleted ? "bg-primary" : "bg-border"
                   )}
                 />
