@@ -869,6 +869,15 @@ async function uploadProductsWithVariants(
         });
       }
       
+      if (data.field_3 && String(data.field_3).trim()) {
+        metafieldsToCreate.push({
+          namespace: 'custom',
+          key: 'pasform',
+          value: String(data.field_3).trim(),
+          type: 'single_line_text_field'
+        });
+      }
+      
       // Create metafields via Shopify API
       for (const metafield of metafieldsToCreate) {
         try {
