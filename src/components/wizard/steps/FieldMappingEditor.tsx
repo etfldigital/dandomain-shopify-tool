@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Trash2, AlertTriangle, Plus, ArrowRight, Save } from 'lucide-react';
+import { Loader2, Trash2, AlertTriangle, Plus, ArrowRight, Save, RefreshCw } from 'lucide-react';
 import { EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -30,8 +30,8 @@ export interface FieldMapping {
   entityType: EntityType;
 }
 
-// Common Shopify product fields that can be mapped
-export const SHOPIFY_PRODUCT_FIELDS = [
+// Base Shopify product fields that can be mapped
+export const BASE_SHOPIFY_FIELDS = [
   { value: 'title', label: 'Titel' },
   { value: 'body_html', label: 'Beskrivelse (HTML)' },
   { value: 'vendor', label: 'Leverandør' },
@@ -43,12 +43,10 @@ export const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].compare_at_price', label: 'Sammenlign ved pris' },
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
-  { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
-  // Shopify metafields (custom fields created in Shopify admin)
-  { value: 'metafields.custom.materiale', label: 'Materiale', isMetafield: true },
-  { value: 'metafields.custom.farve', label: 'Farve', isMetafield: true },
-  { value: 'metafields.custom.pasform', label: 'Pasform', isMetafield: true },
 ];
+
+// For backwards compatibility
+export const SHOPIFY_PRODUCT_FIELDS = BASE_SHOPIFY_FIELDS;
 
 // Known source fields from DanDomain XML exports
 export const KNOWN_SOURCE_FIELDS = [
@@ -92,11 +90,30 @@ export const KNOWN_SOURCE_FIELDS = [
   'FIELD_9',  // Vaskeanvisning
 ];
 
+interface ShopifyMetafield {
+  namespace: string;
+  key: string;
+  name: string;
+  type: string;
+}
+
 export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }: FieldMappingEditorProps) {
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
   const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [fetchingMetafields, setFetchingMetafields] = useState(false);
+  const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
+
+  // Combined list of Shopify fields including dynamically fetched metafields
+  const allShopifyFields = [
+    ...BASE_SHOPIFY_FIELDS,
+    ...shopifyMetafields.map(mf => ({
+      value: `metafields.${mf.namespace}.${mf.key}`,
+      label: mf.name || `${mf.namespace}.${mf.key}`,
+      isMetafield: true,
+    })),
+  ];
 
   useEffect(() => {
     loadFieldMappings();
@@ -125,6 +142,31 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
       console.error('Error loading field mappings:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchShopifyMetafields = async () => {
+    setFetchingMetafields(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('fetch-metafields', {
+        body: { projectId },
+      });
+
+      if (error) {
+        console.error('Error fetching metafields:', error);
+        toast.error('Kunne ikke hente metafelter fra Shopify');
+        return;
+      }
+
+      if (data?.metafields) {
+        setShopifyMetafields(data.metafields);
+        toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
+      }
+    } catch (error) {
+      console.error('Error fetching metafields:', error);
+      toast.error('Fejl ved hentning af metafelter');
+    } finally {
+      setFetchingMetafields(false);
     }
   };
 
@@ -220,11 +262,26 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
-        <CardDescription>
-          Map ekstra felter fra DanDomain XML til Shopify felter
-        </CardDescription>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <div>
+          <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
+          <CardDescription>
+            Map ekstra felter fra DanDomain XML til Shopify felter
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={fetchShopifyMetafields}
+          disabled={fetchingMetafields}
+        >
+          {fetchingMetafields ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4 mr-2" />
+          )}
+          Hent metafelter
+        </Button>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Add new mapping */}
@@ -258,7 +315,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
                 <SelectValue placeholder="Vælg mål felt..." />
               </SelectTrigger>
               <SelectContent>
-                {SHOPIFY_PRODUCT_FIELDS.map(field => (
+                {allShopifyFields.map(field => (
                   <SelectItem key={field.value} value={field.value}>
                     <span className="flex items-center gap-2">
                       {field.label}
@@ -301,7 +358,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary">
-                        {SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
+                        {allShopifyFields.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
                       </Badge>
                     </TableCell>
                     <TableCell>
