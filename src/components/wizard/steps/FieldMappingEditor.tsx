@@ -46,20 +46,39 @@ export const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
 ];
 
-// Known source fields from DanDomain CSV
+// Known source fields from DanDomain XML exports
 export const KNOWN_SOURCE_FIELDS = [
-  'PROD_BARCODE_NUMBER',
-  'PROD_EAN',
-  'PROD_MANUFACTURER',
-  'PROD_SUPPLIER',
-  'PROD_COST_PRICE',
+  // GENERAL section
+  'PROD_NUM',
+  'PROD_NAME',
   'PROD_WEIGHT',
-  'PROD_WIDTH',
-  'PROD_HEIGHT',
-  'PROD_DEPTH',
-  'PROD_META_TITLE',
-  'PROD_META_DESCRIPTION',
-  'PROD_META_KEYWORDS',
+  'PROD_PHOTO_URL',
+  'PROD_COST_PRICE',
+  'PROD_RETAIL_PRICE',
+  // ADVANCED section
+  'PROD_BARCODE_NUMBER',
+  'VENDOR_NUM',
+  'INTERNAL_ID',
+  'PROD_HIDDEN',
+  'PROD_NEW',
+  'PROD_FRONT_PAGE',
+  'DIRECT_LINK',
+  // STOCK section
+  'STOCK_COUNT',
+  'STOCK_LIMIT',
+  'PROD_LOCATION_NUMBER',
+  // INFO section
+  'PROD_CREATED',
+  'PROD_EDITED',
+  'PROD_VIEWED',
+  'PROD_SALES_COUNT',
+  // DESCRIPTION section
+  'DESC_SHORT',
+  'DESC_LONG',
+  'META_DESCRIPTION',
+  'TITLE',
+  // MANUFACTURERS
+  'MANUFAC_ID',
 ];
 
 export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }: FieldMappingEditorProps) {
@@ -193,7 +212,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
       <CardHeader>
         <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
         <CardDescription>
-          Map ekstra felter fra DanDomain CSV til Shopify felter
+          Map ekstra felter fra DanDomain XML til Shopify felter
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

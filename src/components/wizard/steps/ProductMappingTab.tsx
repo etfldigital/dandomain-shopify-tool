@@ -54,20 +54,21 @@ const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
 ];
 
-// Known source fields from DanDomain CSV
+// Known source fields from DanDomain XML exports
 const KNOWN_SOURCE_FIELDS = [
-  'PROD_BARCODE_NUMBER',
-  'PROD_EAN',
-  'PROD_MANUFACTURER',
-  'PROD_SUPPLIER',
-  'PROD_COST_PRICE',
+  'PROD_NUM',
+  'PROD_NAME',
   'PROD_WEIGHT',
-  'PROD_WIDTH',
-  'PROD_HEIGHT',
-  'PROD_DEPTH',
-  'PROD_META_TITLE',
-  'PROD_META_DESCRIPTION',
-  'PROD_META_KEYWORDS',
+  'PROD_BARCODE_NUMBER',
+  'PROD_COST_PRICE',
+  'INTERNAL_ID',
+  'STOCK_COUNT',
+  'DESC_SHORT',
+  'DESC_LONG',
+  'META_DESCRIPTION',
+  'MANUFAC_ID',
+  'PROD_CREATED',
+  'PROD_SALES_COUNT',
 ];
 
 interface ProductRef {
