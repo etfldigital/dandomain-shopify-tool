@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2, Settings, Link2, Eye } from 'lucide-react';
+import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2, Settings, Link2, Eye, RefreshCw } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductData } from '@/types/database';
 import { toast } from 'sonner';
@@ -39,8 +39,15 @@ interface FieldMapping {
   targetField: string;
 }
 
-// Common Shopify product fields that can be mapped
-const SHOPIFY_PRODUCT_FIELDS = [
+interface ShopifyMetafield {
+  namespace: string;
+  key: string;
+  name: string;
+  type: string;
+}
+
+// Base Shopify product fields that can be mapped
+const BASE_SHOPIFY_FIELDS = [
   { value: 'title', label: 'Titel' },
   { value: 'body_html', label: 'Beskrivelse (HTML)' },
   { value: 'vendor', label: 'Leverandør' },
@@ -53,11 +60,6 @@ const SHOPIFY_PRODUCT_FIELDS = [
   { value: 'variants[0].cost', label: 'Kostpris' },
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
-  { value: 'metafields.custom.field', label: 'Brugerdefineret metafelt' },
-  // Shopify metafields (custom fields created in Shopify admin)
-  { value: 'metafields.custom.materiale', label: 'Materiale', isMetafield: true },
-  { value: 'metafields.custom.farve', label: 'Farve', isMetafield: true },
-  { value: 'metafields.custom.pasform', label: 'Pasform', isMetafield: true },
 ];
 
 // Known source fields from DanDomain XML exports
@@ -167,6 +169,20 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [untitledCount, setUntitledCount] = useState(0);
+  
+  // Dynamic metafields from Shopify
+  const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
+  const [fetchingMetafields, setFetchingMetafields] = useState(false);
+
+  // Combined list of Shopify fields including dynamically fetched metafields
+  const allShopifyFields = [
+    ...BASE_SHOPIFY_FIELDS,
+    ...shopifyMetafields.map(mf => ({
+      value: `metafields.${mf.namespace}.${mf.key}`,
+      label: mf.name || `${mf.namespace}.${mf.key}`,
+      isMetafield: true,
+    })),
+  ];
 
   useEffect(() => {
     loadData();
@@ -237,6 +253,31 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       }
     } catch (error) {
       console.error('Error loading field mappings:', error);
+    }
+  };
+
+  const fetchShopifyMetafields = async () => {
+    setFetchingMetafields(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('fetch-metafields', {
+        body: { projectId },
+      });
+
+      if (error) {
+        console.error('Error fetching metafields:', error);
+        toast.error('Kunne ikke hente metafelter fra Shopify');
+        return;
+      }
+
+      if (data?.metafields) {
+        setShopifyMetafields(data.metafields);
+        toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
+      }
+    } catch (error) {
+      console.error('Error fetching metafields:', error);
+      toast.error('Fejl ved hentning af metafelter');
+    } finally {
+      setFetchingMetafields(false);
     }
   };
 
@@ -630,15 +671,30 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                   Map ekstra felter fra DanDomain XML til Shopify felter
                 </CardDescription>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={autoMapFields}
-                className="flex items-center gap-2"
-              >
-                <Wand2 className="w-4 h-4" />
-                Auto-map
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchShopifyMetafields}
+                  disabled={fetchingMetafields}
+                >
+                  {fetchingMetafields ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                  )}
+                  Hent metafelter
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={autoMapFields}
+                  className="flex items-center gap-2"
+                >
+                  <Wand2 className="w-4 h-4" />
+                  Auto-map
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               {/* Add new mapping */}
@@ -672,7 +728,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                       <SelectValue placeholder="Vælg mål felt..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {SHOPIFY_PRODUCT_FIELDS.map(field => (
+                      {allShopifyFields.map(field => (
                         <SelectItem key={field.value} value={field.value}>
                           <span className="flex items-center gap-2">
                             {field.label}
@@ -715,7 +771,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           </TableCell>
                           <TableCell>
                             <Badge variant="secondary">
-                              {SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
+                              {allShopifyFields.find(f => f.value === mapping.targetField)?.label || mapping.targetField}
                             </Badge>
                           </TableCell>
                           <TableCell>
@@ -1122,7 +1178,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         <Badge key={mapping.id} variant="outline" className="gap-1">
                           <span className="font-mono text-xs">{mapping.sourceField}</span>
                           <ArrowRight className="w-3 h-3" />
-                          <span>{SHOPIFY_PRODUCT_FIELDS.find(f => f.value === mapping.targetField)?.label || mapping.targetField}</span>
+                          <span>{allShopifyFields.find(f => f.value === mapping.targetField)?.label || mapping.targetField}</span>
                         </Badge>
                       ))}
                     </div>
