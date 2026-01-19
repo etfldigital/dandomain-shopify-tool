@@ -15,7 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText } from 'lucide-react';
+import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductData } from '@/types/database';
 import { toast } from 'sonner';
@@ -80,6 +80,18 @@ const KNOWN_SOURCE_FIELDS = [
   // INFO section
   'PROD_CREATED',
   'PROD_SALES_COUNT',
+];
+
+// Auto-map suggestions: DanDomain field -> Shopify field
+const AUTO_MAP_SUGGESTIONS: { source: string; target: string }[] = [
+  { source: 'PROD_NUM', target: 'variants[0].sku' },
+  { source: 'PROD_BARCODE_NUMBER', target: 'variants[0].barcode' },
+  { source: 'UNIT_PRICE', target: 'variants[0].price' },
+  { source: 'SPECIAL_OFFER_PRICE', target: 'variants[0].compare_at_price' },
+  { source: 'PROD_WEIGHT', target: 'variants[0].weight' },
+  { source: 'STOCK_COUNT', target: 'variants[0].inventory_quantity' },
+  { source: 'MANUFAC_ID', target: 'vendor' },
+  { source: 'DESC_LONG', target: 'body_html' },
 ];
 
 interface ProductRef {
@@ -309,6 +321,34 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     toast.success('Felt-mapping fjernet');
   };
 
+  const autoMapFields = async () => {
+    // Get existing mapped target fields to avoid duplicates
+    const existingTargets = new Set(fieldMappings.map(m => m.targetField));
+    
+    // Create new mappings for fields that aren't already mapped
+    const newMappings: FieldMapping[] = [];
+    for (const suggestion of AUTO_MAP_SUGGESTIONS) {
+      if (!existingTargets.has(suggestion.target)) {
+        newMappings.push({
+          id: `mapping-${Date.now()}-${suggestion.source}`,
+          sourceField: suggestion.source,
+          targetField: suggestion.target,
+        });
+        existingTargets.add(suggestion.target);
+      }
+    }
+
+    if (newMappings.length === 0) {
+      toast.info('Alle standard felt-mappings er allerede tilføjet');
+      return;
+    }
+
+    const updatedMappings = [...fieldMappings, ...newMappings];
+    setFieldMappings(updatedMappings);
+    await saveMappings(updatedMappings);
+    toast.success(`${newMappings.length} felt-mappings tilføjet automatisk`);
+  };
+
   const saveMappings = async (mappings: FieldMapping[]) => {
     try {
       const { data: existing } = await supabase
@@ -454,11 +494,22 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       {/* Extra Field Mappings */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
-          <CardDescription>
-            Map ekstra felter fra DanDomain CSV til Shopify felter
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+          <div>
+            <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
+            <CardDescription>
+              Map ekstra felter fra DanDomain XML til Shopify felter
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={autoMapFields}
+            className="flex items-center gap-2"
+          >
+            <Wand2 className="w-4 h-4" />
+            Auto-map
+          </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Add new mapping */}
