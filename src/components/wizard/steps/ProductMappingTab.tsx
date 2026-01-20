@@ -60,6 +60,8 @@ const BASE_SHOPIFY_FIELDS = [
   { value: 'variants[0].cost', label: 'Kostpris' },
   { value: 'variants[0].weight', label: 'Vægt' },
   { value: 'variants[0].inventory_quantity', label: 'Lagerbeholdning' },
+  { value: 'metafields_global_title_tag', label: 'SEO Titel' },
+  { value: 'metafields_global_description_tag', label: 'SEO Beskrivelse' },
 ];
 
 // Known source fields from DanDomain XML exports
@@ -83,6 +85,7 @@ const KNOWN_SOURCE_FIELDS = [
   'DESC_SHORT',
   'DESC_LONG',
   'META_DESCRIPTION',
+  'META_TITLE',
   // MANUFACTURERS
   'MANUFAC_ID',
   // INFO section
@@ -133,6 +136,9 @@ interface ProductPreviewData {
     field_2: string | null;
     field_3: string | null;
     field_9: string | null;
+    // SEO fields
+    meta_title: string | null;
+    meta_description: string | null;
   };
   transformed: {
     title: string;
@@ -145,6 +151,9 @@ interface ProductPreviewData {
     weight: number | null;
     stock_quantity: number;
     body_html: string;
+    // SEO fields
+    meta_title: string | null;
+    meta_description: string | null;
   };
   categoryNames: string[];
   mappedFields: { field: string; value: any; source: string }[];
@@ -348,6 +357,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           field_2: data.field_2 || null,
           field_3: data.field_3 || null,
           field_9: data.field_9 || null,
+          // SEO fields
+          meta_title: data.meta_title || null,
+          meta_description: data.meta_description || null,
         },
         transformed: {
           title: transformedTitle,
@@ -360,6 +372,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           weight: data.weight || null,
           stock_quantity: data.stock_quantity || 0,
           body_html: data.body_html || '',
+          // SEO fields - default to original or fallback to title
+          meta_title: data.meta_title || null,
+          meta_description: data.meta_description || null,
         },
         categoryNames,
         mappedFields: [],
@@ -1072,6 +1087,53 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                                   <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
                                     <Check className="w-2.5 h-2.5" />
                                     FIELD_9
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* SEO Section */}
+                      {(product.original.meta_title || product.original.meta_description) && (
+                        <>
+                          <Separator />
+                          <div>
+                            <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
+                              SEO
+                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                                Shopify
+                              </Badge>
+                            </label>
+                            <div className="space-y-3">
+                              {/* Meta Title */}
+                              {product.original.meta_title && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Meta Titel</label>
+                                  <Input 
+                                    value={product.transformed.meta_title || product.original.meta_title} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    META_TITLE
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Meta Description */}
+                              {product.original.meta_description && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Meta Beskrivelse</label>
+                                  <div className="p-2 border rounded-md bg-background text-xs text-muted-foreground min-h-[60px]">
+                                    {(product.transformed.meta_description || product.original.meta_description || '').substring(0, 160)}
+                                    {(product.transformed.meta_description || product.original.meta_description || '').length > 160 && '...'}
+                                  </div>
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    META_DESCRIPTION
                                   </div>
                                 </div>
                               )}
