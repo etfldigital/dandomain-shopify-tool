@@ -702,11 +702,26 @@ async function uploadProductsWithVariants(
         }
       }
 
+      // If we have a mix of a "base" row (no size suffix -> option "Default") and real size variants
+      // (e.g. 35-38), we should NOT create a "Default" variant in Shopify.
+      const extractedOptions = items.map((item) =>
+        extractVariantOption(baseSku, item.data?.sku || '')
+      );
+      const hasNonDefaultOption = extractedOptions.some((opt) => opt && opt !== 'Default');
+
+      const variantItems = (items.length > 1 && hasNonDefaultOption)
+        ? items.filter((item, idx) => {
+            const opt = extractedOptions[idx];
+            return opt && opt !== 'Default';
+          })
+        : items;
+
       // Determine if we need variant options BEFORE building variants
-      const hasMultipleVariants = items.length > 1;
+      // (recomputed after filtering out any "Default" variant rows)
+      const hasMultipleVariants = variantItems.length > 1;
 
       // Build variants from all items in the group
-      const variants = items.map((item, index) => {
+      const variants = variantItems.map((item, index) => {
         const variantData = item.data;
         const option = extractVariantOption(baseSku, variantData?.sku || '');
         
@@ -740,7 +755,7 @@ async function uploadProductsWithVariants(
       });
 
       // Determine if we need variant options
-      const hasVariants = items.length > 1;
+      const hasVariants = variantItems.length > 1;
       
       // Collect all unique images from variants and build full URLs
       const primaryImages: string[] = [];
