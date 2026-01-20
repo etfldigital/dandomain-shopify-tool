@@ -422,6 +422,21 @@ function extractVariantOption(baseSku: string, fullSku: string): string {
 function extractBaseSku(sku: string): string {
   if (!sku) return '';
   
+  // NEW: Handle size ranges like -35-38, -39-42, -ONE-SIZE, etc.
+  // This MUST come before single-size matching to avoid partial matches
+  const rangeMatch = sku.match(/^(.+)-(\d{2})-(\d{2})$/);
+  if (rangeMatch) {
+    console.log(`[extractBaseSku] Range detected: "${sku}" -> base="${rangeMatch[1]}", range="${rangeMatch[2]}-${rangeMatch[3]}"`);
+    return rangeMatch[1]; // Return everything before the range
+  }
+  
+  // Also handle ONE-SIZE pattern
+  if (sku.endsWith('-ONE-SIZE') || sku.endsWith('-one-size')) {
+    const base = sku.slice(0, sku.lastIndexOf('-ONE-SIZE'));
+    console.log(`[extractBaseSku] ONE-SIZE detected: "${sku}" -> base="${base}"`);
+    return base.endsWith('-') ? base.slice(0, -1) : base;
+  }
+  
   // Common size/variant suffixes to strip
   const variantSuffixes = [
     // Sizes
