@@ -84,6 +84,7 @@ export interface ProductData {
   sku: string;
   price: number;
   compare_at_price: number | null;
+  cost_price?: number | null;
   weight: number | null;
   stock_quantity: number;
   active: boolean;
@@ -93,6 +94,14 @@ export interface ProductData {
   vendor: string | null;
   vat_rate: number | null;
   language: string;
+  // Additional XML-specific fields
+  barcode?: string;
+  internal_id?: string;
+  // Custom fields for metafield mapping (DanDomain CUSTOM_FIELDS)
+  field_1?: string;
+  field_2?: string;
+  field_3?: string;
+  field_9?: string;
 }
 
 export interface CanonicalCustomer {

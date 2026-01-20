@@ -95,6 +95,7 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const field1 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_1') : '';
       const field2 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_2') : '';
       const field3 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_3') : '';
+      const field9 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_9') : '';
       
       // STOCK section
       const stock = product.getElementsByTagName('STOCK')[0];
@@ -176,6 +177,7 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         field_1: field1,
         field_2: field2,
         field_3: field3,
+        field_9: field9,
       };
     })
     .filter(product => {
