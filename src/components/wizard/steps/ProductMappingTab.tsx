@@ -1095,52 +1095,60 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         </>
                       )}
 
-                      {/* SEO Section */}
-                      {(product.original.meta_title || product.original.meta_description) && (
-                        <>
-                          <Separator />
+                      {/* SEO Section - Always visible */}
+                      <Separator />
+                      <div>
+                        <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
+                          SEO
+                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                            Shopify
+                          </Badge>
+                        </label>
+                        <div className="space-y-3">
+                          {/* Meta Title */}
                           <div>
-                            <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
-                              SEO
-                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
-                                Shopify
-                              </Badge>
-                            </label>
-                            <div className="space-y-3">
-                              {/* Meta Title */}
-                              {product.original.meta_title && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Meta Titel</label>
-                                  <Input 
-                                    value={product.transformed.meta_title || product.original.meta_title} 
-                                    readOnly 
-                                    className="bg-background h-8 text-xs"
-                                  />
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    META_TITLE
-                                  </div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Meta Titel</label>
+                            {(product.transformed.meta_title || product.original.meta_title) ? (
+                              <>
+                                <Input 
+                                  value={product.transformed.meta_title || product.original.meta_title} 
+                                  readOnly 
+                                  className="bg-background h-8 text-xs"
+                                />
+                                <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                  <Check className="w-2.5 h-2.5" />
+                                  META_TITLE
                                 </div>
-                              )}
-                              
-                              {/* Meta Description */}
-                              {product.original.meta_description && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Meta Beskrivelse</label>
-                                  <div className="p-2 border rounded-md bg-background text-xs text-muted-foreground min-h-[60px]">
-                                    {(product.transformed.meta_description || product.original.meta_description || '').substring(0, 160)}
-                                    {(product.transformed.meta_description || product.original.meta_description || '').length > 160 && '...'}
-                                  </div>
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    META_DESCRIPTION
-                                  </div>
-                                </div>
-                              )}
-                            </div>
+                              </>
+                            ) : (
+                              <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic">
+                                Ikke udfyldt
+                              </div>
+                            )}
                           </div>
-                        </>
-                      )}
+                          
+                          {/* Meta Description */}
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Meta Beskrivelse</label>
+                            {(product.transformed.meta_description || product.original.meta_description) ? (
+                              <>
+                                <div className="p-2 border rounded-md bg-background text-xs text-muted-foreground min-h-[60px]">
+                                  {(product.transformed.meta_description || product.original.meta_description || '').substring(0, 160)}
+                                  {(product.transformed.meta_description || product.original.meta_description || '').length > 160 && '...'}
+                                </div>
+                                <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                  <Check className="w-2.5 h-2.5" />
+                                  META_DESCRIPTION
+                                </div>
+                              </>
+                            ) : (
+                              <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic min-h-[60px] flex items-center">
+                                Ikke udfyldt
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
                 </div>
