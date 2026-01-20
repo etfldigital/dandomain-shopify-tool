@@ -105,6 +105,11 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const description = product.getElementsByTagName('DESCRIPTION')[0];
       const bodyHtml = description ? getElementText(description, 'DESC_LONG') : '';
       const shortDescription = description ? getElementText(description, 'DESC_SHORT') : '';
+      const metaDescription = description ? getElementText(description, 'META_DESCRIPTION') : '';
+      
+      // SEO section - meta title is sometimes in SEO section or uses PROD_NAME as fallback
+      const seoSection = product.getElementsByTagName('SEO')[0];
+      const metaTitle = seoSection ? getElementText(seoSection, 'META_TITLE') : '';
       
       // PRICES section - get first/default price
       const prices = product.getElementsByTagName('PRICES')[0];
@@ -178,6 +183,9 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         field_2: field2,
         field_3: field3,
         field_9: field9,
+        // SEO fields
+        meta_title: metaTitle,
+        meta_description: metaDescription,
       };
     })
     .filter(product => {

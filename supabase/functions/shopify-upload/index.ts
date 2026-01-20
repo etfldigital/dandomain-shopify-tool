@@ -796,6 +796,14 @@ async function uploadProductsWithVariants(
           images: allImages.map((url: string) => ({ src: url })),
         }
       };
+      
+      // Add SEO meta title and description if available
+      if (data.meta_title && String(data.meta_title).trim()) {
+        productPayload.product.metafields_global_title_tag = String(data.meta_title).trim();
+      }
+      if (data.meta_description && String(data.meta_description).trim()) {
+        productPayload.product.metafields_global_description_tag = String(data.meta_description).trim();
+      }
 
       // Add options ONLY if there are multiple variants - no "Default" for single-variant products
       if (hasMultipleVariants) {
