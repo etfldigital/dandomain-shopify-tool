@@ -132,6 +132,7 @@ interface ProductPreviewData {
     field_1: string | null;
     field_2: string | null;
     field_3: string | null;
+    field_9: string | null;
   };
   transformed: {
     title: string;
@@ -346,6 +347,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           field_1: data.field_1 || null,
           field_2: data.field_2 || null,
           field_3: data.field_3 || null,
+          field_9: data.field_9 || null,
         },
         transformed: {
           title: transformedTitle,
@@ -999,7 +1001,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                       </div>
 
                       {/* Metafields section */}
-                      {(product.original.field_1 || product.original.field_2 || product.original.field_3) && (
+                      {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9) && (
                         <>
                           <Separator />
                           <div>
@@ -1009,7 +1011,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                                 Shopify
                               </Badge>
                             </label>
-                            <div className="grid grid-cols-3 gap-3">
+                            <div className="grid grid-cols-2 gap-3">
                               {/* Materiale */}
                               {product.original.field_1 && (
                                 <div>
@@ -1054,6 +1056,22 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                                   <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
                                     <Check className="w-2.5 h-2.5" />
                                     FIELD_3
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Vaskeanvisning */}
+                              {product.original.field_9 && (
+                                <div>
+                                  <label className="text-xs text-muted-foreground mb-1 block">Vaskeanvisning</label>
+                                  <Input 
+                                    value={product.original.field_9} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" />
+                                    FIELD_9
                                   </div>
                                 </div>
                               )}
