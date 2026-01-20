@@ -702,6 +702,9 @@ async function uploadProductsWithVariants(
         }
       }
 
+      // Determine if we need variant options BEFORE building variants
+      const hasMultipleVariants = items.length > 1;
+
       // Build variants from all items in the group
       const variants = items.map((item, index) => {
         const variantData = item.data;
@@ -715,9 +718,13 @@ async function uploadProductsWithVariants(
           weight: variantData?.weight || 0,
           weight_unit: 'kg',
           inventory_management: 'shopify',
-          option1: option,
           position: index + 1,
         };
+        
+        // Only add option1 if there are multiple variants - single products don't need size options
+        if (hasMultipleVariants) {
+          variant.option1 = option;
+        }
         
         // Add barcode if available
         if (variantData?.barcode) {
@@ -773,9 +780,10 @@ async function uploadProductsWithVariants(
         }
       };
 
-      // Add options if there are variants
-      if (hasVariants) {
-        productPayload.product.options = [{ name: 'Størrelse', values: variants.map(v => v.option1) }];
+      // Add options ONLY if there are multiple variants - no "Default" for single-variant products
+      if (hasMultipleVariants) {
+        const uniqueOptions = [...new Set(variants.map(v => v.option1).filter(Boolean))];
+        productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions }];
       }
 
       console.log(`Creating product "${transformedTitle}" with ${variants.length} variant(s)`);
