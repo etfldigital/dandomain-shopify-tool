@@ -878,6 +878,15 @@ async function uploadProductsWithVariants(
         });
       }
       
+      if (data.field_9 && String(data.field_9).trim()) {
+        metafieldsToCreate.push({
+          namespace: 'custom',
+          key: 'vaskeanvisning',
+          value: String(data.field_9).trim(),
+          type: 'single_line_text_field'
+        });
+      }
+      
       // Create metafields via Shopify API
       for (const metafield of metafieldsToCreate) {
         try {
