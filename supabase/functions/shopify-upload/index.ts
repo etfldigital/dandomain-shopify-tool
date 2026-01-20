@@ -455,8 +455,10 @@ function extractBaseSku(sku: string): string {
     }
   }
   
-  // Also try to detect pattern: base-VARIANT where VARIANT is 1-4 uppercase chars
-  const match = sku.match(/^(.+)-([A-Z0-9]{1,4})$/);
+  // Also try to detect pattern: base-VARIANT where VARIANT is a short code like RED/BLK/MIX.
+  // IMPORTANT: Do NOT treat purely numeric suffixes (e.g. "2510904-844") as variant codes,
+  // otherwise the base row will be separated from its size-range variants.
+  const match = sku.match(/^(.+)-([A-Z]{1,4})$/);
   if (match) {
     return match[1];
   }
