@@ -12,6 +12,40 @@ const WORKER_SCHEDULE_DELAY_MS = 500;
 const WORKER_RETRY_DELAY_MS = 5000;
 const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
 
+const isGatewayOrTimeoutError = (message: string) => {
+  const m = message.toLowerCase();
+  return (
+    m.includes('status 502') ||
+    m.includes('502') ||
+    m.includes('bad gateway') ||
+    m.includes('status 504') ||
+    m.includes('504') ||
+    m.includes('gateway') ||
+    m.includes('cloudflare') ||
+    m.includes('connection closed') ||
+    m.includes('failed to fetch') ||
+    m.includes('timeout') ||
+    m.includes('aborted')
+  );
+};
+
+const countTrailingWorkerErrors = (details: Array<{ externalId?: string; message?: string }> | null | undefined) => {
+  if (!details || details.length === 0) return 0;
+  let streak = 0;
+  for (let i = details.length - 1; i >= 0; i--) {
+    if (details[i]?.externalId === '__worker__') streak++;
+    else break;
+  }
+  return streak;
+};
+
+const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
+  // Exponential backoff with cap. Gateway/timeouts benefit from longer cool-down.
+  const base = isGatewayOrTimeoutError(message) ? 15_000 : WORKER_RETRY_DELAY_MS;
+  const delay = base * Math.pow(2, Math.min(workerErrorStreak, 6));
+  return Math.min(delay, 5 * 60_000); // max 5 minutes
+};
+
 // Larger batches for better throughput - tuned per entity to avoid platform timeouts
 // Orders are heavier (often multiple Shopify calls per order), so keep batches smaller.
 const batchSizeForEntity = (entityType: string) => {
@@ -274,7 +308,27 @@ serve(async (req) => {
 
           // Record the worker-level error so it is visible in the UI
           const existingErrors = job.error_details || [];
-          const workerError = { externalId: '__worker__', message };
+          const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
+          const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message);
+
+          // If orders are timing out / gatewaying, reduce batch size so each invocation finishes faster.
+          // This avoids being stuck forever in a 502/504 retry loop with batch_size=10.
+          const shouldReduceBatchSize =
+            job.entity_type === 'orders' &&
+            !job.is_test_mode &&
+            isGatewayOrTimeoutError(message) &&
+            effectiveBatchSize > 1;
+
+          const reducedBatchSize = shouldReduceBatchSize
+            ? Math.max(1, Math.floor(effectiveBatchSize / 2))
+            : effectiveBatchSize;
+
+          const displayMessage =
+            `${message}` +
+            (shouldReduceBatchSize ? ` (reducerer batch til ${reducedBatchSize})` : '') +
+            ` (retry om ${Math.round(retryDelayMs / 1000)}s)`;
+
+          const workerError = { externalId: '__worker__', message: displayMessage };
           const mergedErrors = [...existingErrors, workerError].slice(-100);
 
           // Update job with error and retry in the background
@@ -284,11 +338,12 @@ serve(async (req) => {
               last_heartbeat_at: new Date().toISOString(),
               error_count: job.error_count + 1,
               error_details: mergedErrors,
+              ...(shouldReduceBatchSize ? { batch_size: reducedBatchSize } : {}),
             })
             .eq('id', jobId);
 
           const scheduleRetry = async () => {
-            await sleep(WORKER_RETRY_DELAY_MS);
+            await sleep(retryDelayMs);
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
             await fetch(functionUrl, {
               method: 'POST',
