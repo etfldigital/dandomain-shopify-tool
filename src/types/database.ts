@@ -102,6 +102,11 @@ export interface ProductData {
   field_2?: string;
   field_3?: string;
   field_9?: string;
+  // SEO fields
+  meta_title?: string;
+  meta_description?: string;
+  // DanDomain source path for redirects
+  source_path?: string | null;
 }
 
 export interface CanonicalCustomer {
@@ -239,6 +244,7 @@ export type WizardStep =
   | 'mapping' 
   | 'upload' 
   | 'review'
+  | 'redirects'
   | 'report';
 
 export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] = [
@@ -247,5 +253,24 @@ export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] =
   { id: 'mapping', label: 'Mapping', number: 3 },
   { id: 'upload', label: 'Upload', number: 4 },
   { id: 'review', label: 'Gennemgang', number: 5 },
-  { id: 'report', label: 'Rapport', number: 6 },
+  { id: 'redirects', label: 'Redirects', number: 6 },
+  { id: 'report', label: 'Rapport', number: 7 },
 ];
+
+// Redirect types
+export type RedirectStatus = 'pending' | 'created' | 'failed' | 'skipped';
+export type RedirectEntityType = 'product' | 'category' | 'page';
+
+export interface ProjectRedirect {
+  id: string;
+  project_id: string;
+  entity_type: RedirectEntityType;
+  entity_id: string;
+  old_path: string;
+  new_path: string;
+  status: RedirectStatus;
+  shopify_redirect_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}

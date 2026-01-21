@@ -7,6 +7,7 @@ import { ExtractStep } from '@/components/wizard/steps/ExtractStep';
 import { MappingStep } from '@/components/wizard/steps/MappingStep';
 import { UploadStep } from '@/components/wizard/steps/UploadStep';
 import { ReviewStep } from '@/components/wizard/steps/ReviewStep';
+import { RedirectsStep } from '@/components/wizard/steps/RedirectsStep';
 import { ReportStep } from '@/components/wizard/steps/ReportStep';
 import { useProject } from '@/hooks/useProjects';
 import { supabase } from '@/integrations/supabase/client';
@@ -29,6 +30,7 @@ const STEP_ORDER: WizardStep[] = [
   'mapping',
   'upload',
   'review',
+  'redirects',
   'report',
 ];
 
@@ -149,6 +151,13 @@ export default function ProjectWizard() {
           )}
           {currentStep === 'review' && (
             <ReviewStep
+              project={project}
+              onUpdateProject={handleUpdateProject}
+              onNext={handleNext}
+            />
+          )}
+          {currentStep === 'redirects' && (
+            <RedirectsStep
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}
