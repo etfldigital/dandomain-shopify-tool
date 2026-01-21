@@ -18,6 +18,15 @@ serve(async (req) => {
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+  const runInBackground = (task: Promise<unknown>) => {
+    const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+    if (typeof waitUntil === 'function') {
+      waitUntil(task);
+      return;
+    }
+    task.catch((e) => console.error('[WATCHDOG] Background task failed:', e));
+  };
+
   try {
     const now = Date.now();
     const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
@@ -58,27 +67,27 @@ serve(async (req) => {
         })
         .eq('id', job.id);
 
-      // Re-trigger the worker to process this job
+      // Re-trigger the worker to process this job.
+      // IMPORTANT: fire-and-forget, otherwise the watchdog itself can timeout when a batch is slow.
       const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-      try {
-        await fetch(functionUrl, {
+      runInBackground(
+        fetch(functionUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${supabaseServiceKey}`,
           },
           body: JSON.stringify({ jobId: job.id, action: 'process' }),
-        });
+        })
+          .then(() => console.log(`[WATCHDOG] Re-triggered job ${job.id}`))
+          .catch((triggerError) => console.error(`[WATCHDOG] Failed to re-trigger job ${job.id}:`, triggerError))
+      );
 
-        console.log(`[WATCHDOG] Successfully re-triggered job ${job.id}`);
-        restartedJobs.push({
-          id: job.id,
-          entity_type: job.entity_type,
-          stalled_for_minutes: stalledForMinutes,
-        });
-      } catch (triggerError) {
-        console.error(`[WATCHDOG] Failed to re-trigger job ${job.id}:`, triggerError);
-      }
+      restartedJobs.push({
+        id: job.id,
+        entity_type: job.entity_type,
+        stalled_for_minutes: stalledForMinutes,
+      });
     }
 
     return new Response(JSON.stringify({
