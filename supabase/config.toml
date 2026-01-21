@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.job-watchdog]
 verify_jwt = false
+
+[functions.create-redirects]
+verify_jwt = false

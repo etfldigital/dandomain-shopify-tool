@@ -158,6 +158,17 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         });
       }
       
+      // Build DanDomain source path from title and SKU
+      // Pattern: /shop/{slugified-title}-{sku}p.html
+      const slugifiedTitle = title
+        .toLowerCase()
+        .replace(/[æ]/g, 'ae')
+        .replace(/[ø]/g, 'oe')
+        .replace(/[å]/g, 'aa')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const sourcePath = sku ? `/shop/${slugifiedTitle}-${sku}p.html` : null;
+      
       return {
         title,
         body_html: bodyHtml,
@@ -186,6 +197,8 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         // SEO fields
         meta_title: metaTitle,
         meta_description: metaDescription,
+        // DanDomain source path for redirects
+        source_path: sourcePath,
       };
     })
     .filter(product => {
@@ -254,6 +267,10 @@ export function parseCategoriesXML(xmlText: string): CategoryData[] {
         }
       }
       
+      // Build DanDomain source path for category
+      // Pattern: /shop/{category-slug}-{id}c1.html or just /shop/{slug}/
+      const sourcePath = slug ? `/shop/${slug}/` : null;
+      
       return {
         external_id: externalId,
         name: name || externalId,
@@ -261,6 +278,7 @@ export function parseCategoriesXML(xmlText: string): CategoryData[] {
         slug,
         description,
         hidden,
+        source_path: sourcePath,
       };
     })
     .filter(cat => cat.external_id);
