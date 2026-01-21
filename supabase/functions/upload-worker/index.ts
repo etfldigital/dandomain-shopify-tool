@@ -47,13 +47,13 @@ const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
 };
 
 // Larger batches for better throughput - tuned per entity to avoid platform timeouts
-// Orders are heavier (often multiple Shopify calls per order), so keep batches smaller.
+// Orders now use 25 (same as others) - caching makes them much faster
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
       return 25;
     case 'orders':
-      return 10;
+      return 25; // Increased from 10 - caches now persist across batches
     case 'products':
       return 25;
     case 'pages':
