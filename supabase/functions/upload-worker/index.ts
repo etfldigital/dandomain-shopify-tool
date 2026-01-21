@@ -46,14 +46,14 @@ const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
   return Math.min(delay, 5 * 60_000); // max 5 minutes
 };
 
-// Larger batches for better throughput - tuned per entity to avoid platform timeouts
-// Orders now use 25 (same as others) - caching makes them much faster
+// Batch sizes tuned to complete within Edge Function timeout (~50s)
+// Orders: Keep small (5) because each order triggers variant lookups that can timeout
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
       return 25;
     case 'orders':
-      return 25; // Increased from 10 - caches now persist across batches
+      return 5; // Small batches to avoid 504 timeouts
     case 'products':
       return 25;
     case 'pages':

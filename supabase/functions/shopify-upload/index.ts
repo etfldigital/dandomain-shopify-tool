@@ -16,22 +16,17 @@ const SHOPIFY_LEAK_RATE = 2; // requests per second
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
-// Base delay between requests - optimized based on Shopify's leaky bucket algorithm
-// Shopify: 40 request bucket, 2 requests/sec leak rate = 500ms ideal spacing
-// We use 200ms as base since we also track bucket state and wait when needed
-// The bucket tracking + adaptive backoff handles rate limits automatically
-const SHOPIFY_MIN_DELAY_MS = 200;
+// Base delay between requests - conservative to avoid rate limits
+const SHOPIFY_MIN_DELAY_MS = 300;
 let lastShopifyRequest = 0;
 
-// Concurrency settings per entity type - optimized for throughput
-// Shopify's bucket (40 requests) allows multiple concurrent requests if spaced correctly
-// Orders: Increased to 5 - with caching, each order = 1 API call (just the create)
-// Trial stores have lower limits but our bucket tracking + backoff handles this automatically
+// Concurrency settings per entity type - tuned for stability over speed
+// Orders: Keep at 2 to avoid overwhelming Shopify + prevent timeouts
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 4,    // 4 at a time (each customer = 1-2 API calls)
-  orders: 5,       // Increased from 3 to 5 - caching eliminates most lookups
-  products: 5,     // Products are batched by title internally
-  categories: 3,   // Categories have dependencies but can do 3 safely
+  customers: 4,
+  orders: 2,       // Conservative to prevent 504 timeouts
+  products: 5,
+  categories: 3,
   pages: 5,
 };
 
