@@ -18,20 +18,21 @@ let lastBucketUpdate = Date.now();
 
 // Base delay between requests - optimized based on Shopify's leaky bucket algorithm
 // Shopify: 40 request bucket, 2 requests/sec leak rate = 500ms ideal spacing
-// We use 350ms as base since we also track bucket state and wait when needed
-const SHOPIFY_MIN_DELAY_MS = 350;
+// We use 200ms as base since we also track bucket state and wait when needed
+// The bucket tracking + adaptive backoff handles rate limits automatically
+const SHOPIFY_MIN_DELAY_MS = 200;
 let lastShopifyRequest = 0;
 
 // Concurrency settings per entity type - optimized for throughput
 // Shopify's bucket (40 requests) allows multiple concurrent requests if spaced correctly
-// Orders: Increased to 3 - each order = 1-3 API calls, bucket can handle this
+// Orders: Increased to 5 - with caching, each order = 1 API call (just the create)
 // Trial stores have lower limits but our bucket tracking + backoff handles this automatically
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 3,    // 3 at a time (each customer = 1-2 API calls)
-  orders: 3,       // Increased from 1 to 3 - bucket tracking handles rate limits
-  products: 4,     // Products are batched by title internally
-  categories: 2,   // Categories have dependencies but can do 2 safely
-  pages: 4,
+  customers: 4,    // 4 at a time (each customer = 1-2 API calls)
+  orders: 5,       // Increased from 3 to 5 - caching eliminates most lookups
+  products: 5,     // Products are batched by title internally
+  categories: 3,   // Categories have dependencies but can do 3 safely
+  pages: 5,
 };
 
 // Track rate limit state for intelligent backoff
@@ -273,34 +274,32 @@ serve(async (req) => {
 
     // === PRE-LOAD CACHES FOR ORDERS ===
     // This dramatically reduces API calls by doing bulk lookups upfront
+    // IMPORTANT: We now EXTEND caches rather than clearing them to benefit from previous batches
     if (entityType === 'orders') {
-      // Clear caches for this batch
-      orderCustomerCache = new Map();
-      orderProductVariantCache = new Map();
-      // Keep email cache across batches for efficiency
-      
-      // Collect all customer and product external IDs from this batch
+      // Collect all customer and product external IDs from this batch that are NOT already cached
       const customerExternalIds: string[] = [];
       const productExternalIds: string[] = [];
       
       for (const item of items) {
-        if (item.data?.customer_external_id) {
+        if (item.data?.customer_external_id && !orderCustomerCache.has(item.data.customer_external_id)) {
           customerExternalIds.push(item.data.customer_external_id);
         }
         for (const lineItem of item.data?.line_items || []) {
-          if (lineItem.product_external_id) {
+          if (lineItem.product_external_id && !orderProductVariantCache.has(lineItem.product_external_id)) {
             productExternalIds.push(lineItem.product_external_id);
           }
         }
       }
       
-      // Pre-load caches in parallel
-      console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} customers and ${productExternalIds.length} products for batch`);
-      await Promise.all([
-        preloadOrderCustomerCache(supabase, projectId, customerExternalIds),
-        preloadOrderProductCache(supabase, projectId, shopifyUrl, shopifyToken, productExternalIds),
-      ]);
-      console.log(`[ORDERS] Cache loaded: ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products`);
+      // Pre-load only missing cache entries in parallel
+      if (customerExternalIds.length > 0 || productExternalIds.length > 0) {
+        console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} NEW customers and ${productExternalIds.length} NEW products (cache has ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products)`);
+        await Promise.all([
+          preloadOrderCustomerCache(supabase, projectId, customerExternalIds),
+          preloadOrderProductCache(supabase, projectId, shopifyUrl, shopifyToken, productExternalIds),
+        ]);
+      }
+      console.log(`[ORDERS] Cache now has: ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products, ${orderShopifyCustomerEmailCache.size} email lookups`);
     }
 
     // Use entity-specific concurrency settings
@@ -1629,9 +1628,9 @@ async function preloadOrderProductCache(
     }
   }
 
-  // Fetch variants in parallel (max 5 at a time to avoid rate limits)
+  // Fetch variants in parallel (max 10 at a time - bucket tracking handles rate limits)
   const shopifyIds = Array.from(shopifyIdToExternalIds.keys());
-  const PARALLEL_VARIANT_FETCH = 5;
+  const PARALLEL_VARIANT_FETCH = 10;
   
   for (let i = 0; i < shopifyIds.length; i += PARALLEL_VARIANT_FETCH) {
     const batch = shopifyIds.slice(i, i + PARALLEL_VARIANT_FETCH);
