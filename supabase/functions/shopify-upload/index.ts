@@ -16,18 +16,20 @@ const SHOPIFY_LEAK_RATE = 2; // requests per second
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
-// Base delay between requests - conservative to avoid rate limits
-const SHOPIFY_MIN_DELAY_MS = 300;
+// Base delay between requests - Shopify allows 2 req/sec = 500ms minimum
+// We use 500ms to stay exactly at the limit without triggering 429s
+const SHOPIFY_MIN_DELAY_MS = 500;
 let lastShopifyRequest = 0;
 
-// Concurrency settings per entity type - tuned for stability over speed
-// Orders: Keep at 2 to avoid overwhelming Shopify + prevent timeouts
+// Concurrency settings - CRITICAL: Keep at 1 for orders to respect 2 req/sec
+// With concurrency > 1, parallel requests exceed the leak rate immediately
+// Shopify bucket = 40, leak = 2/sec → max sustainable = 2 req/sec = 120/min
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 4,
-  orders: 2,       // Conservative to prevent 504 timeouts
-  products: 5,
-  categories: 3,
-  pages: 5,
+  customers: 2,    // 2 parallel, each with 500ms delay = ~4 req/sec peak, but bucket handles bursts
+  orders: 1,       // MUST be 1 - each order is 1 API call, sequential = 2/sec = 120 orders/min max
+  products: 2,
+  categories: 1,
+  pages: 2,
 };
 
 // Track rate limit state for intelligent backoff
