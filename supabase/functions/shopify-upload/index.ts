@@ -269,34 +269,24 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // === PRE-LOAD CACHES FOR ORDERS ===
-    // This dramatically reduces API calls by doing bulk lookups upfront
-    // IMPORTANT: We now EXTEND caches rather than clearing them to benefit from previous batches
+    // === ORDERS: Pre-load customer cache only (fast DB query) ===
+    // Skip product variant pre-loading - it causes 504 timeouts due to many Shopify API calls
+    // Variants will be looked up on-demand per order with caching
     if (entityType === 'orders') {
-      // Collect all customer and product external IDs from this batch that are NOT already cached
       const customerExternalIds: string[] = [];
-      const productExternalIds: string[] = [];
       
       for (const item of items) {
         if (item.data?.customer_external_id && !orderCustomerCache.has(item.data.customer_external_id)) {
           customerExternalIds.push(item.data.customer_external_id);
         }
-        for (const lineItem of item.data?.line_items || []) {
-          if (lineItem.product_external_id && !orderProductVariantCache.has(lineItem.product_external_id)) {
-            productExternalIds.push(lineItem.product_external_id);
-          }
-        }
       }
       
-      // Pre-load only missing cache entries in parallel
-      if (customerExternalIds.length > 0 || productExternalIds.length > 0) {
-        console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} NEW customers and ${productExternalIds.length} NEW products (cache has ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products)`);
-        await Promise.all([
-          preloadOrderCustomerCache(supabase, projectId, customerExternalIds),
-          preloadOrderProductCache(supabase, projectId, shopifyUrl, shopifyToken, productExternalIds),
-        ]);
+      // Pre-load only customer cache (single DB query, no Shopify API calls)
+      if (customerExternalIds.length > 0) {
+        console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} customers from DB`);
+        await preloadOrderCustomerCache(supabase, projectId, customerExternalIds);
       }
-      console.log(`[ORDERS] Cache now has: ${orderCustomerCache.size} customers, ${orderProductVariantCache.size} products, ${orderShopifyCustomerEmailCache.size} email lookups`);
+      console.log(`[ORDERS] Customer cache: ${orderCustomerCache.size}, Product cache: ${orderProductVariantCache.size}, Email cache: ${orderShopifyCustomerEmailCache.size}`);
     }
 
     // Use entity-specific concurrency settings
