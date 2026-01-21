@@ -46,14 +46,15 @@ const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
   return Math.min(delay, 5 * 60_000); // max 5 minutes
 };
 
-// Batch sizes tuned to complete within Edge Function timeout (~50s)
-// Orders: Keep small (5) because each order triggers variant lookups that can timeout
+// Batch sizes tuned for Shopify's rate limits (40 bucket, 2 req/sec leak)
+// Orders: Each order = 1 API call (with caching), so 10 orders = ~10 requests
+// At 2 req/sec, 10 requests takes minimum 5 seconds - well within timeout
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
       return 25;
     case 'orders':
-      return 5; // Small batches to avoid 504 timeouts
+      return 10; // Back to 10 - proven stable
     case 'products':
       return 25;
     case 'pages':
