@@ -133,6 +133,10 @@ const SPEED_THRESHOLDS: Record<EntityType, { trialMax: number; paidTypical: numb
   pages: { trialMax: 20, paidTypical: 100 },
 };
 
+// How often we run the backend watchdog to auto-restart stalled jobs.
+// This is a safety net for cases where the worker's self-scheduling is interrupted.
+const WATCHDOG_INTERVAL_MS = 60_000;
+
 interface ShopTypeIndicatorProps {
   entityType: EntityType;
   itemsPerMinute: number;
@@ -317,10 +321,26 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       fetchJobs();
       fetchStatusCounts();
     }, 3000);
+
+    // Safety net: regularly run watchdog to restart jobs if a batch gets stuck.
+    const runWatchdog = async () => {
+      try {
+        const { error } = await supabase.functions.invoke('job-watchdog');
+        if (error) throw error;
+      } catch (e) {
+        // Silent fail: watchdog is best-effort; polling + user controls still work.
+        console.warn('[UploadStep] job-watchdog failed:', e);
+      }
+    };
+
+    // Run once immediately (helps after tab refresh) and then on an interval.
+    runWatchdog();
+    const watchdogTimer = window.setInterval(runWatchdog, WATCHDOG_INTERVAL_MS);
     
     return () => {
       window.clearInterval(uiTimer);
       window.clearInterval(pollTimer);
+      window.clearInterval(watchdogTimer);
     };
   }, [jobs]);
 
