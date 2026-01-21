@@ -98,8 +98,15 @@ serve(async (req) => {
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[WATCHDOG] Error:', errorMessage);
+    let errorMessage = 'Unknown error';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'object' && error !== null) {
+      errorMessage = JSON.stringify(error);
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    }
+    console.error('[WATCHDOG] Error:', errorMessage, error);
     
     return new Response(JSON.stringify({
       success: false,
