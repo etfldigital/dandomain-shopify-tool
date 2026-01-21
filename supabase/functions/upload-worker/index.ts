@@ -10,7 +10,19 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const WORKER_SCHEDULE_DELAY_MS = 500;
 const WORKER_RETRY_DELAY_MS = 5000;
-const SHOPIFY_UPLOAD_TIMEOUT_MS = 240_000;
+// IMPORTANT: Keep this comfortably below the platform's hard request timeout.
+// If we let the fetch hang too long, the worker itself can be terminated mid-response,
+// which shows up as "Failed to send a request" in the UI.
+const SHOPIFY_UPLOAD_TIMEOUT_MS = 45_000;
+
+const runInBackground = (task: Promise<unknown>) => {
+  const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+  if (typeof waitUntil === 'function') {
+    waitUntil(task);
+    return;
+  }
+  task.catch((e) => console.error('[WORKER] Background task failed:', e));
+};
 
 const isGatewayOrTimeoutError = (message: string) => {
   const m = message.toLowerCase();
@@ -47,14 +59,14 @@ const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
 };
 
 // Batch sizes tuned for Shopify's rate limits (40 bucket, 2 req/sec leak)
-// Orders: Each order = 1 API call (with caching), so 10 orders = ~10 requests
-// At 2 req/sec, 10 requests takes minimum 5 seconds - well within timeout
+// Orders: Each order can be multiple API calls (customer lookup + variant lookup + create)
+// Keep conservative to avoid hitting runtime timeouts.
 const batchSizeForEntity = (entityType: string) => {
   switch (entityType) {
     case 'customers':
       return 25;
     case 'orders':
-      return 10; // Back to 10 - proven stable
+      return 5; // Conservative to avoid 504s/timeouts
     case 'products':
       return 25;
     case 'pages':
@@ -182,20 +194,27 @@ serve(async (req) => {
             })
             .eq('id', firstJob.id);
 
-          // Trigger processing for first job only
-          try {
-            await fetch(functionUrl, {
+          // Trigger processing for first job only.
+          // CRITICAL: fire-and-forget, otherwise the "start" request blocks until the batch finishes,
+          // which can timeout and surface as "Failed to send a request" in the UI.
+          runInBackground(
+            fetch(functionUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseServiceKey}`,
               },
               body: JSON.stringify({ jobId: firstJob.id, action: 'process' }),
-            });
-            console.log(`[WORKER] Started sequential job ${firstJob.id} (${firstJob.entity_type}), ${jobs.length - 1} more jobs waiting`);
-          } catch (e) {
-            console.error(`[WORKER] Failed to trigger ${firstJob.entity_type} processing:`, e);
-          }
+            })
+              .then(() => {
+                console.log(
+                  `[WORKER] Started sequential job ${firstJob.id} (${firstJob.entity_type}), ${jobs.length - 1} more jobs waiting`
+                );
+              })
+              .catch((e) => {
+                console.error(`[WORKER] Failed to trigger ${firstJob.entity_type} processing:`, e);
+              })
+          );
         }
 
         // Update project status
@@ -633,15 +652,18 @@ serve(async (req) => {
 
             // Trigger processing for each job
             try {
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${supabaseServiceKey}`,
-                },
-                body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
-              });
-              console.log(`[WORKER] Resumed job ${jobToResume.id} (${jobToResume.entity_type})`);
+              runInBackground(
+                fetch(functionUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${supabaseServiceKey}`,
+                  },
+                  body: JSON.stringify({ jobId: jobToResume.id, action: 'process' }),
+                })
+                  .then(() => console.log(`[WORKER] Resumed job ${jobToResume.id} (${jobToResume.entity_type})`))
+                  .catch((e) => console.error(`[WORKER] Failed to trigger resume for job ${jobToResume.id}:`, e))
+              );
             } catch (e) {
               console.error(`[WORKER] Failed to trigger resume for job ${jobToResume.id}:`, e);
             }

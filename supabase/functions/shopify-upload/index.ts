@@ -101,10 +101,15 @@ async function waitForBucketSpace(): Promise<void> {
   }
 }
 
+type ShopifyFetchLimits = {
+  maxWaitMs?: number;
+};
+
 async function shopifyFetch(
   url: string,
   options: RequestInit,
-  maxRetries = 5
+  maxRetries = 5,
+  limits: ShopifyFetchLimits = {}
 ): Promise<{ response: Response; body: string }> {
   // Wait for bucket space before making request
   await waitForBucketSpace();
@@ -120,6 +125,7 @@ async function shopifyFetch(
 
   let attempt = 0;
   let lastError: Error | null = null;
+  const maxWaitMs = Math.max(0, limits.maxWaitMs ?? 10_000);
 
   while (attempt < maxRetries) {
     try {
@@ -135,7 +141,10 @@ async function shopifyFetch(
         
         // Check Retry-After header, default to exponential backoff
         const retryAfter = response.headers.get('Retry-After');
-        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(2000 * Math.pow(2, attempt), 30000);
+        const rawWaitTime = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : Math.min(2000 * Math.pow(2, attempt), 30_000);
+        const waitTime = Math.min(rawWaitTime, maxWaitMs);
         console.log(`Rate limited (429), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
         await sleep(waitTime);
         lastShopifyRequest = Date.now();
@@ -157,7 +166,8 @@ async function shopifyFetch(
       if (isTransientNetworkError(error)) {
         attempt++;
         lastError = error instanceof Error ? error : new Error(String(error));
-        const waitTime = Math.min(2000 * Math.pow(2, attempt), 60000); // Max 60 seconds
+        const rawWaitTime = Math.min(2000 * Math.pow(2, attempt), 60_000);
+        const waitTime = Math.min(rawWaitTime, maxWaitMs);
         console.warn(`[shopifyFetch] Transient network error (attempt ${attempt}/${maxRetries}): ${lastError.message}. Retrying in ${waitTime}ms...`);
         await sleep(waitTime);
         lastShopifyRequest = Date.now();
@@ -253,6 +263,9 @@ serve(async (req) => {
       .select('*')
       .eq('project_id', projectId)
       .eq('status', 'pending')
+      // Deterministic order prevents "starvation" when we time-slice the work.
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .range(offset, offset + batchSize - 1);
 
     if (fetchError) {
@@ -291,6 +304,11 @@ serve(async (req) => {
 
     // Use entity-specific concurrency settings
     const effectiveConcurrency = CONCURRENCY_BY_TYPE[entityType] || 1;
+
+    // IMPORTANT: Orders can be slow (multiple API calls + retries). To avoid hard timeouts,
+    // we time-slice order processing and let the worker schedule the next batch.
+    const requestStartedAt = Date.now();
+    const timeBudgetMs = entityType === 'orders' ? 35_000 : null;
 
     // Process items in parallel with controlled concurrency
     const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }> => {
@@ -349,6 +367,10 @@ serve(async (req) => {
 
     // Process in batches with dynamic concurrency
     for (let i = 0; i < items.length; i += effectiveConcurrency) {
+      if (timeBudgetMs && Date.now() - requestStartedAt > timeBudgetMs) {
+        console.log(`[${entityType.toUpperCase()}] Time budget hit after ${Date.now() - requestStartedAt}ms, pausing for next invocation`);
+        break;
+      }
       const batch = items.slice(i, i + effectiveConcurrency);
       const results = await Promise.all(batch.map(processItem));
       
@@ -373,7 +395,7 @@ serve(async (req) => {
       .eq('project_id', projectId)
       .eq('status', 'pending');
 
-    return new Response(JSON.stringify({
+     return new Response(JSON.stringify({
       success: true,
       processed,
       skipped,
@@ -381,6 +403,7 @@ serve(async (req) => {
       errorDetails,
       hasMore: (count || 0) > 0,
       remaining: count || 0,
+       ...(entityType === 'orders' ? { timeBudgetMs, elapsedMs: Date.now() - requestStartedAt } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
@@ -1524,14 +1547,17 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
 async function findShopifyCustomerIdByEmail(
   shopifyUrl: string,
   token: string,
-  email: string
+  email: string,
+  opts: { maxRetries?: number; limits?: ShopifyFetchLimits } = {}
 ): Promise<string | null> {
   const normalized = String(email || '').trim();
   if (!normalized) return null;
 
   const { response: searchResponse, body: searchBody } = await shopifyFetch(
     `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(normalized)}`,
-    { headers: { 'X-Shopify-Access-Token': token } }
+    { headers: { 'X-Shopify-Access-Token': token } },
+    opts.maxRetries ?? 5,
+    opts.limits ?? {}
   );
 
   if (!searchResponse.ok) return null;
@@ -1691,7 +1717,10 @@ async function uploadOrder(
     if (orderShopifyCustomerEmailCache.has(customerEmail)) {
       shopifyCustomerId = orderShopifyCustomerEmailCache.get(customerEmail) || null;
     } else {
-      shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail);
+      shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail, {
+        maxRetries: 2,
+        limits: { maxWaitMs: 5000 },
+      });
       orderShopifyCustomerEmailCache.set(customerEmail, shopifyCustomerId);
     }
   }
@@ -1760,7 +1789,9 @@ async function uploadOrder(
       if (product?.shopify_id) {
         const { response: variantResponse, body: variantBody } = await shopifyFetch(
           `${shopifyUrl}/products/${product.shopify_id}.json?fields=id,variants`,
-          { headers: { 'X-Shopify-Access-Token': token } }
+          { headers: { 'X-Shopify-Access-Token': token } },
+          2,
+          { maxWaitMs: 5000 }
         );
 
         if (variantResponse.ok) {
@@ -1829,14 +1860,19 @@ async function uploadOrder(
     },
   };
 
-  const { response, body } = await shopifyFetch(`${shopifyUrl}/orders.json`, {
+  const { response, body } = await shopifyFetch(
+    `${shopifyUrl}/orders.json`,
+    {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': token,
     },
     body: JSON.stringify(orderPayload),
-  });
+    },
+    2,
+    { maxWaitMs: 5000 }
+  );
 
   if (!response.ok) {
     throw new Error(`Shopify API error: ${response.status} - ${body}`);
