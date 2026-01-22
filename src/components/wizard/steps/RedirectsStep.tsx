@@ -216,9 +216,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const data = product.data as Record<string, unknown>;
         const sourcePath = data?.source_path as string | null;
         const title = data?.title as string;
+        // Use actual Shopify handle if stored, otherwise fallback to generated
+        const storedHandle = data?.shopify_handle as string | null;
+        const handle = storedHandle || generateShopifyHandle(title);
         
         if (sourcePath && product.shopify_id) {
-          const handle = generateShopifyHandle(title);
           redirectsToInsert.push({
             project_id: project.id,
             entity_type: 'product',
@@ -229,16 +231,17 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
-      // Categories
+      // Categories - shopify_tag stores actual handle after upload
       const { data: categories } = await supabase
         .from('canonical_categories')
-        .select('id, external_id, slug, shopify_collection_id, name')
+        .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
         .eq('project_id', project.id)
         .eq('status', 'uploaded');
 
       for (const category of categories || []) {
         if (category.slug && category.shopify_collection_id) {
-          const handle = generateShopifyHandle(category.name);
+          // Use shopify_tag (actual Shopify handle) if available, otherwise generate
+          const handle = category.shopify_tag || generateShopifyHandle(category.name);
           redirectsToInsert.push({
             project_id: project.id,
             entity_type: 'category',
@@ -259,14 +262,17 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       for (const page of pages || []) {
         const data = page.data as Record<string, unknown>;
         const slug = data?.slug as string;
+        // Use actual Shopify handle if stored, otherwise fallback to slug
+        const storedHandle = data?.shopify_handle as string | null;
+        const handle = storedHandle || slug;
         
-        if (slug && page.shopify_id) {
+        if (handle && page.shopify_id) {
           redirectsToInsert.push({
             project_id: project.id,
             entity_type: 'page',
             entity_id: page.id,
-            old_path: `/${slug}`,
-            new_path: `/pages/${slug}`,
+            old_path: `/${slug || handle}`,
+            new_path: `/pages/${handle}`,
           });
         }
       }
@@ -386,12 +392,17 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const sourcePath = data?.source_path as string | null;
       const title = data?.title as string || '';
       const externalId = product.external_id;
+      // Use actual Shopify handle if stored, otherwise fallback to generated
+      const storedHandle = data?.shopify_handle as string | null;
+      const shopifyHandle = storedHandle 
+        ? `/products/${storedHandle}` 
+        : `/products/${generateShopifyHandle(title)}`;
       
       if (product.shopify_id) {
         entities.push({
           id: product.id,
           source_path: sourcePath,
-          shopify_handle: `/products/${generateShopifyHandle(title)}`,
+          shopify_handle: shopifyHandle,
           entity_type: 'product',
           title: title,
           external_id: externalId,
@@ -400,18 +411,21 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
 
     // Categories - include all uploaded categories
+    // Note: shopify_tag field now stores the actual Shopify handle
     const { data: categories } = await supabase
       .from('canonical_categories')
-      .select('id, external_id, slug, shopify_collection_id, name')
+      .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
       .eq('project_id', project.id)
       .eq('status', 'uploaded');
 
     for (const category of categories || []) {
       if (category.shopify_collection_id) {
+        // shopify_tag stores actual Shopify handle after upload
+        const actualHandle = category.shopify_tag || generateShopifyHandle(category.name);
         entities.push({
           id: category.id,
           source_path: category.slug ? `/shop/${category.slug}/` : null,
-          shopify_handle: `/collections/${generateShopifyHandle(category.name)}`,
+          shopify_handle: `/collections/${actualHandle}`,
           entity_type: 'category',
           title: category.name,
           external_id: category.external_id,
@@ -430,11 +444,17 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const data = page.data as Record<string, unknown>;
       const slug = data?.slug as string;
       const title = data?.title as string || '';
+      // Use actual Shopify handle if stored, otherwise fallback to slug or generated
+      const storedHandle = data?.shopify_handle as string | null;
+      const shopifyHandle = storedHandle 
+        ? `/pages/${storedHandle}` 
+        : `/pages/${slug || generateShopifyHandle(title)}`;
+      
       if (page.shopify_id) {
         entities.push({
           id: page.id,
           source_path: slug ? `/${slug}` : null,
-          shopify_handle: `/pages/${slug || generateShopifyHandle(title)}`,
+          shopify_handle: shopifyHandle,
           entity_type: 'page',
           title: title,
           external_id: page.external_id,
