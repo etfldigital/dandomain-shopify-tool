@@ -392,6 +392,14 @@ serve(async (req) => {
         }
         const elapsed = Date.now() - startTime;
 
+        const rateLimited = Boolean((result as any)?.rateLimited);
+        const retryAfterSecondsRaw = (result as any)?.retryAfterSeconds;
+        const retryAfterSeconds = rateLimited && typeof retryAfterSecondsRaw === 'number'
+          ? Math.max(1, Math.round(retryAfterSecondsRaw))
+          : rateLimited && typeof retryAfterSecondsRaw === 'string'
+            ? Math.max(1, Math.round(Number(retryAfterSecondsRaw)))
+            : 0;
+
         // Count ALL attempted items (success + skipped + failed).
         // This is critical for correct progress + realistic speed when many items fail validation.
         const itemsAttempted = (result.processed || 0) + (result.skipped || 0) + (result.errors || 0);
@@ -423,7 +431,12 @@ serve(async (req) => {
         // Merge error details
         const existingErrors = job.error_details || [];
         const newErrors = result.errorDetails || [];
-        const allErrors = [...existingErrors, ...newErrors].slice(-100); // Keep last 100
+
+        const workerInfo = rateLimited && retryAfterSeconds > 0
+          ? [{ externalId: '__worker__', message: `Rate limit (429): venter ${retryAfterSeconds}s før næste batch` }]
+          : [];
+
+        const allErrors = [...existingErrors, ...workerInfo, ...newErrors].slice(-100); // Keep last 100
 
         // Update job progress
         const updateData: Record<string, any> = {
@@ -499,8 +512,11 @@ serve(async (req) => {
         // If more work, schedule next batch
         if (hasMore) {
           const scheduleNext = async () => {
-            // Small delay to avoid hammering the API
-            await sleep(WORKER_SCHEDULE_DELAY_MS);
+            // Delay to avoid hammering the API. If rate limited, wait longer.
+            const delayMs = rateLimited && retryAfterSeconds > 0
+              ? retryAfterSeconds * 1000
+              : WORKER_SCHEDULE_DELAY_MS;
+            await sleep(delayMs);
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
             await fetch(functionUrl, {
               method: 'POST',

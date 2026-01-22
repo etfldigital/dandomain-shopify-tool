@@ -8,6 +8,15 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+class RateLimitError extends Error {
+  retryAfterMs: number;
+  constructor(retryAfterMs: number, message = 'Rate limited') {
+    super(message);
+    this.name = 'RateLimitError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 // ============================================================================
 // SHOPIFY RATE LIMITING - PRODUCTION SaaS GRADE
 // ============================================================================
@@ -157,18 +166,28 @@ async function shopifyFetch(
       const response = await fetch(url, options);
       const body = await response.text();
 
+      // Update bucket state from headers (even on non-2xx responses)
+      updateBucketFromHeaders(response);
+
       // Handle rate limiting with intelligent backoff
       if (response.status === 429) {
         attempt++;
         consecutiveRateLimits++;
-        
+
         // Aggressively increase backoff on 429
         backoffMultiplier = Math.min(backoffMultiplier * 2, 10);
-        
+
+        // If we didn't get a usable bucket header, assume it's full so future calls wait.
+        const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
+        if (!callLimit) {
+          shopifyBucketUsed = SHOPIFY_BUCKET_SIZE;
+          lastBucketUpdate = Date.now();
+        }
+
         // Check Retry-After header
         const retryAfter = response.headers.get('Retry-After');
         let waitTime: number;
-        
+
         if (retryAfter) {
           waitTime = parseInt(retryAfter, 10) * 1000;
           console.log(`[RATE LIMIT] 429 with Retry-After: ${retryAfter}s`);
@@ -178,18 +197,16 @@ async function shopifyFetch(
           const jitter = Math.random() * 1000;
           waitTime = Math.min(baseWait + jitter, 60_000);
         }
-        
+
         // Cap wait time
         waitTime = Math.min(waitTime, maxWaitMs);
-        
-        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${Math.round(waitTime/1000)}s`);
-        await sleep(waitTime);
-        lastShopifyRequest = Date.now();
-        continue;
+
+        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, suggested wait ${Math.round(waitTime / 1000)}s`);
+
+        // IMPORTANT: Don't sleep inside this function for long waits.
+        // Instead, bubble up so the worker can schedule the next attempt and keep UI responsive.
+        throw new RateLimitError(waitTime, 'Shopify rate limited (429)');
       }
-      
-      // Update bucket state from headers
-      updateBucketFromHeaders(response);
       
       // Success - gradually reduce backoff
       if (response.ok) {
@@ -377,6 +394,12 @@ serve(async (req) => {
 
         return { success: true, externalId: item.external_id, wasExisting };
       } catch (error) {
+        // If we were rate limited, stop immediately and let the worker reschedule.
+        // Do NOT mark the item as failed.
+        if (error instanceof RateLimitError) {
+          throw error;
+        }
+
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
         await supabase
@@ -392,6 +415,8 @@ serve(async (req) => {
       }
     };
 
+    let rateLimitedRetryAfterMs: number | null = null;
+
     // Process in batches with dynamic concurrency
     for (let i = 0; i < items.length; i += effectiveConcurrency) {
       if (timeBudgetMs && Date.now() - requestStartedAt > timeBudgetMs) {
@@ -399,7 +424,17 @@ serve(async (req) => {
         break;
       }
       const batch = items.slice(i, i + effectiveConcurrency);
-      const results = await Promise.all(batch.map(processItem));
+      let results: Array<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }>;
+      try {
+        results = await Promise.all(batch.map(processItem));
+      } catch (e) {
+        if (e instanceof RateLimitError) {
+          rateLimitedRetryAfterMs = e.retryAfterMs;
+          console.log(`[RATE LIMIT] Pausing batch due to 429, worker should retry after ~${Math.round(rateLimitedRetryAfterMs / 1000)}s`);
+          break;
+        }
+        throw e;
+      }
       
       for (const result of results) {
         if (result.success) {
@@ -430,6 +465,12 @@ serve(async (req) => {
       errorDetails,
       hasMore: (count || 0) > 0,
       remaining: count || 0,
+      ...(rateLimitedRetryAfterMs != null
+        ? {
+            rateLimited: true,
+            retryAfterSeconds: Math.max(1, Math.round(rateLimitedRetryAfterMs / 1000)),
+          }
+        : {}),
       ...(entityType === 'orders' ? { timeBudgetMs, elapsedMs: Date.now() - requestStartedAt } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
