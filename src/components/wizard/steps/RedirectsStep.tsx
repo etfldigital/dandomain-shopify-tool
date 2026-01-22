@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Project, ProjectRedirect, RedirectEntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,8 @@ import {
   ExternalLink,
   AlertCircle,
   Loader2,
-  Search
+  Search,
+  FileUp
 } from 'lucide-react';
 
 interface RedirectsStepProps {
@@ -46,9 +47,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<RedirectEntityType>('product');
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load existing redirects
   useEffect(() => {
@@ -262,6 +265,102 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
+  // Handle CSV file upload
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      const text = await file.text();
+      const lines = text.split('\n').filter(line => line.trim());
+      
+      if (lines.length < 2) {
+        throw new Error('CSV-filen skal indeholde mindst en header-linje og en data-linje');
+      }
+
+      // Parse header
+      const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/"/g, ''));
+      const oldPathIndex = header.findIndex(h => h === 'old_path' || h === 'from' || h === 'redirect from' || h === 'source');
+      const newPathIndex = header.findIndex(h => h === 'new_path' || h === 'to' || h === 'redirect to' || h === 'target' || h === 'destination');
+
+      if (oldPathIndex === -1 || newPathIndex === -1) {
+        throw new Error('CSV-filen skal have kolonner for "old_path" (eller "from") og "new_path" (eller "to")');
+      }
+
+      const redirectsToInsert: Array<{
+        project_id: string;
+        entity_type: string;
+        entity_id: string;
+        old_path: string;
+        new_path: string;
+      }> = [];
+
+      // Parse data rows
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        // Handle quoted CSV values
+        const values = line.match(/("([^"]*)"|[^,]+)/g)?.map(v => v.replace(/^"|"$/g, '').trim()) || [];
+        
+        const oldPath = values[oldPathIndex]?.trim();
+        const newPath = values[newPathIndex]?.trim();
+
+        if (oldPath && newPath) {
+          // Determine entity type from new_path
+          let entityType: RedirectEntityType = 'product';
+          if (newPath.includes('/collections/')) {
+            entityType = 'category';
+          } else if (newPath.includes('/pages/')) {
+            entityType = 'page';
+          }
+
+          redirectsToInsert.push({
+            project_id: project.id,
+            entity_type: entityType,
+            entity_id: `csv-import-${i}`,
+            old_path: oldPath.startsWith('/') ? oldPath : `/${oldPath}`,
+            new_path: newPath.startsWith('/') ? newPath : `/${newPath}`,
+          });
+        }
+      }
+
+      if (redirectsToInsert.length === 0) {
+        throw new Error('Ingen gyldige redirects fundet i CSV-filen');
+      }
+
+      // Insert in batches
+      const batchSize = 100;
+      for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
+        const batch = redirectsToInsert.slice(i, i + batchSize);
+        const { error } = await supabase
+          .from('project_redirects')
+          .insert(batch);
+        
+        if (error) throw error;
+      }
+
+      toast({
+        title: 'CSV importeret',
+        description: `${redirectsToInsert.length} redirects tilføjet fra CSV`,
+      });
+
+      await loadRedirects();
+    } catch (err) {
+      console.error('Error importing CSV:', err);
+      toast({
+        title: 'Fejl ved import',
+        description: err instanceof Error ? err.message : 'Kunne ikke importere CSV-fil',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUploading(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   // Download as CSV
   const downloadCSV = () => {
     const filteredRedirects = redirects.filter(r => r.entity_type === activeTab);
@@ -400,6 +499,28 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               )}
               Generer redirects
             </Button>
+            
+            {/* CSV Upload Button */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              accept=".csv"
+              className="hidden"
+            />
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              variant="outline"
+            >
+              {isUploading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <FileUp className="w-4 h-4 mr-2" />
+              )}
+              Upload CSV
+            </Button>
+            
             <Button
               onClick={createRedirectsInShopify}
               disabled={isCreating || stats.pending === 0}
@@ -420,6 +541,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Download CSV
             </Button>
           </div>
+          
+          {/* CSV format hint */}
+          <p className="text-xs text-muted-foreground mt-3">
+            CSV-format: Kolonner med "old_path" (eller "from") og "new_path" (eller "to")
+          </p>
 
           {isCreating && progress.total > 0 && (
             <div className="mt-4">
