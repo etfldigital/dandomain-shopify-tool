@@ -48,6 +48,9 @@ interface UploadedEntity {
   source_path: string | null;
   shopify_handle: string;
   entity_type: RedirectEntityType;
+  // Additional fields for flexible matching
+  title?: string;
+  external_id?: string;
 }
 
 export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
@@ -279,48 +282,47 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const fetchUploadedEntities = async (): Promise<UploadedEntity[]> => {
     const entities: UploadedEntity[] = [];
 
-    // Products - get source_path and generate handle from title
+    // Products - include all uploaded products for flexible matching
     const { data: products } = await supabase
       .from('canonical_products')
-      .select('id, data, shopify_id')
+      .select('id, external_id, data, shopify_id')
       .eq('project_id', project.id)
       .eq('status', 'uploaded');
 
     for (const product of products || []) {
       const data = product.data as Record<string, unknown>;
       const sourcePath = data?.source_path as string | null;
-      const title = data?.title as string;
-      if (sourcePath && product.shopify_id) {
+      const title = data?.title as string || '';
+      const externalId = product.external_id;
+      
+      if (product.shopify_id) {
         entities.push({
           id: product.id,
           source_path: sourcePath,
           shopify_handle: `/products/${generateShopifyHandle(title)}`,
           entity_type: 'product',
+          title: title,
+          external_id: externalId,
         });
       }
     }
 
-    // Categories
+    // Categories - include all uploaded categories
     const { data: categories } = await supabase
       .from('canonical_categories')
-      .select('id, slug, shopify_collection_id, name')
+      .select('id, external_id, slug, shopify_collection_id, name')
       .eq('project_id', project.id)
       .eq('status', 'uploaded');
 
     for (const category of categories || []) {
-      if (category.slug && category.shopify_collection_id) {
+      if (category.shopify_collection_id) {
         entities.push({
           id: category.id,
-          source_path: `/shop/${category.slug}/`,
+          source_path: category.slug ? `/shop/${category.slug}/` : null,
           shopify_handle: `/collections/${generateShopifyHandle(category.name)}`,
           entity_type: 'category',
-        });
-        // Also add without trailing slash
-        entities.push({
-          id: category.id,
-          source_path: `/shop/${category.slug}`,
-          shopify_handle: `/collections/${generateShopifyHandle(category.name)}`,
-          entity_type: 'category',
+          title: category.name,
+          external_id: category.external_id,
         });
       }
     }
@@ -328,20 +330,22 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     // Pages
     const { data: pages } = await supabase
       .from('canonical_pages')
-      .select('id, data, shopify_id')
+      .select('id, external_id, data, shopify_id')
       .eq('project_id', project.id)
       .eq('status', 'uploaded');
 
     for (const page of pages || []) {
       const data = page.data as Record<string, unknown>;
       const slug = data?.slug as string;
-      const title = data?.title as string;
-      if (slug && page.shopify_id) {
+      const title = data?.title as string || '';
+      if (page.shopify_id) {
         entities.push({
           id: page.id,
-          source_path: `/${slug}`,
-          shopify_handle: `/pages/${slug}`,
+          source_path: slug ? `/${slug}` : null,
+          shopify_handle: `/pages/${slug || generateShopifyHandle(title)}`,
           entity_type: 'page',
+          title: title,
+          external_id: page.external_id,
         });
       }
     }
@@ -370,6 +374,31 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     return normalized;
   };
 
+  // Extract slug from URL path for matching
+  const extractSlugFromPath = (path: string): string => {
+    // Remove common prefixes and get the last meaningful segment
+    const cleanPath = path
+      .replace(/^\/shop\//, '')
+      .replace(/^\/products\//, '')
+      .replace(/^\/collections\//, '')
+      .replace(/^\/pages\//, '')
+      .replace(/\/$/, '');
+    
+    // Get the last segment (the actual slug)
+    const segments = cleanPath.split('/').filter(Boolean);
+    return segments[segments.length - 1] || '';
+  };
+
+  // Normalize text for comparison (Danish chars, case, special chars)
+  const normalizeForComparison = (text: string): string => {
+    return text
+      .toLowerCase()
+      .replace(/[æ]/g, 'ae')
+      .replace(/[ø]/g, 'oe')
+      .replace(/[å]/g, 'aa')
+      .replace(/[^a-z0-9]/g, '');
+  };
+
   // Handle Excel file upload with auto-matching
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -393,11 +422,29 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       // Fetch all uploaded entities for matching
       const uploadedEntities = await fetchUploadedEntities();
       
-      // Build lookup maps for faster matching
+      // Build multiple lookup maps for flexible matching
       const pathToEntity = new Map<string, UploadedEntity>();
+      const slugToEntity = new Map<string, UploadedEntity>();
+      const titleNormalizedToEntity = new Map<string, UploadedEntity>();
+      
       for (const entity of uploadedEntities) {
+        // Map by source_path if available
         if (entity.source_path) {
           pathToEntity.set(normalizePath(entity.source_path), entity);
+        }
+        
+        // Map by normalized title for fuzzy matching
+        if (entity.title) {
+          const normalizedTitle = normalizeForComparison(entity.title);
+          if (!titleNormalizedToEntity.has(normalizedTitle)) {
+            titleNormalizedToEntity.set(normalizedTitle, entity);
+          }
+        }
+        
+        // Map by Shopify handle slug
+        const handleSlug = entity.shopify_handle.split('/').pop() || '';
+        if (handleSlug) {
+          slugToEntity.set(handleSlug, entity);
         }
       }
 
@@ -413,7 +460,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       // Parse rows - Column A is optional title, Column B is old URL
       for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
+        const row = rows[i] as unknown[];
         // Skip empty rows
         if (!row || row.length === 0) continue;
         
@@ -422,9 +469,40 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         if (!oldUrlRaw) continue;
 
         const normalizedOldPath = normalizePath(oldUrlRaw);
+        const oldSlug = extractSlugFromPath(normalizedOldPath);
+        const normalizedOldSlug = normalizeForComparison(oldSlug);
         
-        // Try to find matching entity
-        const matchedEntity = pathToEntity.get(normalizedOldPath);
+        // Try multiple matching strategies
+        let matchedEntity: UploadedEntity | undefined;
+        
+        // Strategy 1: Exact path match
+        matchedEntity = pathToEntity.get(normalizedOldPath);
+        
+        // Strategy 2: Slug match (extract slug from URL and match)
+        if (!matchedEntity && oldSlug) {
+          matchedEntity = slugToEntity.get(oldSlug);
+        }
+        
+        // Strategy 3: Normalized title match (fuzzy)
+        if (!matchedEntity && normalizedOldSlug) {
+          matchedEntity = titleNormalizedToEntity.get(normalizedOldSlug);
+        }
+        
+        // Strategy 4: Partial title match - find entity where normalized title contains the slug
+        if (!matchedEntity && normalizedOldSlug && normalizedOldSlug.length > 3) {
+          for (const entity of uploadedEntities) {
+            if (entity.title) {
+              const normalizedEntityTitle = normalizeForComparison(entity.title);
+              // Check if titles are similar enough
+              if (normalizedEntityTitle === normalizedOldSlug || 
+                  normalizedEntityTitle.includes(normalizedOldSlug) ||
+                  normalizedOldSlug.includes(normalizedEntityTitle)) {
+                matchedEntity = entity;
+                break;
+              }
+            }
+          }
+        }
         
         if (matchedEntity) {
           redirectsToInsert.push({
@@ -435,30 +513,19 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             new_path: matchedEntity.shopify_handle,
           });
         } else {
-          // No match found - still add but mark as needing manual review
           unmatched++;
-          redirectsToInsert.push({
-            project_id: project.id,
-            entity_type: 'product', // Default
-            entity_id: `excel-import-${i}`,
-            old_path: normalizedOldPath,
-            new_path: '', // Empty - needs manual input
-          });
         }
       }
 
-      if (redirectsToInsert.length === 0) {
+      if (redirectsToInsert.length === 0 && unmatched === 0) {
         throw new Error('Ingen URLs fundet i kolonne B');
       }
 
-      // Filter out unmatched (empty new_path) for now - only insert matched
-      const matchedRedirects = redirectsToInsert.filter(r => r.new_path !== '');
-
-      if (matchedRedirects.length > 0) {
+      if (redirectsToInsert.length > 0) {
         // Insert in batches
         const batchSize = 100;
-        for (let i = 0; i < matchedRedirects.length; i += batchSize) {
-          const batch = matchedRedirects.slice(i, i + batchSize);
+        for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
+          const batch = redirectsToInsert.slice(i, i + batchSize);
           const { error } = await supabase
             .from('project_redirects')
             .insert(batch);
@@ -469,11 +536,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       setUnmatchedCount(unmatched);
 
+      const totalFound = redirectsToInsert.length + unmatched;
       toast({
         title: 'Excel importeret',
         description: unmatched > 0 
-          ? `${matchedRedirects.length} redirects matchet automatisk. ${unmatched} URLs kunne ikke matches.`
-          : `${matchedRedirects.length} redirects matchet automatisk til Shopify URLs.`,
+          ? `${redirectsToInsert.length} af ${totalFound} URLs matchet automatisk. ${unmatched} URLs kunne ikke matches.`
+          : `${redirectsToInsert.length} redirects matchet automatisk til Shopify URLs.`,
         variant: unmatched > 0 ? 'default' : 'default',
       });
 
