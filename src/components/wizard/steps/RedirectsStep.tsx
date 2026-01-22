@@ -691,6 +691,45 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     );
   };
 
+  // Update new_path for a redirect
+  const updateNewPath = async (id: string, newPath: string) => {
+    // Update locally first
+    setRedirects(prev =>
+      prev.map(r => r.id === id ? { ...r, new_path: newPath } : r)
+    );
+
+    // Persist to database
+    try {
+      const { error } = await supabase
+        .from('project_redirects')
+        .update({ new_path: newPath })
+        .eq('id', id);
+
+      if (error) throw error;
+    } catch (err) {
+      console.error('Error updating new_path:', err);
+      toast({
+        title: 'Fejl',
+        description: 'Kunne ikke gemme ændring',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Build full URL for old path using DanDomain base URL
+  const getOldPathUrl = (oldPath: string): string => {
+    const baseUrl = project.dandomain_shop_url || '';
+    if (!baseUrl) return oldPath;
+    
+    // Clean up base URL
+    let cleanBase = baseUrl.replace(/\/$/, '');
+    if (!cleanBase.startsWith('http')) {
+      cleanBase = 'https://' + cleanBase;
+    }
+    
+    return cleanBase + oldPath;
+  };
+
   // Filter redirects
   const filteredRedirects = useMemo(() => {
     return redirects
@@ -1012,13 +1051,26 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               />
                             </TableCell>
                             <TableCell className="font-mono text-xs">
-                              {redirect.old_path}
+                              <a
+                                href={getOldPathUrl(redirect.old_path)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline inline-flex items-center gap-1"
+                              >
+                                {redirect.old_path}
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
                             </TableCell>
                             <TableCell>
                               <ArrowRight className="w-4 h-4 text-muted-foreground" />
                             </TableCell>
-                            <TableCell className="font-mono text-xs">
-                              {redirect.new_path}
+                            <TableCell>
+                              <Input
+                                value={redirect.new_path}
+                                onChange={(e) => updateNewPath(redirect.id, e.target.value)}
+                                className="font-mono text-xs h-8"
+                                disabled={redirect.status !== 'pending'}
+                              />
                             </TableCell>
                             <TableCell>
                               {getStatusBadge(redirect.status)}
