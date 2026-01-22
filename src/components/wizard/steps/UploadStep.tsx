@@ -129,6 +129,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
+  
+  // Countdown timer state for rate limit waits
+  const [countdownEndTime, setCountdownEndTime] = useState<number | null>(null);
+  const [lastWorkerMessage, setLastWorkerMessage] = useState<string | null>(null);
 
   // Status counts for each entity type (for the menu)
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
@@ -534,7 +538,29 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
     ? Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000)
     : 0;
-  const waitingSeconds = getWaitingSeconds(runningJob) ?? null;
+  
+  // Detect new rate limit message and start countdown
+  const currentWorkerMessage = getLatestWorkerMessage(runningJob);
+  useEffect(() => {
+    if (currentWorkerMessage && currentWorkerMessage !== lastWorkerMessage) {
+      setLastWorkerMessage(currentWorkerMessage);
+      const parsedSeconds = getWaitingSeconds(runningJob);
+      if (parsedSeconds && parsedSeconds > 0) {
+        // Set countdown end time based on current time + wait seconds
+        setCountdownEndTime(Date.now() + parsedSeconds * 1000);
+      }
+    }
+    // Reset countdown when job completes or no running job
+    if (!runningJob) {
+      setCountdownEndTime(null);
+      setLastWorkerMessage(null);
+    }
+  }, [currentWorkerMessage, lastWorkerMessage, runningJob]);
+  
+  // Calculate live countdown seconds
+  const liveWaitingSeconds = countdownEndTime 
+    ? Math.max(0, Math.ceil((countdownEndTime - uiNow) / 1000))
+    : null;
 
   // UI-only "live" progress so the counter/bar can move smoothly between DB updates.
   // We cap the estimate to at most one batch.
@@ -655,7 +681,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
     const workerMsg = getLatestWorkerMessage(runningJob);
     if (workerMsg && (workerMsg.includes('Rate limit') || workerMsg.includes('429'))) {
-      return waitingSeconds ? `${label}: venter pga. rate limit (${waitingSeconds}s)…` : `${label}: venter pga. rate limit…`;
+      return liveWaitingSeconds ? `${label}: venter pga. rate limit (${liveWaitingSeconds}s)…` : `${label}: venter pga. rate limit…`;
     }
     return `${label}: uploader batch ${runningJob.current_batch || 1}…`;
   };
@@ -724,9 +750,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
-                {waitingSeconds != null && (
+                {liveWaitingSeconds != null && liveWaitingSeconds > 0 && (
                   <span className="bg-muted px-2 py-0.5 rounded-md font-medium">
-                    ⏳ venter {waitingSeconds}s
+                    ⏳ venter {liveWaitingSeconds}s
                   </span>
                 )}
                 <span className="flex items-center gap-1.5">
