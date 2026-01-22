@@ -68,7 +68,7 @@ const batchSizeForEntity = (entityType: string) => {
     case 'orders':
       return 5; // Conservative to avoid 504s/timeouts
     case 'products':
-      return 25;
+      return 10; // Reduced from 25 - products with images/metafields are slow
     case 'pages':
     case 'categories':
       return 25;
@@ -331,10 +331,10 @@ serve(async (req) => {
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
           const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message);
 
-          // If orders are timing out / gatewaying, reduce batch size so each invocation finishes faster.
+          // If orders OR products are timing out / gatewaying, reduce batch size so each invocation finishes faster.
           // This avoids being stuck forever in a 502/504 retry loop with batch_size=10.
           const shouldReduceBatchSize =
-            job.entity_type === 'orders' &&
+            (job.entity_type === 'orders' || job.entity_type === 'products') &&
             !job.is_test_mode &&
             isGatewayOrTimeoutError(message) &&
             effectiveBatchSize > 1;
