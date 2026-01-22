@@ -46,6 +46,7 @@ interface RedirectRow {
   status: string;
   error_message: string | null;
   selected: boolean;
+  isValidPath?: boolean; // Whether the new_path exists in Shopify
 }
 
 interface UploadedEntity {
@@ -74,12 +75,36 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [unmatchedUrls, setUnmatchedUrls] = useState<UnmatchedUrl[]>([]);
   const [unmatchedExpanded, setUnmatchedExpanded] = useState(true);
+  const [validShopifyPaths, setValidShopifyPaths] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load existing redirects
+  // Load existing redirects and valid paths
   useEffect(() => {
+    loadValidPaths();
     loadRedirects();
   }, [project.id]);
+
+  // Fetch all valid Shopify paths (uploaded entities)
+  const loadValidPaths = async () => {
+    try {
+      const entities = await fetchUploadedEntities();
+      const paths = new Set<string>();
+      
+      for (const entity of entities) {
+        paths.add(entity.shopify_handle.toLowerCase());
+      }
+      
+      setValidShopifyPaths(paths);
+    } catch (err) {
+      console.error('Error loading valid paths:', err);
+    }
+  };
+
+  // Check if a path is valid (exists in Shopify)
+  const isPathValid = (path: string): boolean => {
+    if (!path) return false;
+    return validShopifyPaths.has(path.toLowerCase());
+  };
 
   const loadRedirects = async () => {
     setIsLoading(true);
@@ -120,6 +145,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           status: r.status,
           error_message: r.error_message,
           selected: r.status === 'pending',
+          isValidPath: true, // Will be validated when validShopifyPaths is loaded
         }))
       );
     } catch (err) {
@@ -289,23 +315,37 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // Create redirects in Shopify
   const createRedirectsInShopify = async () => {
     const selectedRedirects = redirects.filter(r => r.selected && r.status === 'pending');
-    if (selectedRedirects.length === 0) {
+    
+    // Filter out redirects with invalid paths
+    const validRedirects = selectedRedirects.filter(r => isPathValid(r.new_path));
+    const invalidCount = selectedRedirects.length - validRedirects.length;
+    
+    if (validRedirects.length === 0) {
       toast({
-        title: 'Ingen valgt',
-        description: 'Vælg mindst én redirect at oprette',
+        title: invalidCount > 0 ? 'Ingen gyldige redirects' : 'Ingen valgt',
+        description: invalidCount > 0 
+          ? `${invalidCount} valgte redirects har ugyldige stier. Ret dem før oprettelse.`
+          : 'Vælg mindst én redirect at oprette',
         variant: 'destructive',
       });
       return;
     }
+    
+    if (invalidCount > 0) {
+      toast({
+        title: 'Springer ugyldige over',
+        description: `${invalidCount} redirects med ugyldige stier vil blive sprunget over.`,
+      });
+    }
 
     setIsCreating(true);
-    setProgress({ current: 0, total: selectedRedirects.length });
+    setProgress({ current: 0, total: validRedirects.length });
 
     try {
       const { error } = await supabase.functions.invoke('create-redirects', {
         body: {
           projectId: project.id,
-          redirectIds: selectedRedirects.map(r => r.id),
+          redirectIds: validRedirects.map(r => r.id),
         },
       });
 
@@ -691,11 +731,13 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     );
   };
 
-  // Update new_path for a redirect
+  // Update new_path for a redirect with validation
   const updateNewPath = async (id: string, newPath: string) => {
-    // Update locally first
+    const pathIsValid = isPathValid(newPath);
+    
+    // Update locally first with validation status
     setRedirects(prev =>
-      prev.map(r => r.id === id ? { ...r, new_path: newPath } : r)
+      prev.map(r => r.id === id ? { ...r, new_path: newPath, isValidPath: pathIsValid } : r)
     );
 
     // Persist to database
@@ -852,14 +894,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             
             <Button
               onClick={createRedirectsInShopify}
-              disabled={isCreating || stats.pending === 0}
+              disabled={isCreating || redirects.filter(r => r.selected && r.status === 'pending' && isPathValid(r.new_path)).length === 0}
             >
               {isCreating ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               ) : (
                 <Upload className="w-4 h-4 mr-2" />
               )}
-              Opret i Shopify ({redirects.filter(r => r.selected && r.status === 'pending').length})
+              Opret i Shopify ({redirects.filter(r => r.selected && r.status === 'pending' && isPathValid(r.new_path)).length})
             </Button>
             <Button
               onClick={downloadCSV}
@@ -1065,12 +1107,24 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               <ArrowRight className="w-4 h-4 text-muted-foreground" />
                             </TableCell>
                             <TableCell>
-                              <Input
-                                value={redirect.new_path}
-                                onChange={(e) => updateNewPath(redirect.id, e.target.value)}
-                                className="font-mono text-xs h-8"
-                                disabled={redirect.status !== 'pending'}
-                              />
+                              <div className="space-y-1">
+                                <Input
+                                  value={redirect.new_path}
+                                  onChange={(e) => updateNewPath(redirect.id, e.target.value)}
+                                  className={`font-mono text-xs h-8 ${
+                                    redirect.status === 'pending' && !isPathValid(redirect.new_path)
+                                      ? 'border-destructive focus-visible:ring-destructive'
+                                      : ''
+                                  }`}
+                                  disabled={redirect.status !== 'pending'}
+                                />
+                                {redirect.status === 'pending' && !isPathValid(redirect.new_path) && (
+                                  <div className="text-xs text-destructive flex items-center gap-1">
+                                    <AlertCircle className="w-3 h-3" />
+                                    Stien findes ikke i Shopify
+                                  </div>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell>
                               {getStatusBadge(redirect.status)}
