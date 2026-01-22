@@ -31,16 +31,36 @@ serve(async (req) => {
     const now = Date.now();
     const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
 
-    // Find running jobs with stale heartbeat
-    const { data: stalledJobs, error: queryError } = await supabase
-      .from('upload_jobs')
-      .select('*')
-      .eq('status', 'running')
-      .lt('last_heartbeat_at', stallCutoff);
+    // Retry helper for transient network errors
+    const fetchWithRetry = async (retries = 3, delay = 500) => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const { data, error } = await supabase
+            .from('upload_jobs')
+            .select('*')
+            .eq('status', 'running')
+            .lt('last_heartbeat_at', stallCutoff);
+          
+          if (error) throw error;
+          return data;
+        } catch (err) {
+          const isTransient = err instanceof Error && 
+            (err.message.includes('connection reset') || err.message.includes('SendRequest'));
+          
+          if (isTransient && attempt < retries) {
+            console.log(`[WATCHDOG] Transient error on attempt ${attempt}, retrying in ${delay}ms...`);
+            await new Promise(r => setTimeout(r, delay));
+            delay *= 2; // Exponential backoff
+          } else {
+            throw err;
+          }
+        }
+      }
+      return null;
+    };
 
-    if (queryError) {
-      throw queryError;
-    }
+    // Find running jobs with stale heartbeat
+    const stalledJobs = await fetchWithRetry();
 
     if (!stalledJobs || stalledJobs.length === 0) {
       return new Response(JSON.stringify({
