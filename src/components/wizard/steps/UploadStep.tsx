@@ -132,6 +132,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   
   // Countdown timer state for rate limit waits
   const [countdownEndTime, setCountdownEndTime] = useState<number | null>(null);
+  const [countdownTotalSeconds, setCountdownTotalSeconds] = useState<number | null>(null);
   const [lastWorkerMessage, setLastWorkerMessage] = useState<string | null>(null);
 
   // Status counts for each entity type (for the menu)
@@ -548,11 +549,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       if (parsedSeconds && parsedSeconds > 0) {
         // Set countdown end time based on current time + wait seconds
         setCountdownEndTime(Date.now() + parsedSeconds * 1000);
+        setCountdownTotalSeconds(parsedSeconds);
       }
     }
     // Reset countdown when job completes or no running job
     if (!runningJob) {
       setCountdownEndTime(null);
+      setCountdownTotalSeconds(null);
       setLastWorkerMessage(null);
     }
   }, [currentWorkerMessage, lastWorkerMessage, runningJob]);
@@ -622,13 +625,24 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Calculate overall speed and ETA
   const currentSpeed = runningJob?.items_per_minute || 0;
+
+  const isRateLimited = Boolean(currentWorkerMessage && /rate limit|\b429\b/i.test(currentWorkerMessage));
+  // If we're rate limited and waiting X seconds between batches, there is a hard throughput cap.
+  const rateLimitSpeedCap =
+    isRateLimited && countdownTotalSeconds != null && countdownTotalSeconds > 0
+      ? ((runningJob?.batch_size ?? 1) * 60) / Math.max(1, countdownTotalSeconds)
+      : null;
+  const effectiveSpeed =
+    rateLimitSpeedCap != null && rateLimitSpeedCap > 0
+      ? Math.min(currentSpeed || 0, rateLimitSpeedCap)
+      : currentSpeed;
   
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
     .filter(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused')
     .reduce((acc, j) => acc + Math.max(0, j.total_count - j.processed_count), 0);
   
-  const etaMinutes = currentSpeed > 0 ? Math.ceil(totalRemainingItems / currentSpeed) : null;
+  const etaMinutes = effectiveSpeed > 0 ? Math.ceil(totalRemainingItems / effectiveSpeed) : null;
 
   const formatEta = (minutes: number) => {
     if (minutes >= 90) {
@@ -782,11 +796,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help">
-                          ~{formatEta(etaMinutes)} tilbage
+                          {isRateLimited ? 'mindst ' : '~'}{formatEta(etaMinutes)} tilbage
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
                         <p>{totalRemainingItems.toLocaleString('da-DK')} elementer tilbage</p>
+                        {isRateLimited && liveWaitingSeconds != null && liveWaitingSeconds > 0 && (
+                          <p className="text-muted-foreground mt-1">
+                            Beregnet med rate limit (ca. {liveWaitingSeconds}s pause mellem batches)
+                          </p>
+                        )}
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
