@@ -458,14 +458,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       let unmatched = 0;
 
-      // Parse rows - Column A is optional title, Column B is old URL
+      // Parse rows - Column A contains old URL
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] as unknown[];
         // Skip empty rows
         if (!row || row.length === 0) continue;
         
-        // Column B (index 1) contains the old URL
-        const oldUrlRaw = row[1]?.toString()?.trim();
+        // Column A (index 0) contains the old URL
+        const oldUrlRaw = row[0]?.toString()?.trim();
         if (!oldUrlRaw) continue;
 
         const normalizedOldPath = normalizePath(oldUrlRaw);
@@ -518,7 +518,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       }
 
       if (redirectsToInsert.length === 0 && unmatched === 0) {
-        throw new Error('Ingen URLs fundet i kolonne B');
+        throw new Error('Ingen URLs fundet i kolonne A');
       }
 
       if (redirectsToInsert.length > 0) {
@@ -749,7 +749,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Excel-format
             </h4>
             <p className="text-xs text-muted-foreground">
-              Upload en Excel-fil med gamle URLs i <strong>kolonne B</strong>. Kolonne A kan indeholde sidetitel (valgfrit).
+              Upload en Excel-fil med alle gamle URLs der skal redirectes i <strong>kolonne A</strong>.
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Programmet matcher automatisk gamle URLs til de nye Shopify-sider baseret på produkter, kollektioner og sider der allerede er uploadet.
