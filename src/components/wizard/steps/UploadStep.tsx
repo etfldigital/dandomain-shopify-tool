@@ -659,13 +659,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return `${speed.toFixed(1).replace('.', ',')} / min`;
   };
 
-  const formatHeartbeat = (seconds: number) => {
-    if (seconds >= 60) {
-      const mins = Math.floor(seconds / 60);
-      const secs = seconds % 60;
-      return `${mins}m ${secs}s siden`;
+  const getHeartbeatStatus = (seconds: number) => {
+    if (seconds > 60) {
+      return { label: 'Afventer', color: 'bg-amber-500' };
     }
-    return `${seconds}s siden`;
+    return { label: 'Aktiv', color: 'bg-green-500' };
   };
 
   function getLatestWorkerMessage(job?: UploadJob): string | null {
@@ -765,8 +763,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
                 <span className="flex items-center gap-1.5">
-                  <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
-                  {formatHeartbeat(secondsSinceHeartbeat)}
+                  <span className={`w-2 h-2 rounded-full ${getHeartbeatStatus(secondsSinceHeartbeat).color} animate-pulse`} />
+                  <span className="text-sm">{getHeartbeatStatus(secondsSinceHeartbeat).label}</span>
                 </span>
                 {currentSpeed > 0 ? (
                   <TooltipProvider>
