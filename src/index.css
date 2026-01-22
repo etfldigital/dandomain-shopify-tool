@@ -2,34 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Premium Design System - Apple HIG & Shopify Polaris Inspired */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;600;700&display=swap');
+/* Brand Guide - Inspired by Conversio.dk */
+/* Modern, professional, data-driven aesthetic with high contrast and orange accent */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;600;700;800&display=swap');
 
 @layer base {
   :root {
-    /* Background & Surface */
-    --background: 0 0% 99%;
-    --foreground: 220 14% 10%;
+    /* Background & Surface - Clean whites */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 7%;
 
     --card: 0 0% 100%;
-    --card-foreground: 220 14% 10%;
+    --card-foreground: 0 0% 7%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 220 14% 10%;
+    --popover-foreground: 0 0% 7%;
 
-    /* Brand Colors */
-    --primary: 220 90% 52%;
+    /* Brand Colors - Conversio Orange */
+    --primary: 20 89% 54%;
     --primary-foreground: 0 0% 100%;
 
     /* Neutral Surfaces */
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 220 14% 20%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 20%;
 
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;
 
-    --accent: 220 14% 94%;
-    --accent-foreground: 220 14% 10%;
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 7%;
 
     /* Semantic Colors */
     --destructive: 0 72% 51%;
@@ -39,50 +40,50 @@
     --success-foreground: 0 0% 100%;
 
     --warning: 38 92% 50%;
-    --warning-foreground: 220 14% 10%;
+    --warning-foreground: 0 0% 7%;
 
     /* Borders & Inputs */
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 220 90% 52%;
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 20 89% 54%;
 
-    /* Consistent Radius */
-    --radius: 0.625rem;
+    /* Consistent Radius - More rounded for modern feel */
+    --radius: 0.5rem;
 
     /* Sidebar */
     --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 220 14% 30%;
-    --sidebar-primary: 220 14% 10%;
+    --sidebar-foreground: 0 0% 30%;
+    --sidebar-primary: 0 0% 7%;
     --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 220 14% 96%;
-    --sidebar-accent-foreground: 220 14% 10%;
-    --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 220 90% 52%;
+    --sidebar-accent: 0 0% 96%;
+    --sidebar-accent-foreground: 0 0% 7%;
+    --sidebar-border: 0 0% 90%;
+    --sidebar-ring: 20 89% 54%;
   }
 
   .dark {
-    /* Background & Surface */
-    --background: 220 14% 8%;
+    /* Background & Surface - Deep blacks like Conversio */
+    --background: 0 0% 4%;
     --foreground: 0 0% 98%;
 
-    --card: 220 14% 10%;
+    --card: 0 0% 7%;
     --card-foreground: 0 0% 98%;
 
-    --popover: 220 14% 10%;
+    --popover: 0 0% 7%;
     --popover-foreground: 0 0% 98%;
 
-    /* Brand Colors */
-    --primary: 220 90% 56%;
+    /* Brand Colors - Orange stays vibrant in dark mode */
+    --primary: 20 89% 54%;
     --primary-foreground: 0 0% 100%;
 
     /* Neutral Surfaces */
-    --secondary: 220 14% 14%;
+    --secondary: 0 0% 12%;
     --secondary-foreground: 0 0% 90%;
 
-    --muted: 220 14% 14%;
-    --muted-foreground: 220 9% 55%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 55%;
 
-    --accent: 220 14% 16%;
+    --accent: 0 0% 14%;
     --accent-foreground: 0 0% 98%;
 
     /* Semantic Colors */
@@ -93,22 +94,22 @@
     --success-foreground: 0 0% 100%;
 
     --warning: 38 92% 50%;
-    --warning-foreground: 220 14% 10%;
+    --warning-foreground: 0 0% 7%;
 
     /* Borders & Inputs */
-    --border: 220 14% 18%;
-    --input: 220 14% 18%;
-    --ring: 220 90% 56%;
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 20 89% 54%;
 
     /* Sidebar */
-    --sidebar-background: 220 14% 10%;
+    --sidebar-background: 0 0% 7%;
     --sidebar-foreground: 0 0% 90%;
-    --sidebar-primary: 220 90% 56%;
+    --sidebar-primary: 20 89% 54%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 14% 14%;
+    --sidebar-accent: 0 0% 12%;
     --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 220 14% 18%;
-    --sidebar-ring: 220 90% 56%;
+    --sidebar-border: 0 0% 18%;
+    --sidebar-ring: 20 89% 54%;
   }
 }
 
@@ -131,14 +132,27 @@
     letter-spacing: -0.011em;
   }
 
-  /* Typography refinements */
+  /* Typography - Conversio style with tight tracking */
   h1, h2, h3, h4, h5, h6 {
-    letter-spacing: -0.02em;
-    font-weight: 600;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+  }
+
+  h1 {
+    @apply text-4xl md:text-5xl font-extrabold;
+    letter-spacing: -0.03em;
+  }
+
+  h2 {
+    @apply text-2xl md:text-3xl font-bold;
+  }
+
+  h3 {
+    @apply text-xl font-semibold;
   }
 
   p {
-    line-height: 1.65;
+    line-height: 1.7;
   }
 }
 
@@ -154,7 +168,7 @@
     border-color: hsl(var(--border) / 0.4);
   }
 
-  /* Premium Shadows - Apple-style ambient shadows */
+  /* Premium Shadows - Subtle, modern */
   .shadow-ambient {
     box-shadow: 
       0 1px 2px 0 hsl(var(--foreground) / 0.03),
@@ -228,6 +242,11 @@
 
   .text-pretty {
     text-wrap: pretty;
+  }
+
+  /* Stat highlight - Conversio style large numbers */
+  .stat-highlight {
+    @apply text-primary font-extrabold tracking-tight;
   }
 }
 
