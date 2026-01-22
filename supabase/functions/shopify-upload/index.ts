@@ -13,51 +13,27 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // ============================================================================
 // Shopify uses a "leaky bucket" algorithm:
 // - Standard stores: 40 requests bucket, 2 requests/second leak rate
-// - Trial/Development stores: Hard limit of 5 orders/minute!
 // 
 // This implementation:
 // 1. Reads X-Shopify-Shop-Api-Call-Limit header to track bucket state
-// 2. Auto-detects trial stores based on observed rate limit patterns
-// 3. Uses adaptive delays to maximize throughput without hitting 429s
-// 4. Implements exponential backoff for rate limit errors
+// 2. Uses adaptive delays to maximize throughput without hitting 429s
+// 3. Implements exponential backoff for rate limit errors
 // ============================================================================
-
-// Shop type detection - critical for order uploads
-type ShopType = 'production' | 'trial' | 'unknown';
-let detectedShopType: ShopType = 'unknown';
-let shopTypeDetectionAttempts = 0;
 
 // Rate limiting state
 const SHOPIFY_BUCKET_SIZE = 40;
-const SHOPIFY_LEAK_RATE = 2; // requests per second for production stores
+const SHOPIFY_LEAK_RATE = 2; // requests per second
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 let lastShopifyRequest = 0;
 
-// Adaptive delays based on shop type
-const DELAY_CONFIG = {
-  production: {
-    minDelay: 500,        // 2 req/sec = 500ms between requests
-    orderDelay: 500,      // Same for orders
-    maxOrdersPerMinute: 120,
-  },
-  trial: {
-    minDelay: 1000,       // Slower for trial stores
-    orderDelay: 12000,    // 5 orders/minute = 12 seconds between orders!
-    maxOrdersPerMinute: 5,
-  },
-  unknown: {
-    minDelay: 750,        // Conservative default
-    orderDelay: 2000,     // Start conservative for orders
-    maxOrdersPerMinute: 30,
-  }
-};
+// Delay settings
+const MIN_DELAY = 500; // 2 req/sec = 500ms between requests
+const ORDER_DELAY = 500;
 
 // Error tracking for adaptive backoff
 let consecutiveRateLimits = 0;
 let backoffMultiplier = 1;
-let orderRequestCount = 0;
-let orderRequestWindowStart = Date.now();
 
 // Concurrency settings per entity type
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
@@ -69,75 +45,11 @@ const CONCURRENCY_BY_TYPE: Record<string, number> = {
 };
 
 /**
- * Get current delay configuration based on detected shop type.
- */
-function getDelayConfig() {
-  return DELAY_CONFIG[detectedShopType];
-}
-
-/**
  * Get the optimal delay for the current entity type.
  */
 function getOptimalDelay(entityType: string): number {
-  const config = getDelayConfig();
-  const baseDelay = entityType === 'orders' ? config.orderDelay : config.minDelay;
+  const baseDelay = entityType === 'orders' ? ORDER_DELAY : MIN_DELAY;
   return Math.round(baseDelay * backoffMultiplier);
-}
-
-/**
- * Detect shop type from rate limit behavior.
- * Trial stores have a hard 5 orders/minute limit.
- */
-function detectShopType(response: Response, entityType: string): void {
-  if (detectedShopType !== 'unknown') return; // Already detected
-  
-  shopTypeDetectionAttempts++;
-  
-  // Check for trial store indicators
-  const retryAfter = response.headers.get('Retry-After');
-  const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
-  
-  // If we got a 429 on orders very quickly, likely a trial store
-  if (response.status === 429 && entityType === 'orders') {
-    const orderWindow = Date.now() - orderRequestWindowStart;
-    const ordersInWindow = orderRequestCount;
-    
-    // If we hit 429 after only ~5 orders in a short window, it's a trial store
-    if (ordersInWindow <= 6 && orderWindow < 90000) {
-      console.log(`[RATE LIMIT] Trial store detected! Hit 429 after ${ordersInWindow} orders in ${Math.round(orderWindow/1000)}s`);
-      detectedShopType = 'trial';
-      backoffMultiplier = Math.max(backoffMultiplier, 2); // Ensure we slow down
-      return;
-    }
-  }
-  
-  // If Retry-After is very high (>30s), likely trial store enforcement
-  if (retryAfter && parseInt(retryAfter, 10) > 30) {
-    console.log(`[RATE LIMIT] Trial store suspected: Retry-After=${retryAfter}s`);
-    detectedShopType = 'trial';
-    return;
-  }
-  
-  // After successful requests without issues, assume production
-  if (shopTypeDetectionAttempts >= 10 && response.ok) {
-    console.log(`[RATE LIMIT] Production store detected after ${shopTypeDetectionAttempts} successful requests`);
-    detectedShopType = 'production';
-  }
-}
-
-/**
- * Track order requests for trial store detection.
- */
-function trackOrderRequest(): void {
-  const now = Date.now();
-  
-  // Reset window every 60 seconds
-  if (now - orderRequestWindowStart > 60000) {
-    orderRequestCount = 0;
-    orderRequestWindowStart = now;
-  }
-  
-  orderRequestCount++;
 }
 
 /**
@@ -198,8 +110,7 @@ function getAvailableBucketSpace(): number {
  */
 async function waitForBucketSpace(): Promise<void> {
   const available = getAvailableBucketSpace();
-  // Adaptive buffer based on shop type
-  const bufferSize = detectedShopType === 'trial' ? 10 : 5;
+  const bufferSize = 5;
   
   if (available <= bufferSize) {
     const waitTime = Math.ceil((bufferSize + 1 - available) / SHOPIFY_LEAK_RATE * 1000);
@@ -225,11 +136,6 @@ async function shopifyFetch(
 ): Promise<{ response: Response; body: string }> {
   const entityType = limits.entityType || 'default';
   
-  // Track order requests for trial detection
-  if (entityType === 'orders') {
-    trackOrderRequest();
-  }
-  
   // Wait for bucket space before making request
   await waitForBucketSpace();
   
@@ -250,9 +156,6 @@ async function shopifyFetch(
     try {
       const response = await fetch(url, options);
       const body = await response.text();
-
-      // Detect shop type from response
-      detectShopType(response, entityType);
 
       // Handle rate limiting with intelligent backoff
       if (response.status === 429) {
@@ -276,15 +179,10 @@ async function shopifyFetch(
           waitTime = Math.min(baseWait + jitter, 60_000);
         }
         
-        // For trial stores, wait longer on orders
-        if (detectedShopType === 'trial' && entityType === 'orders') {
-          waitTime = Math.max(waitTime, 15000); // Minimum 15s for trial store orders
-        }
-        
         // Cap wait time
         waitTime = Math.min(waitTime, maxWaitMs);
         
-        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), shop=${detectedShopType}, backoff=${backoffMultiplier.toFixed(1)}x, waiting ${Math.round(waitTime/1000)}s`);
+        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${Math.round(waitTime/1000)}s`);
         await sleep(waitTime);
         lastShopifyRequest = Date.now();
         continue;
@@ -382,11 +280,7 @@ serve(async (req) => {
     // Special handling for products - group by title to create variants
     if (entityType === 'products') {
       const result = await uploadProductsWithVariants(supabase, projectId, shopifyUrl, shopifyToken, batchSize, dandomainBaseUrl);
-      return new Response(JSON.stringify({
-        ...result,
-        shopType: detectedShopType,
-        backoffMultiplier: backoffMultiplier.toFixed(2),
-      }), { 
+      return new Response(JSON.stringify(result), { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
     }
@@ -394,11 +288,7 @@ serve(async (req) => {
     // Special handling for categories - use dedicated function with caching
     if (entityType === 'categories') {
       const result = await uploadCategoriesWithCache(supabase, projectId, shopifyUrl, shopifyToken, batchSize);
-      return new Response(JSON.stringify({
-        ...result,
-        shopType: detectedShopType,
-        backoffMultiplier: backoffMultiplier.toFixed(2),
-      }), { 
+      return new Response(JSON.stringify(result), { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
     }
@@ -423,7 +313,6 @@ serve(async (req) => {
         errors: 0,
         message: `No pending ${entityType} to upload`,
         hasMore: false,
-        shopType: detectedShopType,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
@@ -541,8 +430,6 @@ serve(async (req) => {
       errorDetails,
       hasMore: (count || 0) > 0,
       remaining: count || 0,
-      shopType: detectedShopType,
-      backoffMultiplier: backoffMultiplier.toFixed(2),
       ...(entityType === 'orders' ? { timeBudgetMs, elapsedMs: Date.now() - requestStartedAt } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
@@ -551,7 +438,6 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       success: false,
       error: errorMessage,
-      shopType: detectedShopType,
     }), { 
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' } 

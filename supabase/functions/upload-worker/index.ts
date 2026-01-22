@@ -401,51 +401,24 @@ serve(async (req) => {
           ? (itemsAttempted / (elapsed / 60000))
           : 0;
 
-        // Get shop type from shopify-upload response
-        const shopType: string = result.shopType || 'unknown';
-        const backoffMultiplier: number = parseFloat(result.backoffMultiplier) || 1;
-
         console.log(
-          `[WORKER] Batch result: succeeded=${itemsSucceeded} (processed=${result.processed}, skipped=${result.skipped}), failed=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min, shopType=${shopType}, backoff=${backoffMultiplier}x`
+          `[WORKER] Batch result: succeeded=${itemsSucceeded} (processed=${result.processed}, skipped=${result.skipped}), failed=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min`
         );
 
-        // IMPROVED SPEED CALCULATION
-        // When trial store is detected or backoff is high, use actual observed speed immediately
-        // This fixes the issue where UI shows incorrect speed during rate limiting
+        // Simple rolling average speed calculation (70% previous, 30% current batch)
         let itemsPerMinute: number | null = null;
         
-        // Trial stores have strict 5 orders/min limit - use this immediately when detected
-        const isTrialStore = shopType === 'trial';
-        const isThrottled = backoffMultiplier >= 2;
-        
         if (batchItemsPerMinute > 0) {
-          if (isTrialStore && job.entity_type === 'orders') {
-            // Trial store detected - use actual observed speed or cap at 5/min
-            // This immediately reflects reality instead of slow rolling average
-            itemsPerMinute = Math.min(batchItemsPerMinute, 5);
-            console.log(`[WORKER] Trial store orders: capping speed at ${itemsPerMinute.toFixed(1)}/min`);
-          } else if (isThrottled) {
-            // High backoff indicates rate limiting - weight current speed more heavily (50/50)
-            if (job.items_per_minute && job.items_per_minute > 0) {
-              itemsPerMinute = job.items_per_minute * 0.5 + batchItemsPerMinute * 0.5;
-            } else {
-              itemsPerMinute = batchItemsPerMinute;
-            }
-            console.log(`[WORKER] Throttled (backoff=${backoffMultiplier}x): using 50/50 weighted speed`);
+          if (job.items_per_minute && job.items_per_minute > 0) {
+            itemsPerMinute = job.items_per_minute * 0.7 + batchItemsPerMinute * 0.3;
           } else {
-            // Normal operation - use standard rolling average (70% previous, 30% current)
-            if (job.items_per_minute && job.items_per_minute > 0) {
-              itemsPerMinute = job.items_per_minute * 0.7 + batchItemsPerMinute * 0.3;
-            } else {
-              itemsPerMinute = batchItemsPerMinute;
-            }
+            itemsPerMinute = batchItemsPerMinute;
           }
         } else if (job.items_per_minute) {
-          // Keep previous if batch had no items
           itemsPerMinute = job.items_per_minute;
         }
 
-        console.log(`[WORKER] Speed calculation: previous=${job.items_per_minute?.toFixed(1) || 'null'}, batch=${batchItemsPerMinute.toFixed(1)}, new=${itemsPerMinute?.toFixed(1) || 'null'}, shopType=${shopType}`);
+        console.log(`[WORKER] Speed calculation: previous=${job.items_per_minute?.toFixed(1) || 'null'}, batch=${batchItemsPerMinute.toFixed(1)}, new=${itemsPerMinute?.toFixed(1) || 'null'}`);
 
         // Merge error details
         const existingErrors = job.error_details || [];
