@@ -536,7 +536,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   
   const runningJob = jobs.find(j => j.status === 'running');
   const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
-    ? Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000)
+    ? Math.max(0, Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000))
     : 0;
   
   // Detect new rate limit message and start countdown
