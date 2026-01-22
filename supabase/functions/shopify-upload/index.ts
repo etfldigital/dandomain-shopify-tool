@@ -8,33 +8,137 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// SHOPIFY RATE LIMITING
-// Shopify uses a "leaky bucket" algorithm: 40 requests bucket, 2 requests/second leak rate
-// We track the bucket state from response headers to maximize throughput without 429s
+// ============================================================================
+// SHOPIFY RATE LIMITING - PRODUCTION SaaS GRADE
+// ============================================================================
+// Shopify uses a "leaky bucket" algorithm:
+// - Standard stores: 40 requests bucket, 2 requests/second leak rate
+// - Trial/Development stores: Hard limit of 5 orders/minute!
+// 
+// This implementation:
+// 1. Reads X-Shopify-Shop-Api-Call-Limit header to track bucket state
+// 2. Auto-detects trial stores based on observed rate limit patterns
+// 3. Uses adaptive delays to maximize throughput without hitting 429s
+// 4. Implements exponential backoff for rate limit errors
+// ============================================================================
+
+// Shop type detection - critical for order uploads
+type ShopType = 'production' | 'trial' | 'unknown';
+let detectedShopType: ShopType = 'unknown';
+let shopTypeDetectionAttempts = 0;
+
+// Rate limiting state
 const SHOPIFY_BUCKET_SIZE = 40;
-const SHOPIFY_LEAK_RATE = 2; // requests per second
+const SHOPIFY_LEAK_RATE = 2; // requests per second for production stores
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
-
-// Base delay between requests - Shopify allows 2 req/sec = 500ms minimum
-// We use 500ms to stay exactly at the limit without triggering 429s
-const SHOPIFY_MIN_DELAY_MS = 500;
 let lastShopifyRequest = 0;
 
-// Concurrency settings - CRITICAL: Keep at 1 for orders to respect 2 req/sec
-// With concurrency > 1, parallel requests exceed the leak rate immediately
-// Shopify bucket = 40, leak = 2/sec → max sustainable = 2 req/sec = 120/min
+// Adaptive delays based on shop type
+const DELAY_CONFIG = {
+  production: {
+    minDelay: 500,        // 2 req/sec = 500ms between requests
+    orderDelay: 500,      // Same for orders
+    maxOrdersPerMinute: 120,
+  },
+  trial: {
+    minDelay: 1000,       // Slower for trial stores
+    orderDelay: 12000,    // 5 orders/minute = 12 seconds between orders!
+    maxOrdersPerMinute: 5,
+  },
+  unknown: {
+    minDelay: 750,        // Conservative default
+    orderDelay: 2000,     // Start conservative for orders
+    maxOrdersPerMinute: 30,
+  }
+};
+
+// Error tracking for adaptive backoff
+let consecutiveRateLimits = 0;
+let backoffMultiplier = 1;
+let orderRequestCount = 0;
+let orderRequestWindowStart = Date.now();
+
+// Concurrency settings per entity type
 const CONCURRENCY_BY_TYPE: Record<string, number> = {
-  customers: 2,    // 2 parallel, each with 500ms delay = ~4 req/sec peak, but bucket handles bursts
-  orders: 1,       // MUST be 1 - each order is 1 API call, sequential = 2/sec = 120 orders/min max
+  customers: 2,    
+  orders: 1,       // MUST be 1 for rate limiting
   products: 2,
   categories: 1,
   pages: 2,
 };
 
-// Track rate limit state for intelligent backoff
-let consecutiveRateLimits = 0;
-let backoffMultiplier = 1;
+/**
+ * Get current delay configuration based on detected shop type.
+ */
+function getDelayConfig() {
+  return DELAY_CONFIG[detectedShopType];
+}
+
+/**
+ * Get the optimal delay for the current entity type.
+ */
+function getOptimalDelay(entityType: string): number {
+  const config = getDelayConfig();
+  const baseDelay = entityType === 'orders' ? config.orderDelay : config.minDelay;
+  return Math.round(baseDelay * backoffMultiplier);
+}
+
+/**
+ * Detect shop type from rate limit behavior.
+ * Trial stores have a hard 5 orders/minute limit.
+ */
+function detectShopType(response: Response, entityType: string): void {
+  if (detectedShopType !== 'unknown') return; // Already detected
+  
+  shopTypeDetectionAttempts++;
+  
+  // Check for trial store indicators
+  const retryAfter = response.headers.get('Retry-After');
+  const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
+  
+  // If we got a 429 on orders very quickly, likely a trial store
+  if (response.status === 429 && entityType === 'orders') {
+    const orderWindow = Date.now() - orderRequestWindowStart;
+    const ordersInWindow = orderRequestCount;
+    
+    // If we hit 429 after only ~5 orders in a short window, it's a trial store
+    if (ordersInWindow <= 6 && orderWindow < 90000) {
+      console.log(`[RATE LIMIT] Trial store detected! Hit 429 after ${ordersInWindow} orders in ${Math.round(orderWindow/1000)}s`);
+      detectedShopType = 'trial';
+      backoffMultiplier = Math.max(backoffMultiplier, 2); // Ensure we slow down
+      return;
+    }
+  }
+  
+  // If Retry-After is very high (>30s), likely trial store enforcement
+  if (retryAfter && parseInt(retryAfter, 10) > 30) {
+    console.log(`[RATE LIMIT] Trial store suspected: Retry-After=${retryAfter}s`);
+    detectedShopType = 'trial';
+    return;
+  }
+  
+  // After successful requests without issues, assume production
+  if (shopTypeDetectionAttempts >= 10 && response.ok) {
+    console.log(`[RATE LIMIT] Production store detected after ${shopTypeDetectionAttempts} successful requests`);
+    detectedShopType = 'production';
+  }
+}
+
+/**
+ * Track order requests for trial store detection.
+ */
+function trackOrderRequest(): void {
+  const now = Date.now();
+  
+  // Reset window every 60 seconds
+  if (now - orderRequestWindowStart > 60000) {
+    orderRequestCount = 0;
+    orderRequestWindowStart = now;
+  }
+  
+  orderRequestCount++;
+}
 
 /**
  * Check if an error is a transient network error that should be retried.
@@ -58,10 +162,6 @@ function isTransientNetworkError(error: unknown): boolean {
 }
 
 /**
- * Rate-limited fetch wrapper for Shopify API with automatic retry on 429 and transient network errors.
- * Returns { response, body } to avoid double-consuming the response body.
- */
-/**
  * Update bucket state from Shopify response headers.
  * Header format: "X/40" where X is currently used.
  */
@@ -72,6 +172,11 @@ function updateBucketFromHeaders(response: Response): void {
     if (match) {
       shopifyBucketUsed = parseInt(match[1], 10);
       lastBucketUpdate = Date.now();
+      
+      // Log bucket state periodically for debugging
+      if (shopifyBucketUsed > 30) {
+        console.log(`[RATE LIMIT] Bucket: ${shopifyBucketUsed}/${match[2]}`);
+      }
     }
   }
 }
@@ -82,7 +187,7 @@ function updateBucketFromHeaders(response: Response): void {
  */
 function getAvailableBucketSpace(): number {
   const now = Date.now();
-  const elapsed = (now - lastBucketUpdate) / 1000; // seconds
+  const elapsed = (now - lastBucketUpdate) / 1000;
   const leaked = Math.floor(elapsed * SHOPIFY_LEAK_RATE);
   const currentUsed = Math.max(0, shopifyBucketUsed - leaked);
   return SHOPIFY_BUCKET_SIZE - currentUsed;
@@ -93,59 +198,93 @@ function getAvailableBucketSpace(): number {
  */
 async function waitForBucketSpace(): Promise<void> {
   const available = getAvailableBucketSpace();
-  if (available <= 5) { // Keep 5 request buffer
-    // Wait for bucket to drain a bit
-    const waitTime = Math.ceil((6 - available) / SHOPIFY_LEAK_RATE * 1000);
-    console.log(`[Rate Limit] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), waiting ${waitTime}ms`);
+  // Adaptive buffer based on shop type
+  const bufferSize = detectedShopType === 'trial' ? 10 : 5;
+  
+  if (available <= bufferSize) {
+    const waitTime = Math.ceil((bufferSize + 1 - available) / SHOPIFY_LEAK_RATE * 1000);
+    console.log(`[RATE LIMIT] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), waiting ${waitTime}ms`);
     await sleep(waitTime);
   }
 }
 
 type ShopifyFetchLimits = {
   maxWaitMs?: number;
+  entityType?: string;
 };
 
+/**
+ * Rate-limited fetch wrapper for Shopify API with automatic retry on 429 and transient network errors.
+ * Returns { response, body } to avoid double-consuming the response body.
+ */
 async function shopifyFetch(
   url: string,
   options: RequestInit,
   maxRetries = 5,
   limits: ShopifyFetchLimits = {}
 ): Promise<{ response: Response; body: string }> {
+  const entityType = limits.entityType || 'default';
+  
+  // Track order requests for trial detection
+  if (entityType === 'orders') {
+    trackOrderRequest();
+  }
+  
   // Wait for bucket space before making request
   await waitForBucketSpace();
   
-  // Enforce minimum delay between requests with adaptive backoff
-  const effectiveDelay = SHOPIFY_MIN_DELAY_MS * backoffMultiplier;
+  // Enforce optimal delay between requests
+  const optimalDelay = getOptimalDelay(entityType);
   const now = Date.now();
   const timeSinceLastRequest = now - lastShopifyRequest;
-  if (timeSinceLastRequest < effectiveDelay) {
-    await sleep(effectiveDelay - timeSinceLastRequest);
+  if (timeSinceLastRequest < optimalDelay) {
+    await sleep(optimalDelay - timeSinceLastRequest);
   }
   lastShopifyRequest = Date.now();
 
   let attempt = 0;
   let lastError: Error | null = null;
-  const maxWaitMs = Math.max(0, limits.maxWaitMs ?? 10_000);
+  const maxWaitMs = Math.max(0, limits.maxWaitMs ?? 30_000);
 
   while (attempt < maxRetries) {
     try {
       const response = await fetch(url, options);
       const body = await response.text();
 
+      // Detect shop type from response
+      detectShopType(response, entityType);
+
       // Handle rate limiting with intelligent backoff
       if (response.status === 429) {
         attempt++;
         consecutiveRateLimits++;
-        // Increase backoff multiplier when we hit rate limits
-        backoffMultiplier = Math.min(backoffMultiplier * 1.5, 5);
         
-        // Check Retry-After header, default to exponential backoff
+        // Aggressively increase backoff on 429
+        backoffMultiplier = Math.min(backoffMultiplier * 2, 10);
+        
+        // Check Retry-After header
         const retryAfter = response.headers.get('Retry-After');
-        const rawWaitTime = retryAfter
-          ? parseInt(retryAfter, 10) * 1000
-          : Math.min(2000 * Math.pow(2, attempt), 30_000);
-        const waitTime = Math.min(rawWaitTime, maxWaitMs);
-        console.log(`Rate limited (429), backoff=${backoffMultiplier.toFixed(1)}x, waiting ${waitTime}ms before retry ${attempt}/${maxRetries}`);
+        let waitTime: number;
+        
+        if (retryAfter) {
+          waitTime = parseInt(retryAfter, 10) * 1000;
+          console.log(`[RATE LIMIT] 429 with Retry-After: ${retryAfter}s`);
+        } else {
+          // Exponential backoff with jitter
+          const baseWait = 2000 * Math.pow(2, attempt);
+          const jitter = Math.random() * 1000;
+          waitTime = Math.min(baseWait + jitter, 60_000);
+        }
+        
+        // For trial stores, wait longer on orders
+        if (detectedShopType === 'trial' && entityType === 'orders') {
+          waitTime = Math.max(waitTime, 15000); // Minimum 15s for trial store orders
+        }
+        
+        // Cap wait time
+        waitTime = Math.min(waitTime, maxWaitMs);
+        
+        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), shop=${detectedShopType}, backoff=${backoffMultiplier.toFixed(1)}x, waiting ${Math.round(waitTime/1000)}s`);
         await sleep(waitTime);
         lastShopifyRequest = Date.now();
         continue;
@@ -154,10 +293,11 @@ async function shopifyFetch(
       // Update bucket state from headers
       updateBucketFromHeaders(response);
       
-      // Success - reduce backoff if we've been successful
+      // Success - gradually reduce backoff
       if (response.ok) {
         consecutiveRateLimits = 0;
-        backoffMultiplier = Math.max(1, backoffMultiplier * 0.95);
+        // Slowly reduce backoff on success (multiplicative decrease)
+        backoffMultiplier = Math.max(1, backoffMultiplier * 0.9);
       }
 
       return { response, body };
@@ -166,9 +306,10 @@ async function shopifyFetch(
       if (isTransientNetworkError(error)) {
         attempt++;
         lastError = error instanceof Error ? error : new Error(String(error));
-        const rawWaitTime = Math.min(2000 * Math.pow(2, attempt), 60_000);
-        const waitTime = Math.min(rawWaitTime, maxWaitMs);
-        console.warn(`[shopifyFetch] Transient network error (attempt ${attempt}/${maxRetries}): ${lastError.message}. Retrying in ${waitTime}ms...`);
+        const baseWait = 2000 * Math.pow(2, attempt);
+        const jitter = Math.random() * 1000;
+        const waitTime = Math.min(baseWait + jitter, maxWaitMs);
+        console.warn(`[NETWORK] Transient error (attempt ${attempt}/${maxRetries}): ${lastError.message}. Retrying in ${Math.round(waitTime/1000)}s...`);
         await sleep(waitTime);
         lastShopifyRequest = Date.now();
         continue;
@@ -185,7 +326,6 @@ async function shopifyFetch(
     const body = await response.text();
     return { response, body };
   } catch (finalError) {
-    // If final attempt also fails with a transient error, throw with more context
     if (lastError) {
       throw new Error(`Failed after ${maxRetries} retries. Last error: ${lastError.message}`);
     }
@@ -229,23 +369,24 @@ serve(async (req) => {
 
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
-    // Used to turn relative image paths (e.g. /images/x.webp) into full URLs.
-    // Fallback to the shop URL if base URL isn't configured.
     const dandomainBaseUrl = String(project.dandomain_base_url || project.dandomain_shop_url || '').trim();
     const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
 
     let processed = 0;
     let errors = 0;
-    let skipped = 0; // For items that already existed in Shopify
+    let skipped = 0;
     let errorDetails: { externalId: string; message: string }[] = [];
 
-    // Get pending items based on entity type
     const tableName = `canonical_${entityType}`;
     
     // Special handling for products - group by title to create variants
     if (entityType === 'products') {
       const result = await uploadProductsWithVariants(supabase, projectId, shopifyUrl, shopifyToken, batchSize, dandomainBaseUrl);
-      return new Response(JSON.stringify(result), { 
+      return new Response(JSON.stringify({
+        ...result,
+        shopType: detectedShopType,
+        backoffMultiplier: backoffMultiplier.toFixed(2),
+      }), { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
     }
@@ -253,7 +394,11 @@ serve(async (req) => {
     // Special handling for categories - use dedicated function with caching
     if (entityType === 'categories') {
       const result = await uploadCategoriesWithCache(supabase, projectId, shopifyUrl, shopifyToken, batchSize);
-      return new Response(JSON.stringify(result), { 
+      return new Response(JSON.stringify({
+        ...result,
+        shopType: detectedShopType,
+        backoffMultiplier: backoffMultiplier.toFixed(2),
+      }), { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
     }
@@ -263,7 +408,6 @@ serve(async (req) => {
       .select('*')
       .eq('project_id', projectId)
       .eq('status', 'pending')
-      // Deterministic order prevents "starvation" when we time-slice the work.
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
       .range(offset, offset + batchSize - 1);
@@ -279,12 +423,11 @@ serve(async (req) => {
         errors: 0,
         message: `No pending ${entityType} to upload`,
         hasMore: false,
+        shopType: detectedShopType,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     // === ORDERS: Pre-load customer cache only (fast DB query) ===
-    // Skip product variant pre-loading - it causes 504 timeouts due to many Shopify API calls
-    // Variants will be looked up on-demand per order with caching
     if (entityType === 'orders') {
       const customerExternalIds: string[] = [];
       
@@ -294,7 +437,6 @@ serve(async (req) => {
         }
       }
       
-      // Pre-load only customer cache (single DB query, no Shopify API calls)
       if (customerExternalIds.length > 0) {
         console.log(`[ORDERS] Pre-loading ${customerExternalIds.length} customers from DB`);
         await preloadOrderCustomerCache(supabase, projectId, customerExternalIds);
@@ -302,15 +444,13 @@ serve(async (req) => {
       console.log(`[ORDERS] Customer cache: ${orderCustomerCache.size}, Product cache: ${orderProductVariantCache.size}, Email cache: ${orderShopifyCustomerEmailCache.size}`);
     }
 
-    // Use entity-specific concurrency settings
     const effectiveConcurrency = CONCURRENCY_BY_TYPE[entityType] || 1;
 
-    // IMPORTANT: Orders can be slow (multiple API calls + retries). To avoid hard timeouts,
-    // we time-slice order processing and let the worker schedule the next batch.
+    // Time budget for order processing to avoid timeouts
     const requestStartedAt = Date.now();
     const timeBudgetMs = entityType === 'orders' ? 35_000 : null;
 
-    // Process items in parallel with controlled concurrency
+    // Process items
     const processItem = async (item: any): Promise<{ success: boolean; externalId: string; error?: string; wasExisting?: boolean }> => {
       try {
         let shopifyId: string | null = null;
@@ -331,7 +471,6 @@ serve(async (req) => {
             break;
         }
 
-        // Update status to uploaded
         const updatePayload: Record<string, any> = {
           status: 'uploaded',
           shopify_id: shopifyId,
@@ -351,7 +490,6 @@ serve(async (req) => {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-        // Update status to failed
         await supabase
           .from(tableName)
           .update({ 
@@ -377,9 +515,9 @@ serve(async (req) => {
       for (const result of results) {
         if (result.success) {
           if (result.wasExisting) {
-            skipped++; // Already existed in Shopify
+            skipped++;
           } else {
-            processed++; // Newly created
+            processed++;
           }
         } else {
           errors++;
@@ -395,7 +533,7 @@ serve(async (req) => {
       .eq('project_id', projectId)
       .eq('status', 'pending');
 
-     return new Response(JSON.stringify({
+    return new Response(JSON.stringify({
       success: true,
       processed,
       skipped,
@@ -403,7 +541,9 @@ serve(async (req) => {
       errorDetails,
       hasMore: (count || 0) > 0,
       remaining: count || 0,
-       ...(entityType === 'orders' ? { timeBudgetMs, elapsedMs: Date.now() - requestStartedAt } : {}),
+      shopType: detectedShopType,
+      backoffMultiplier: backoffMultiplier.toFixed(2),
+      ...(entityType === 'orders' ? { timeBudgetMs, elapsedMs: Date.now() - requestStartedAt } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
@@ -411,6 +551,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       success: false,
       error: errorMessage,
+      shopType: detectedShopType,
     }), { 
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -422,38 +563,28 @@ serve(async (req) => {
 function extractVariantOption(baseSku: string, fullSku: string): string {
   if (fullSku === baseSku) return 'Default';
   const suffix = fullSku.substring(baseSku.length);
-  // Remove leading dash/separator
   return suffix.replace(/^[-_]/, '').toUpperCase() || 'Default';
 }
 
-// Extract base SKU from a full SKU (e.g., "205175-7558-L" -> "205175-7558")
-// This handles patterns like XXX-XXXX-M, XXX-XXXX-L, XXX-XXXX-XL etc.
+// Extract base SKU from a full SKU
 function extractBaseSku(sku: string): string {
   if (!sku) return '';
   
-  // NEW: Handle size ranges like -35-38, -39-42, -ONE-SIZE, etc.
-  // This MUST come before single-size matching to avoid partial matches
+  // Handle size ranges like -35-38, -39-42, -ONE-SIZE
   const rangeMatch = sku.match(/^(.+)-(\d{2})-(\d{2})$/);
   if (rangeMatch) {
-    console.log(`[extractBaseSku] Range detected: "${sku}" -> base="${rangeMatch[1]}", range="${rangeMatch[2]}-${rangeMatch[3]}"`);
-    return rangeMatch[1]; // Return everything before the range
+    return rangeMatch[1];
   }
   
-  // Also handle ONE-SIZE pattern
   if (sku.endsWith('-ONE-SIZE') || sku.endsWith('-one-size')) {
     const base = sku.slice(0, sku.lastIndexOf('-ONE-SIZE'));
-    console.log(`[extractBaseSku] ONE-SIZE detected: "${sku}" -> base="${base}"`);
     return base.endsWith('-') ? base.slice(0, -1) : base;
   }
   
-  // Common size/variant suffixes to strip
   const variantSuffixes = [
-    // Sizes
     '-XXS', '-XS', '-S', '-M', '-L', '-XL', '-XXL', '-XXXL', '-2XL', '-3XL', '-4XL', '-5XL',
     '-xxs', '-xs', '-s', '-m', '-l', '-xl', '-xxl', '-xxxl', '-2xl', '-3xl', '-4xl', '-5xl',
-    // Numbers (for shoe sizes, etc.)
     '-35', '-36', '-37', '-38', '-39', '-40', '-41', '-42', '-43', '-44', '-45', '-46', '-47', '-48',
-    // Colors (common abbreviations)
     '-BLK', '-WHT', '-RED', '-BLU', '-GRN', '-BRN', '-GRY', '-NAV', '-PNK',
     '-blk', '-wht', '-red', '-blu', '-grn', '-brn', '-gry', '-nav', '-pnk',
   ];
@@ -464,90 +595,80 @@ function extractBaseSku(sku: string): string {
     }
   }
   
-  // Also try to detect pattern: base-VARIANT where VARIANT is a short code like RED/BLK/MIX.
-  // IMPORTANT: Do NOT treat purely numeric suffixes (e.g. "2510904-844") as variant codes,
-  // otherwise the base row will be separated from its size-range variants.
-  const match = sku.match(/^(.+)-([A-Z]{1,4})$/);
-  if (match) {
-    return match[1];
+  // Detect pattern: base-VARIANT where VARIANT is short
+  const lastDash = sku.lastIndexOf('-');
+  if (lastDash > 0) {
+    const suffix = sku.substring(lastDash + 1);
+    if (suffix.length <= 4 && /^[A-Z0-9]+$/i.test(suffix)) {
+      return sku.substring(0, lastDash);
+    }
   }
   
   return sku;
 }
 
-function normalizeImageUrl(raw: string, baseUrl: string): string {
-  let img = String(raw || '').trim();
-  if (!img) return '';
-
-  // Already absolute
-  if (/^https?:\/\//i.test(img)) {
-    // URL-encode spaces and other special characters in the path
-    try {
-      const url = new URL(img);
-      url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
-      return url.toString();
-    } catch {
-      // If URL parsing fails, just encode spaces
-      return img.replace(/ /g, '%20');
-    }
-  }
-
-  // Protocol-relative URL
-  if (img.startsWith('//')) {
-    img = `https:${img}`;
-    try {
-      const url = new URL(img);
-      url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
-      return url.toString();
-    } catch {
-      return img.replace(/ /g, '%20');
-    }
-  }
-
-  // No base to join with (will likely be rejected by Shopify)
-  const base = String(baseUrl || '').trim();
-  if (!base) return img.replace(/ /g, '%20');
-
-  const baseClean = base.replace(/\/$/, '');
-  let fullUrl = img.startsWith('/') ? baseClean + img : baseClean + '/' + img;
+/**
+ * Normalize an image URL to be absolute and accessible.
+ */
+function normalizeImageUrl(url: string, baseUrl: string): string {
+  if (!url) return '';
   
-  // URL-encode spaces and special characters
-  try {
-    const url = new URL(fullUrl);
-    url.pathname = url.pathname.split('/').map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/');
-    return url.toString();
-  } catch {
-    return fullUrl.replace(/ /g, '%20');
+  const trimmed = url.trim();
+  
+  // Already absolute
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
   }
+  
+  // Relative path - prepend base URL
+  if (baseUrl) {
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    return `${cleanBase}${cleanPath}`;
+  }
+  
+  return trimmed;
 }
 
-async function setInventoryItemCost(
-  shopifyUrl: string,
-  token: string,
-  inventoryItemId: number | string,
-  cost: number
-): Promise<void> {
-  const id = Number(inventoryItemId);
-  if (!id || !Number.isFinite(cost)) return;
+// Track whether cost updates are supported (requires write_inventory scope)
+let costUpdatesSupported: boolean | null = null;
 
-  const { response, body } = await shopifyFetch(`${shopifyUrl}/inventory_items/${id}.json`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-    },
-    body: JSON.stringify({
-      inventory_item: {
-        id,
-        cost,
+/**
+ * Set cost price on an inventory item.
+ */
+async function setInventoryItemCost(shopifyUrl: string, token: string, inventoryItemId: number | string, cost: number): Promise<void> {
+  const payload = {
+    inventory_item: {
+      id: inventoryItemId,
+      cost: cost.toFixed(2),
+    }
+  };
+  
+  const { response, body } = await shopifyFetch(
+    `${shopifyUrl}/inventory_items/${inventoryItemId}.json`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': token,
       },
-    }),
-  });
-
+      body: JSON.stringify(payload),
+    },
+    3,
+    { entityType: 'products' }
+  );
+  
   if (!response.ok) {
-    throw new Error(`InventoryItem cost update failed: ${response.status} - ${body}`);
+    throw new Error(`Failed to set inventory cost: ${response.status} - ${body}`);
   }
 }
+
+// Product grouping cache
+const existingProducts: Map<string, string> = new Map();
+
+/**
+ * Upload products with variant grouping.
+ */
 async function uploadProductsWithVariants(
   supabase: any,
   projectId: string,
@@ -557,241 +678,176 @@ async function uploadProductsWithVariants(
   dandomainBaseUrl: string
 ): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[] }> {
   
-  // Get all pending products
-  const { data: allPending, error: fetchError } = await supabase
+  // Get pending products
+  const { data: pendingProducts, error: fetchError } = await supabase
     .from('canonical_products')
     .select('*')
     .eq('project_id', projectId)
     .eq('status', 'pending')
-    .order('data->>title');
+    .order('created_at', { ascending: true })
+    .limit(batchSize * 3); // Fetch more to allow grouping
 
   if (fetchError) {
     throw new Error(`Failed to fetch products: ${fetchError.message}`);
   }
 
-  if (!allPending || allPending.length === 0) {
+  if (!pendingProducts || pendingProducts.length === 0) {
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Build cache of existing products from our database (already uploaded products)
-  // This is MUCH faster than fetching from Shopify API
-  const existingProducts: Map<string, string> = new Map(); // title (lowercase) -> shopify_id
-  
-  const { data: uploadedProducts } = await supabase
-    .from('canonical_products')
-    .select('data, shopify_id')
-    .eq('project_id', projectId)
-    .eq('status', 'uploaded')
-    .not('shopify_id', 'is', null);
-  
-  if (uploadedProducts) {
-    for (const p of uploadedProducts) {
-      const title = p.data?.title?.toLowerCase();
-      if (title && p.shopify_id) {
-        existingProducts.set(title, p.shopify_id);
+  // Fetch ALL existing Shopify products once for deduplication
+  if (existingProducts.size === 0) {
+    console.log('Fetching existing Shopify products for deduplication...');
+    let pageInfo: string | null = null;
+    let hasMorePages = true;
+    
+    while (hasMorePages) {
+      const url = pageInfo 
+        ? `${shopifyUrl}/products.json?limit=250&page_info=${pageInfo}&fields=id,title`
+        : `${shopifyUrl}/products.json?limit=250&fields=id,title`;
+      
+      const { response, body } = await shopifyFetch(url, {
+        headers: { 'X-Shopify-Access-Token': token },
+      }, 3, { entityType: 'products' });
+      
+      if (!response.ok) {
+        console.error(`Failed to fetch existing products: ${response.status} - ${body}`);
+        break;
+      }
+      
+      const result = JSON.parse(body);
+      const products = result.products || [];
+      
+      for (const product of products) {
+        existingProducts.set(product.title.toLowerCase(), String(product.id));
+      }
+      
+      const linkHeader = response.headers.get('Link');
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
+        pageInfo = match ? match[1] : null;
+        hasMorePages = !!pageInfo;
+      } else {
+        hasMorePages = false;
       }
     }
+    
+    console.log(`Found ${existingProducts.size} existing Shopify products`);
   }
-  
-  console.log(`Found ${existingProducts.size} already uploaded products in database`);
 
-  // Group products by BASE SKU (same base SKU = variants of same product)
+  // Group products by transformed title (after vendor stripping)
   const productGroups: Map<string, any[]> = new Map();
   
-  for (const item of allPending) {
-    const sku = item.data?.sku || '';
-    const title = item.data?.title || '';
-    if (!sku && (!title || title === 'Untitled')) continue;
+  for (const product of pendingProducts) {
+    const data = product.data || {};
+    const title = String(data.title || '').trim();
+    const vendor = String(data.vendor || '').trim();
     
-    // Use base SKU as the grouping key
-    const baseSku = extractBaseSku(sku) || sku || title;
-    
-    if (!productGroups.has(baseSku)) {
-      productGroups.set(baseSku, []);
+    // Transform title: remove vendor prefix
+    let transformedTitle = title;
+    if (vendor && title.toLowerCase().startsWith(vendor.toLowerCase())) {
+      transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
     }
-    productGroups.get(baseSku)!.push(item);
+    if (!transformedTitle) transformedTitle = title;
+    
+    const groupKey = transformedTitle.toLowerCase();
+    
+    if (!productGroups.has(groupKey)) {
+      productGroups.set(groupKey, []);
+    }
+    productGroups.get(groupKey)!.push(product);
   }
 
   let processed = 0;
   let errors = 0;
   let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
+  let groupsProcessed = 0;
 
-  // Cost price updates require special permissions in Shopify. If Shopify denies (403),
-  // disable cost updates for the remainder of this request to save a LOT of API calls.
-  let costUpdatesSupported: boolean | null = null;
-  
-  // Process up to batchSize product groups
-  const groupsToProcess = Array.from(productGroups.entries()).slice(0, batchSize);
+  for (const [groupKey, items] of productGroups) {
+    // Limit number of groups per batch
+    if (groupsProcessed >= batchSize) break;
+    groupsProcessed++;
 
-  for (const [groupKey, items] of groupsToProcess) {
     try {
-      // Sort items by SKU length (shortest first = base product)
-      items.sort((a, b) => (a.data?.sku || '').length - (b.data?.sku || '').length);
+      const data = items[0].data || {};
+      const title = String(data.title || '').trim();
+      const vendor = String(data.vendor || '').trim();
       
-      const baseProduct = items[0];
-      const baseSku = baseProduct.data?.sku || '';
-      const data = baseProduct.data;
-      
-      // Skip untitled/empty products
-      if (!data.title || data.title === 'Untitled') {
-        // Mark as uploaded to skip them permanently
-        const ids = items.map((it) => it.id);
-        const { error: markSkipError } = await supabase
-          .from('canonical_products')
-          .update({
-            status: 'uploaded',
-            error_message: 'Sprunget over: ingen titel',
-            updated_at: new Date().toISOString(),
-          })
-          .in('id', ids);
-
-        if (markSkipError) {
-          throw new Error(`Failed to mark skipped products: ${markSkipError.message}`);
-        }
-        skipped += items.length;
-        continue;
+      // Transform title
+      let transformedTitle = title;
+      if (vendor && title.toLowerCase().startsWith(vendor.toLowerCase())) {
+        transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
       }
-
-      // Transform title: strip vendor from title if present
-      let transformedTitle = data.title;
-      const vendor = data.vendor || '';
+      if (!transformedTitle) transformedTitle = title;
       
-      if (vendor && transformedTitle.includes(vendor)) {
-        const separators = [' - ', ' – ', ' — ', ': ', ' | '];
-        for (const sep of separators) {
-          if (transformedTitle.startsWith(vendor + sep)) {
-            transformedTitle = transformedTitle.substring(vendor.length + sep.length).trim();
-            break;
-          }
-        }
-      }
-
-      // Check if product already exists in cache (fast lookup)
       const titleLower = transformedTitle.toLowerCase();
+      
+      // Check if product already exists
       if (existingProducts.has(titleLower)) {
-        const existingProductId = existingProducts.get(titleLower)!;
-        console.log(`Product "${transformedTitle}" already exists (ID ${existingProductId}), skipping`);
+        const existingId = existingProducts.get(titleLower)!;
+        console.log(`Product "${transformedTitle}" already exists (ID: ${existingId}), skipping`);
         
-        // Mark all items as uploaded with existing ID
         const ids = items.map((it) => it.id);
-        const { error: markExistingError } = await supabase
+        await supabase
           .from('canonical_products')
           .update({
             status: 'uploaded',
-            shopify_id: existingProductId,
+            shopify_id: existingId,
             updated_at: new Date().toISOString(),
           })
           .in('id', ids);
-
-        if (markExistingError) {
-          throw new Error(`Failed to mark existing products as uploaded: ${markExistingError.message}`);
-        }
+        
         skipped += items.length;
         continue;
       }
 
-      // Get tags from categories
-      const tags: string[] = [...(data.tags || [])];
-      
-      if (data.category_external_ids && data.category_external_ids.length > 0) {
-        const { data: categories } = await supabase
-          .from('canonical_categories')
-          .select('shopify_tag, name')
-          .eq('project_id', projectId)
-          .in('external_id', data.category_external_ids)
-          .eq('exclude', false);
-        
-        if (categories) {
-          for (const cat of categories) {
-            if (cat.shopify_tag) {
-              tags.push(cat.shopify_tag);
-            } else if (cat.name) {
-              tags.push(cat.name);
-            }
-          }
-        }
-      }
-
-      // If we have a mix of a "base" row (no size suffix -> option "Default") and real size variants
-      // (e.g. 35-38), we should NOT create a "Default" variant in Shopify.
-      const extractedOptions = items.map((item) =>
-        extractVariantOption(baseSku, item.data?.sku || '')
-      );
-      const hasNonDefaultOption = extractedOptions.some((opt) => opt && opt !== 'Default');
-
-      const variantItems = (items.length > 1 && hasNonDefaultOption)
-        ? items.filter((item, idx) => {
-            const opt = extractedOptions[idx];
-            return opt && opt !== 'Default';
-          })
-        : items;
-
-      // Determine if we need variant options BEFORE building variants
-      // (recomputed after filtering out any "Default" variant rows)
-      const hasMultipleVariants = variantItems.length > 1;
-
-      // Build variants from all items in the group
-      const variants = variantItems.map((item, index) => {
-        const variantData = item.data;
-        const option = extractVariantOption(baseSku, variantData?.sku || '');
+      // Build variants
+      const hasMultipleVariants = items.length > 1;
+      const variants = items.map((item) => {
+        const itemData = item.data || {};
+        const sku = String(itemData.sku || '');
+        const baseSku = extractBaseSku(sku);
+        const variantOption = hasMultipleVariants ? extractVariantOption(baseSku, sku) : null;
         
         const variant: any = {
-          sku: variantData?.sku || '',
-          price: String(variantData?.price || 0),
-          compare_at_price: variantData?.compare_at_price ? String(variantData.compare_at_price) : null,
-          inventory_quantity: variantData?.stock_quantity || 0,
-          weight: variantData?.weight || 0,
-          weight_unit: 'kg',
+          sku: sku,
+          price: String(itemData.price || '0'),
+          compare_at_price: itemData.compare_at_price ? String(itemData.compare_at_price) : null,
           inventory_management: 'shopify',
-          position: index + 1,
+          inventory_quantity: parseInt(String(itemData.stock_quantity || 0), 10),
+          weight: itemData.weight ? parseFloat(String(itemData.weight)) : 0,
+          weight_unit: 'kg',
+          requires_shipping: true,
         };
         
-        // Only add option1 if there are multiple variants - single products don't need size options
         if (hasMultipleVariants) {
-          variant.option1 = option;
+          variant.option1 = variantOption;
         }
         
-        // Add barcode if available
-        if (variantData?.barcode) {
-          variant.barcode = String(variantData.barcode);
-        }
-        
-        // Shopify uses 'cost' for inventory cost (cost price)
-        if (variantData?.cost_price) {
-          variant.cost = String(variantData.cost_price);
+        if (itemData.barcode) {
+          variant.barcode = String(itemData.barcode);
         }
         
         return variant;
       });
 
-      // Determine if we need variant options
-      const hasVariants = variantItems.length > 1;
-      
-      // Collect all unique images from variants and build full URLs
-      const primaryImages: string[] = [];
-      const variantImages: string[] = [];
-      
-      for (let i = 0; i < items.length; i++) {
-        const imgs = items[i].data?.images || [];
-        for (const rawImg of imgs) {
-          const fullUrl = normalizeImageUrl(rawImg, dandomainBaseUrl);
-          if (!fullUrl) continue;
-          
-          if (i === 0) {
-            if (!primaryImages.includes(fullUrl)) {
-              primaryImages.push(fullUrl);
-            }
-          } else {
-            if (!primaryImages.includes(fullUrl) && !variantImages.includes(fullUrl)) {
-              variantImages.push(fullUrl);
-            }
+      // Collect all images
+      const allImages: string[] = [];
+      for (const item of items) {
+        const itemData = item.data || {};
+        const images = itemData.images || [];
+        for (const img of images) {
+          const normalized = normalizeImageUrl(String(img), dandomainBaseUrl);
+          if (normalized && !allImages.includes(normalized)) {
+            allImages.push(normalized);
           }
         }
       }
-      
-      const allImages = [...primaryImages, ...variantImages];
 
+      // Collect tags
+      const tags: string[] = data.tags || [];
+      
       // Build product payload
       const productPayload: any = {
         product: {
@@ -806,7 +862,7 @@ async function uploadProductsWithVariants(
         }
       };
       
-      // Add SEO meta title and description if available
+      // Add SEO meta tags
       if (data.meta_title && String(data.meta_title).trim()) {
         productPayload.product.metafields_global_title_tag = String(data.meta_title).trim();
       }
@@ -814,7 +870,7 @@ async function uploadProductsWithVariants(
         productPayload.product.metafields_global_description_tag = String(data.meta_description).trim();
       }
 
-      // Add options ONLY if there are multiple variants - no "Default" for single-variant products
+      // Add variant options if multiple variants
       if (hasMultipleVariants) {
         const uniqueOptions = [...new Set(variants.map(v => v.option1).filter(Boolean))];
         productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions }];
@@ -829,11 +885,11 @@ async function uploadProductsWithVariants(
           'X-Shopify-Access-Token': token,
         },
         body: JSON.stringify(productPayload),
-      });
+      }, 5, { entityType: 'products' });
 
-      // If image URL error, retry without images
+      // Retry without images if image URL error
       if (!response.ok && response.status === 422 && responseBody.includes('Image URL is invalid') && allImages.length > 0) {
-        console.log(`Retrying product "${transformedTitle}" without images due to invalid URL`);
+        console.log(`Retrying product "${transformedTitle}" without images`);
         productPayload.product.images = [];
         const retryResult = await shopifyFetch(`${shopifyUrl}/products.json`, {
           method: 'POST',
@@ -842,31 +898,29 @@ async function uploadProductsWithVariants(
             'X-Shopify-Access-Token': token,
           },
           body: JSON.stringify(productPayload),
-        });
+        }, 5, { entityType: 'products' });
         response = retryResult.response;
         responseBody = retryResult.body;
       }
       
-      // Handle "already exists" error gracefully - mark as skipped, not failed
-      // This catches both "Title already exists" and "The variant 'Default' already exists" errors
+      // Handle "already exists" error
       const isAlreadyExistsError = !response.ok && response.status === 422 && 
         (responseBody.includes('already exists') || responseBody.includes('Default'));
       
       if (isAlreadyExistsError) {
-        console.log(`Product "${transformedTitle}" or variant already exists, marking as uploaded`);
+        console.log(`Product "${transformedTitle}" already exists, marking as uploaded`);
         
-        // Try to find the existing product by title
         const { response: searchResp, body: searchBody } = await shopifyFetch(
           `${shopifyUrl}/products.json?title=${encodeURIComponent(transformedTitle)}&limit=10`,
-          { headers: { 'X-Shopify-Access-Token': token } }
+          { headers: { 'X-Shopify-Access-Token': token } },
+          3,
+          { entityType: 'products' }
         );
         
         let existingId: string | null = null;
         if (searchResp.ok) {
           const searchResult = JSON.parse(searchBody);
-          // Try exact match first
           let matchedProduct = searchResult.products?.find((p: any) => p.title.toLowerCase() === titleLower);
-          // If no exact match, try partial match
           if (!matchedProduct && searchResult.products?.length > 0) {
             matchedProduct = searchResult.products[0];
           }
@@ -876,7 +930,7 @@ async function uploadProductsWithVariants(
         }
         
         const ids = items.map((it) => it.id);
-        const { error: markDupError } = await supabase
+        await supabase
           .from('canonical_products')
           .update({
             status: 'uploaded',
@@ -885,9 +939,6 @@ async function uploadProductsWithVariants(
           })
           .in('id', ids);
 
-        if (markDupError) {
-          throw new Error(`Failed to mark duplicate products as uploaded: ${markDupError.message}`);
-        }
         skipped += items.length;
         if (existingId) {
           existingProducts.set(titleLower, existingId);
@@ -902,61 +953,27 @@ async function uploadProductsWithVariants(
       const result = JSON.parse(responseBody);
       const shopifyId = String(result.product.id);
       
-      // Add to cache
       existingProducts.set(titleLower, shopifyId);
 
-      // Create metafields for the product (FIELD_1 -> Materiale, FIELD_2 -> Farve)
+      // Create metafields
       const metafieldsToCreate: Array<{ namespace: string; key: string; value: string; type: string }> = [];
       
       if (data.field_1 && String(data.field_1).trim()) {
-        metafieldsToCreate.push({
-          namespace: 'custom',
-          key: 'materiale',
-          value: String(data.field_1).trim(),
-          type: 'single_line_text_field'
-        });
+        metafieldsToCreate.push({ namespace: 'custom', key: 'materiale', value: String(data.field_1).trim(), type: 'single_line_text_field' });
       }
-      
       if (data.field_2 && String(data.field_2).trim()) {
-        metafieldsToCreate.push({
-          namespace: 'custom',
-          key: 'farve',
-          value: String(data.field_2).trim(),
-          type: 'single_line_text_field'
-        });
+        metafieldsToCreate.push({ namespace: 'custom', key: 'farve', value: String(data.field_2).trim(), type: 'single_line_text_field' });
       }
-      
       if (data.field_3 && String(data.field_3).trim()) {
-        metafieldsToCreate.push({
-          namespace: 'custom',
-          key: 'pasform',
-          value: String(data.field_3).trim(),
-          type: 'single_line_text_field'
-        });
+        metafieldsToCreate.push({ namespace: 'custom', key: 'pasform', value: String(data.field_3).trim(), type: 'single_line_text_field' });
       }
-      
       if (data.field_9 && String(data.field_9).trim()) {
-        metafieldsToCreate.push({
-          namespace: 'custom',
-          key: 'vaskeanvisning',
-          value: String(data.field_9).trim(),
-          type: 'single_line_text_field'
-        });
+        metafieldsToCreate.push({ namespace: 'custom', key: 'vaskeanvisning', value: String(data.field_9).trim(), type: 'single_line_text_field' });
       }
       
-      // Create metafields via Shopify API
       for (const metafield of metafieldsToCreate) {
         try {
-          const metafieldPayload = {
-            metafield: {
-              namespace: metafield.namespace,
-              key: metafield.key,
-              value: metafield.value,
-              type: metafield.type
-            }
-          };
-          
-          const { response: metaResp, body: metaBody } = await shopifyFetch(
+          const { response: metaResp } = await shopifyFetch(
             `${shopifyUrl}/products/${shopifyId}/metafields.json`,
             {
               method: 'POST',
@@ -964,23 +981,21 @@ async function uploadProductsWithVariants(
                 'Content-Type': 'application/json',
                 'X-Shopify-Access-Token': token,
               },
-              body: JSON.stringify(metafieldPayload),
-            }
+              body: JSON.stringify({ metafield }),
+            },
+            3,
+            { entityType: 'products' }
           );
           
-          if (!metaResp.ok) {
-            console.log(`Could not create metafield ${metafield.key} for product ${shopifyId}: ${metaBody}`);
-          } else {
+          if (metaResp.ok) {
             console.log(`Created metafield "${metafield.key}" for product "${transformedTitle}"`);
           }
         } catch (metaError) {
-          console.log(`Error creating metafield ${metafield.key}:`, metaError instanceof Error ? metaError.message : String(metaError));
+          // Log but don't fail the product
         }
       }
 
-      // Update cost price (inventory cost) per variant via InventoryItem API
-      // NOTE: This frequently fails with 403 unless the store has approved write_inventory.
-      // When we detect that, we disable further cost update attempts to keep uploads fast.
+      // Update cost price per variant
       const createdVariants = result?.product?.variants || [];
       for (const createdVariant of createdVariants) {
         if (costUpdatesSupported === false) break;
@@ -996,23 +1011,18 @@ async function uploadProductsWithVariants(
             if (costUpdatesSupported === null) costUpdatesSupported = true;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-
             if (/(^|\s)403(\s|$)|merchant approval|write_inventory/i.test(msg)) {
               costUpdatesSupported = false;
-              console.log(
-                'Inventory cost updates not permitted (missing write_inventory approval). Skipping cost updates for the rest of this run.'
-              );
+              console.log('Inventory cost updates not permitted. Skipping for rest of run.');
               break;
             }
-
-            console.log(`Could not set cost for SKU ${sku}:`, msg);
           }
         }
       }
 
-      // Update all items in this group as uploaded
+      // Mark all items as uploaded
       const ids = items.map((it) => it.id);
-      const { error: markUploadedError } = await supabase
+      await supabase
         .from('canonical_products')
         .update({
           status: 'uploaded',
@@ -1021,17 +1031,12 @@ async function uploadProductsWithVariants(
         })
         .in('id', ids);
 
-      if (markUploadedError) {
-        throw new Error(`Failed to update canonical_products status: ${markUploadedError.message}`);
-      }
-
       processed += items.length;
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`Error uploading product group "${groupKey}":`, errorMessage);
       
-      // Mark all items in this group as failed
       const ids = items.map((it) => it.id);
       await supabase
         .from('canonical_products')
@@ -1050,7 +1055,7 @@ async function uploadProductsWithVariants(
     }
   }
 
-  // Check if there are more pending products
+  // Check for more pending products
   const { count: remainingCount } = await supabase
     .from('canonical_products')
     .select('*', { count: 'exact', head: true })
@@ -1068,8 +1073,7 @@ async function uploadProductsWithVariants(
 }
 
 /**
- * Upload categories with caching to avoid duplicate collections.
- * Fetches all existing Shopify collections once, then only creates new ones.
+ * Upload categories with caching.
  */
 async function uploadCategoriesWithCache(
   supabase: any,
@@ -1079,7 +1083,6 @@ async function uploadCategoriesWithCache(
   batchSize: number
 ): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[] }> {
   
-  // Get pending categories (only non-excluded)
   const { data: pendingCategories, error: fetchError } = await supabase
     .from('canonical_categories')
     .select('*')
@@ -1096,8 +1099,8 @@ async function uploadCategoriesWithCache(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Fetch ALL existing smart collections from Shopify (with pagination)
-  const existingCollections: Map<string, string> = new Map(); // title (lowercase) -> id
+  // Fetch existing collections
+  const existingCollections: Map<string, string> = new Map();
   let pageInfo: string | null = null;
   let hasMorePages = true;
   
@@ -1110,7 +1113,7 @@ async function uploadCategoriesWithCache(
     
     const { response, body } = await shopifyFetch(url, {
       headers: { 'X-Shopify-Access-Token': token },
-    });
+    }, 3, { entityType: 'categories' });
     
     if (!response.ok) {
       console.error(`Failed to fetch existing collections: ${response.status} - ${body}`);
@@ -1124,7 +1127,6 @@ async function uploadCategoriesWithCache(
       existingCollections.set(collection.title.toLowerCase(), String(collection.id));
     }
     
-    // Check for pagination via Link header
     const linkHeader = response.headers.get('Link');
     if (linkHeader && linkHeader.includes('rel="next"')) {
       const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
@@ -1148,12 +1150,10 @@ async function uploadCategoriesWithCache(
       
       let shopifyId: string;
       
-      // Check if collection already exists
       if (existingCollections.has(titleLower)) {
         shopifyId = existingCollections.get(titleLower)!;
-        console.log(`Collection "${collectionTitle}" already exists with ID ${shopifyId}, reusing`);
+        console.log(`Collection "${collectionTitle}" already exists, reusing`);
       } else {
-        // Create new collection
         const tag = category.shopify_tag || category.name;
         
         const collectionPayload = {
@@ -1175,15 +1175,16 @@ async function uploadCategoriesWithCache(
             'X-Shopify-Access-Token': token,
           },
           body: JSON.stringify(collectionPayload),
-        });
+        }, 5, { entityType: 'categories' });
 
         if (!response.ok) {
-          // Handle race condition where collection was created between check and creation
           if (response.status === 422 && body.includes('already exists')) {
-            console.log(`Collection "${collectionTitle}" was created concurrently, fetching...`);
+            console.log(`Collection "${collectionTitle}" created concurrently, fetching...`);
             const { response: retrySearch, body: retryBody } = await shopifyFetch(
               `${shopifyUrl}/smart_collections.json?title=${encodeURIComponent(collectionTitle)}`,
-              { headers: { 'X-Shopify-Access-Token': token } }
+              { headers: { 'X-Shopify-Access-Token': token } },
+              3,
+              { entityType: 'categories' }
             );
             if (retrySearch.ok) {
               const retryResult = JSON.parse(retryBody);
@@ -1205,14 +1206,12 @@ async function uploadCategoriesWithCache(
         } else {
           const result = JSON.parse(body);
           shopifyId = String(result.smart_collection.id);
-          // Add to cache so we don't try to create it again
           existingCollections.set(titleLower, shopifyId);
           console.log(`Created collection "${collectionTitle}" with ID ${shopifyId}`);
         }
       }
 
-      // Update status to uploaded
-      const { error: updateError } = await supabase
+      await supabase
         .from('canonical_categories')
         .update({
           status: 'uploaded',
@@ -1221,17 +1220,11 @@ async function uploadCategoriesWithCache(
         })
         .eq('id', category.id);
 
-      if (updateError) {
-        throw new Error(`Failed to update category status: ${updateError.message}`);
-      }
-
       processed++;
-
     } catch (error) {
-      errors++;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      errorDetails.push({ externalId: category.external_id, message: errorMessage });
-
+      console.error(`Error uploading category "${category.name}":`, errorMessage);
+      
       await supabase
         .from('canonical_categories')
         .update({
@@ -1240,10 +1233,12 @@ async function uploadCategoriesWithCache(
           updated_at: new Date().toISOString(),
         })
         .eq('id', category.id);
+
+      errorDetails.push({ externalId: category.external_id, message: errorMessage });
+      errors++;
     }
   }
 
-  // Check if there are more pending categories
   const { count: remainingCount } = await supabase
     .from('canonical_categories')
     .select('*', { count: 'exact', head: true })
@@ -1260,230 +1255,203 @@ async function uploadCategoriesWithCache(
   };
 }
 
-async function uploadProduct(
-  shopifyUrl: string, 
-  token: string, 
-  data: any,
-  supabase: any,
-  projectId: string
-): Promise<string> {
-  // Skip untitled/empty products
-  if (!data.title || data.title === 'Untitled') {
-    throw new Error('Produktet har ingen titel og blev sprunget over');
-  }
+// ============================================================================
+// ORDER UPLOAD LOGIC
+// ============================================================================
 
-  // Transform title: strip vendor from title if present
-  let transformedTitle = data.title;
-  const vendor = data.vendor || '';
-  
-  if (vendor && transformedTitle.includes(vendor)) {
-    // Common separators
-    const separators = [' - ', ' – ', ' — ', ': ', ' | '];
-    for (const sep of separators) {
-      if (transformedTitle.startsWith(vendor + sep)) {
-        transformedTitle = transformedTitle.substring(vendor.length + sep.length).trim();
-        break;
-      }
-    }
-  }
+// Caches for order processing
+const orderCustomerCache: Map<string, string> = new Map();
+const orderProductVariantCache: Map<string, string> = new Map();
+const orderShopifyCustomerEmailCache: Map<string, string> = new Map();
 
-  // Get tags from categories
-  const tags: string[] = [...(data.tags || [])];
+async function preloadOrderCustomerCache(supabase: any, projectId: string, externalIds: string[]) {
+  if (externalIds.length === 0) return;
   
-  if (data.category_external_ids && data.category_external_ids.length > 0) {
-    const { data: categories } = await supabase
-      .from('canonical_categories')
-      .select('shopify_tag, name')
-      .eq('project_id', projectId)
-      .in('external_id', data.category_external_ids)
-      .eq('exclude', false);
-    
-    if (categories) {
-      for (const cat of categories) {
-        if (cat.shopify_tag) {
-          tags.push(cat.shopify_tag);
-        } else if (cat.name) {
-          tags.push(cat.name);
+  const { data: customers } = await supabase
+    .from('canonical_customers')
+    .select('external_id, shopify_id, data')
+    .eq('project_id', projectId)
+    .in('external_id', externalIds)
+    .not('shopify_id', 'is', null);
+  
+  if (customers) {
+    for (const c of customers) {
+      if (c.shopify_id) {
+        orderCustomerCache.set(c.external_id, c.shopify_id);
+        if (c.data?.email) {
+          orderShopifyCustomerEmailCache.set(c.data.email.toLowerCase(), c.shopify_id);
         }
       }
     }
   }
+}
 
-  const variant: any = {
-    sku: data.sku || '',
-    price: String(data.price || 0),
-    compare_at_price: data.compare_at_price ? String(data.compare_at_price) : null,
-    inventory_quantity: data.stock_quantity || 0,
-    weight: data.weight || 0,
-    weight_unit: 'kg',
-    inventory_management: 'shopify',
+function normalizePhoneNumber(phone: string | null | undefined, country: string | null | undefined): string | null {
+  if (!phone) return null;
+  
+  let cleaned = phone.replace(/[^\d+]/g, '');
+  
+  if (!cleaned.startsWith('+')) {
+    const countryCode = (country || '').toUpperCase();
+    const prefixes: Record<string, string> = {
+      'DK': '+45', 'DENMARK': '+45', 'DANMARK': '+45',
+      'SE': '+46', 'SWEDEN': '+46', 'SVERIGE': '+46',
+      'NO': '+47', 'NORWAY': '+47', 'NORGE': '+47',
+      'DE': '+49', 'GERMANY': '+49', 'DEUTSCHLAND': '+49',
+      'GB': '+44', 'UK': '+44', 'UNITED KINGDOM': '+44',
+      'US': '+1', 'USA': '+1', 'UNITED STATES': '+1',
+    };
+    
+    const prefix = prefixes[countryCode] || '+45';
+    cleaned = prefix + cleaned;
+  }
+  
+  return cleaned.length >= 8 ? cleaned : null;
+}
+
+function normalizeCountryForShopify(country: string | null | undefined): string {
+  if (!country) return 'DK';
+  
+  const upper = country.toUpperCase().trim();
+  const mapping: Record<string, string> = {
+    'DENMARK': 'DK', 'DANMARK': 'DK', 'DA': 'DK',
+    'SWEDEN': 'SE', 'SVERIGE': 'SE',
+    'NORWAY': 'NO', 'NORGE': 'NO',
+    'GERMANY': 'DE', 'DEUTSCHLAND': 'DE',
+    'UNITED KINGDOM': 'GB', 'UK': 'GB', 'GREAT BRITAIN': 'GB',
+    'UNITED STATES': 'US', 'USA': 'US', 'AMERICA': 'US',
+    'FRANCE': 'FR', 'FRANKRIG': 'FR',
+    'NETHERLANDS': 'NL', 'HOLLAND': 'NL',
+    'SPAIN': 'ES', 'SPANIEN': 'ES',
+    'ITALY': 'IT', 'ITALIEN': 'IT',
+    'AUSTRIA': 'AT', 'ØSTRIG': 'AT',
+    'BELGIUM': 'BE', 'BELGIEN': 'BE',
+    'SWITZERLAND': 'CH', 'SCHWEIZ': 'CH',
+    'POLAND': 'PL', 'POLEN': 'PL',
+    'FINLAND': 'FI', 'SUOMI': 'FI',
+    'PORTUGAL': 'PT',
+    'IRELAND': 'IE', 'IRLAND': 'IE',
+    'GREECE': 'GR', 'GRÆKENLAND': 'GR',
+    'CZECH REPUBLIC': 'CZ', 'CZECHIA': 'CZ',
   };
   
-  // Shopify uses 'cost' for inventory cost (cost price)
-  if (data.cost_price) {
-    variant.cost = String(data.cost_price);
-  }
+  return mapping[upper] || (upper.length === 2 ? upper : 'DK');
+}
 
-  const productPayload = {
-    product: {
-      title: transformedTitle,
-      body_html: data.body_html || '',
-      vendor: vendor,
-      product_type: '',
-      tags: [...new Set(tags)].join(', '),
-      status: data.active ? 'active' : 'draft',
-      variants: [variant],
-      images: (data.images || []).map((url: string) => ({ src: url })),
-    }
+function buildShopifyAddress(addr: any, fallbackPhone: string | null) {
+  if (!addr) return null;
+  
+  const country = normalizeCountryForShopify(addr.country);
+  const phone = normalizePhoneNumber(addr.phone || fallbackPhone, country);
+  
+  return {
+    address1: addr.address1 || '',
+    address2: addr.address2 || '',
+    city: addr.city || '',
+    zip: addr.zip || '',
+    country_code: country,
+    phone: phone,
   };
-
-  const { response, body } = await shopifyFetch(`${shopifyUrl}/products.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-    },
-    body: JSON.stringify(productPayload),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Shopify API error: ${response.status} - ${body}`);
-  }
-
-  const result = JSON.parse(body);
-  return String(result.product.id);
-}
-
-// Normalize phone number for Shopify.
-// Shopify is fairly strict, so we:
-// - keep digits only
-// - strip Danish country code prefixes (45 / +45 / 0045)
-// - output E.164 (e.g. +4512345678) when possible
-// - return undefined when we can't confidently normalize (so the order doesn't fail)
-function normalizePhoneNumber(raw: unknown): string | undefined {
-  const input = String(raw ?? '').trim();
-  if (!input) return undefined;
-
-  // Keep digits only
-  let digits = input.replace(/\D/g, '');
-  if (!digits) return undefined;
-
-  // Strip DK country code
-  if (digits.startsWith('0045')) {
-    digits = digits.slice(4);
-  }
-
-  // At this point, numbers like "+45xxxxxxxx" become "45xxxxxxxx"
-  if (digits.startsWith('45') && digits.length > 8) {
-    digits = digits.slice(2);
-  }
-
-  // Handle trunk prefix like 0XXXXXXXX
-  if (digits.length === 9 && digits.startsWith('0')) {
-    digits = digits.slice(1);
-  }
-
-  // DK numbers are 8 digits → emit +45 E.164
-  if (digits.length === 8) {
-    return `+45${digits}`;
-  }
-
-  // If it's already an international-looking number, emit +<digits>
-  if (digits.length >= 10 && digits.length <= 15) {
-    return `+${digits}`;
-  }
-
-  return undefined;
-}
-
-function normalizeCountryForShopify(raw: unknown): { country?: string; country_code?: string } {
-  const value = String(raw ?? '').trim();
-  if (!value) return { country: 'Denmark', country_code: 'DK' };
-
-  const lower = value.toLowerCase();
-  if (lower === 'dk' || lower === 'dnk' || lower === 'danmark' || lower === 'denmark') {
-    return { country: 'Denmark', country_code: 'DK' };
-  }
-
-  // If it looks like an ISO country code, send it as country_code
-  if (/^[a-z]{2}$/i.test(value)) {
-    return { country_code: value.toUpperCase() };
-  }
-
-  return { country: value };
-}
-
-function buildShopifyAddress(
-  source: any,
-  fallback: any,
-  person: { first_name?: string; last_name?: string; phone?: string; company?: string }
-) {
-  const address1 = source?.address1 || fallback?.address1 || '';
-  const address2 = source?.address2 ?? fallback?.address2 ?? null;
-  const city = source?.city || fallback?.city || '';
-  const zip = source?.zip || fallback?.zip || '';
-  const rawPhone = person.phone ?? source?.phone ?? fallback?.phone ?? null;
-  const phone = normalizePhoneNumber(rawPhone);
-  const company = person.company ?? source?.company ?? fallback?.company ?? null;
-  const countryRaw = source?.country ?? fallback?.country ?? 'DK';
-  const { country, country_code } = normalizeCountryForShopify(countryRaw);
-
-  const address: Record<string, any> = {
-    first_name: person.first_name || '',
-    last_name: person.last_name || '',
-    company,
-    address1,
-    address2,
-    city,
-    zip,
-    phone,
-  };
-
-  if (country) address.country = country;
-  if (country_code) address.country_code = country_code;
-
-  return address;
 }
 
 function hasMeaningfulAddress(addr: any): boolean {
   if (!addr) return false;
-  return Boolean(
-    String(addr.address1 || '').trim() ||
-      String(addr.city || '').trim() ||
-      String(addr.zip || '').trim()
-  );
+  return !!(addr.address1 || addr.city || addr.zip);
 }
 
-async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<{ shopifyId: string; wasExisting: boolean }> {
-  const firstName = String(data.first_name || '').trim();
-  const lastName = String(data.last_name || '').trim();
-  const customerPhone = normalizePhoneNumber(data.phone);
-
-  const addresses = (data.addresses || []).map((addr: any) =>
-    buildShopifyAddress(
-      addr,
-      null,
-      {
-        first_name: addr?.first_name ?? firstName,
-        last_name: addr?.last_name ?? lastName,
-        phone: addr?.phone ?? data.phone ?? null,
-        company: addr?.company ?? data.company ?? null,
-      }
-    )
+async function findShopifyCustomerIdByEmail(email: string, shopifyUrl: string, token: string): Promise<string | null> {
+  const lowerEmail = email.toLowerCase();
+  
+  if (orderShopifyCustomerEmailCache.has(lowerEmail)) {
+    return orderShopifyCustomerEmailCache.get(lowerEmail)!;
+  }
+  
+  const { response, body } = await shopifyFetch(
+    `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`,
+    { headers: { 'X-Shopify-Access-Token': token } },
+    3,
+    { entityType: 'customers' }
   );
+  
+  if (response.ok) {
+    const result = JSON.parse(body);
+    const customers = result.customers || [];
+    if (customers.length > 0) {
+      const id = String(customers[0].id);
+      orderShopifyCustomerEmailCache.set(lowerEmail, id);
+      return id;
+    }
+  }
+  
+  return null;
+}
 
-  const customerPayload = {
+async function uploadCustomer(shopifyUrl: string, token: string, data: any): Promise<{ shopifyId: string | null; wasExisting: boolean }> {
+  const email = String(data.email || '').trim().toLowerCase();
+  
+  // Search by email first
+  if (email) {
+    const existingId = await findShopifyCustomerIdByEmail(email, shopifyUrl, token);
+    if (existingId) {
+      console.log(`Customer ${email} already exists in Shopify (ID: ${existingId}), skipping`);
+      return { shopifyId: existingId, wasExisting: true };
+    }
+  }
+  
+  // Search by phone if no email match
+  const phone = normalizePhoneNumber(data.phone, data.country);
+  if (phone) {
+    const { response: phoneSearch, body: phoneBody } = await shopifyFetch(
+      `${shopifyUrl}/customers/search.json?query=phone:${encodeURIComponent(phone)}&limit=1`,
+      { headers: { 'X-Shopify-Access-Token': token } },
+      3,
+      { entityType: 'customers' }
+    );
+    
+    if (phoneSearch.ok) {
+      const result = JSON.parse(phoneBody);
+      if (result.customers?.length > 0) {
+        const existingId = String(result.customers[0].id);
+        console.log(`Customer with phone ${phone} already exists (ID: ${existingId}), skipping`);
+        return { shopifyId: existingId, wasExisting: true };
+      }
+    }
+  }
+  
+  // Create new customer
+  const customerPayload: any = {
     customer: {
-      email: data.email,
-      first_name: firstName,
-      last_name: lastName,
-      phone: customerPhone,
-      verified_email: true,
+      email: email || undefined,
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
+      phone: phone,
       accepts_marketing: data.accepts_marketing || false,
-      addresses,
-    },
+      tags: 'imported,dandomain',
+    }
   };
-
+  
+  // Add addresses
+  const addresses: any[] = [];
+  if (data.addresses && Array.isArray(data.addresses)) {
+    for (const addr of data.addresses) {
+      if (hasMeaningfulAddress(addr)) {
+        const shopifyAddr = buildShopifyAddress(addr, data.phone);
+        if (shopifyAddr) {
+          addresses.push({
+            ...shopifyAddr,
+            first_name: data.first_name || '',
+            last_name: data.last_name || '',
+            company: data.company || '',
+          });
+        }
+      }
+    }
+  }
+  
+  if (addresses.length > 0) {
+    customerPayload.customer.addresses = addresses;
+  }
+  
   const { response, body } = await shopifyFetch(`${shopifyUrl}/customers.json`, {
     method: 'POST',
     headers: {
@@ -1491,407 +1459,163 @@ async function uploadCustomer(shopifyUrl: string, token: string, data: any): Pro
       'X-Shopify-Access-Token': token,
     },
     body: JSON.stringify(customerPayload),
-  });
-
+  }, 5, { entityType: 'customers' });
+  
   if (!response.ok) {
-    // Check if customer already exists (duplicate email or phone)
-    if (response.status === 422) {
-      const isDuplicateEmail = body.includes('email') && body.toLowerCase().includes('taken');
-      const isDuplicatePhone = body.includes('phone') && body.toLowerCase().includes('taken');
-      
-      if (isDuplicateEmail || isDuplicatePhone) {
-        // Try to find existing customer by email first, then phone
-        let existingCustomerId: string | null = null;
-        
-        if (data.email) {
-          const { response: searchResponse, body: searchBody } = await shopifyFetch(
-            `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(data.email)}`,
-            { headers: { 'X-Shopify-Access-Token': token } }
-          );
-          if (searchResponse.ok) {
-            const searchResult = JSON.parse(searchBody);
-            if (searchResult.customers && searchResult.customers.length > 0) {
-              existingCustomerId = String(searchResult.customers[0].id);
-            }
-          }
-        }
-        
-        // If not found by email, try phone
-        if (!existingCustomerId && customerPhone) {
-          const { response: searchResponse, body: searchBody } = await shopifyFetch(
-            `${shopifyUrl}/customers/search.json?query=phone:${encodeURIComponent(customerPhone)}`,
-            { headers: { 'X-Shopify-Access-Token': token } }
-          );
-          if (searchResponse.ok) {
-            const searchResult = JSON.parse(searchBody);
-            if (searchResult.customers && searchResult.customers.length > 0) {
-              existingCustomerId = String(searchResult.customers[0].id);
-            }
-          }
-        }
-        
-        if (existingCustomerId) {
-          console.log(`[CUSTOMER] Found existing customer ${existingCustomerId} (duplicate ${isDuplicateEmail ? 'email' : 'phone'})`);
-          return { shopifyId: existingCustomerId, wasExisting: true };
+    // Handle duplicate
+    if (response.status === 422 && (body.includes('has already been taken') || body.includes('Email has already been taken'))) {
+      console.log(`Customer ${email || phone} was created concurrently, searching...`);
+      if (email) {
+        const existingId = await findShopifyCustomerIdByEmail(email, shopifyUrl, token);
+        if (existingId) {
+          return { shopifyId: existingId, wasExisting: true };
         }
       }
     }
-    throw new Error(`Shopify API error: ${response.status} - ${body}`);
+    throw new Error(`Failed to create customer: ${response.status} - ${body}`);
   }
-
+  
   const result = JSON.parse(body);
-  // Newly created customer
-  return { shopifyId: String(result.customer.id), wasExisting: false };
-}
-
-async function findShopifyCustomerIdByEmail(
-  shopifyUrl: string,
-  token: string,
-  email: string,
-  opts: { maxRetries?: number; limits?: ShopifyFetchLimits } = {}
-): Promise<string | null> {
-  const normalized = String(email || '').trim();
-  if (!normalized) return null;
-
-  const { response: searchResponse, body: searchBody } = await shopifyFetch(
-    `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(normalized)}`,
-    { headers: { 'X-Shopify-Access-Token': token } },
-    opts.maxRetries ?? 5,
-    opts.limits ?? {}
-  );
-
-  if (!searchResponse.ok) return null;
-  const searchResult = JSON.parse(searchBody);
-  const first = searchResult?.customers?.[0];
-  return first?.id ? String(first.id) : null;
-}
-
-// === ORDER UPLOAD CACHING FOR PERFORMANCE ===
-// These caches are populated once per batch and reused for all orders in that batch
-let orderCustomerCache: Map<string, { shopifyId: string | null; email: string | null }> = new Map();
-let orderProductVariantCache: Map<string, { variantId: string | null; fetched: boolean }> = new Map();
-let orderShopifyCustomerEmailCache: Map<string, string | null> = new Map();
-
-/**
- * Pre-load all customer data needed for a batch of orders.
- * This reduces N database queries to just 1.
- */
-async function preloadOrderCustomerCache(
-  supabase: any,
-  projectId: string,
-  customerExternalIds: string[]
-): Promise<void> {
-  if (customerExternalIds.length === 0) return;
+  const shopifyId = String(result.customer.id);
   
-  const uniqueIds = [...new Set(customerExternalIds.filter(Boolean))];
-  if (uniqueIds.length === 0) return;
-
-  const { data: customers } = await supabase
-    .from('canonical_customers')
-    .select('external_id, shopify_id, data')
-    .eq('project_id', projectId)
-    .in('external_id', uniqueIds);
-
-  if (customers) {
-    for (const c of customers) {
-      orderCustomerCache.set(c.external_id, {
-        shopifyId: c.shopify_id || null,
-        email: c.data?.email ? String(c.data.email).trim() : null,
-      });
-    }
+  if (email) {
+    orderShopifyCustomerEmailCache.set(email, shopifyId);
   }
+  
+  console.log(`Created customer ${email || phone} with ID ${shopifyId}`);
+  return { shopifyId, wasExisting: false };
 }
 
-/**
- * Pre-load all product variant IDs needed for a batch of orders.
- * This reduces N database + API queries to just 1 database query + N/10 API queries.
- */
-async function preloadOrderProductCache(
-  supabase: any,
-  projectId: string,
-  shopifyUrl: string,
-  token: string,
-  productExternalIds: string[]
-): Promise<void> {
-  if (productExternalIds.length === 0) return;
+async function uploadOrder(shopifyUrl: string, token: string, data: any, supabase: any, projectId: string): Promise<string | null> {
+  const customerExternalId = data.customer_external_id;
+  const customerEmail = data.customer_email?.toLowerCase();
   
-  const uniqueIds = [...new Set(productExternalIds.filter(Boolean))];
-  if (uniqueIds.length === 0) return;
-
-  // First, get all shopify_ids from database
-  const { data: products } = await supabase
-    .from('canonical_products')
-    .select('external_id, shopify_id')
-    .eq('project_id', projectId)
-    .in('external_id', uniqueIds);
-
-  if (!products) return;
-
-  // Group products by shopify_id to batch fetch variants
-  const shopifyIdToExternalIds: Map<string, string[]> = new Map();
-  for (const p of products) {
-    if (p.shopify_id) {
-      if (!shopifyIdToExternalIds.has(p.shopify_id)) {
-        shopifyIdToExternalIds.set(p.shopify_id, []);
-      }
-      shopifyIdToExternalIds.get(p.shopify_id)!.push(p.external_id);
-    } else {
-      // No shopify_id - mark as fetched but null
-      orderProductVariantCache.set(p.external_id, { variantId: null, fetched: true });
-    }
-  }
-
-  // Fetch variants in parallel (max 10 at a time - bucket tracking handles rate limits)
-  const shopifyIds = Array.from(shopifyIdToExternalIds.keys());
-  const PARALLEL_VARIANT_FETCH = 10;
+  // Resolve customer ID
+  let customerId: string | null = null;
   
-  for (let i = 0; i < shopifyIds.length; i += PARALLEL_VARIANT_FETCH) {
-    const batch = shopifyIds.slice(i, i + PARALLEL_VARIANT_FETCH);
-    
-    await Promise.all(batch.map(async (shopifyId) => {
-      try {
-        const { response, body } = await shopifyFetch(
-          `${shopifyUrl}/products/${shopifyId}.json?fields=id,variants`,
-          { headers: { 'X-Shopify-Access-Token': token } }
-        );
-
-        if (response.ok) {
-          const productData = JSON.parse(body);
-          const variantId = productData.product?.variants?.[0]?.id;
-          
-          // Map all external_ids that point to this shopify product
-          for (const extId of shopifyIdToExternalIds.get(shopifyId) || []) {
-            orderProductVariantCache.set(extId, { 
-              variantId: variantId ? String(variantId) : null, 
-              fetched: true 
-            });
-          }
-        }
-      } catch (e) {
-        console.warn(`Failed to fetch variants for product ${shopifyId}:`, e);
-      }
-    }));
+  // Check cache first
+  if (customerExternalId && orderCustomerCache.has(customerExternalId)) {
+    customerId = orderCustomerCache.get(customerExternalId)!;
+  } else if (customerEmail && orderShopifyCustomerEmailCache.has(customerEmail)) {
+    customerId = orderShopifyCustomerEmailCache.get(customerEmail)!;
   }
-}
-
-async function uploadOrder(
-  shopifyUrl: string,
-  token: string,
-  data: any,
-  supabase: any,
-  projectId: string
-): Promise<string> {
-  // Find Shopify customer ID and email for customer linking
-  let shopifyCustomerId: string | null = null;
-  let customerEmail: string | null = null;
-
-  // Use cache first
-  if (data.customer_external_id && orderCustomerCache.has(data.customer_external_id)) {
-    const cached = orderCustomerCache.get(data.customer_external_id)!;
-    shopifyCustomerId = cached.shopifyId;
-    customerEmail = cached.email;
-  } else if (data.customer_external_id) {
-    // Fallback to direct query if not in cache
-    const { data: customer } = await supabase
-      .from('canonical_customers')
-      .select('shopify_id, data')
-      .eq('project_id', projectId)
-      .eq('external_id', data.customer_external_id)
-      .maybeSingle();
-
-    if (customer?.shopify_id) {
-      shopifyCustomerId = customer.shopify_id;
-    }
-    if (customer?.data?.email) {
-      customerEmail = String(customer.data.email).trim();
+  
+  // Search Shopify by email if not cached
+  if (!customerId && customerEmail) {
+    customerId = await findShopifyCustomerIdByEmail(customerEmail, shopifyUrl, token);
+    if (customerId && customerExternalId) {
+      orderCustomerCache.set(customerExternalId, customerId);
     }
   }
-
-  // Extra fallback: take customer email from the orders CSV (if present)
-  if (!customerEmail && data.customer_email) {
-    customerEmail = String(data.customer_email).trim();
-  }
-
-  // If we still don't have an ID, try to find the customer in Shopify by email (with cache)
-  if (!shopifyCustomerId && customerEmail) {
-    if (orderShopifyCustomerEmailCache.has(customerEmail)) {
-      shopifyCustomerId = orderShopifyCustomerEmailCache.get(customerEmail) || null;
-    } else {
-      shopifyCustomerId = await findShopifyCustomerIdByEmail(shopifyUrl, token, customerEmail, {
-        maxRetries: 2,
-        limits: { maxWaitMs: 5000 },
-      });
-      orderShopifyCustomerEmailCache.set(customerEmail, shopifyCustomerId);
-    }
-  }
-
-  const customerFirstName = String(data.customer_first_name || '').trim();
-  const customerLastName = String(data.customer_last_name || '').trim();
-  const rawPhone = data.customer_phone || data.billing_address?.phone || data.shipping_address?.phone || null;
-  const customerPhone = normalizePhoneNumber(rawPhone);
-
-  // Build a customer address from order data (used both for customer + order)
-  const rawCustomerAddress = {
-    address1: data.customer_address || data.billing_address?.address1 || data.shipping_address?.address1 || '',
-    address2: data.billing_address?.address2 || data.shipping_address?.address2 || null,
-    city: data.customer_city || data.billing_address?.city || data.shipping_address?.city || '',
-    zip: data.customer_zip || data.billing_address?.zip || data.shipping_address?.zip || '',
-    country: data.customer_country || data.billing_address?.country || data.shipping_address?.country || 'DK',
-    phone: customerPhone,
-  };
-
-  // STRICT CUSTOMER BINDING: Do NOT auto-create customers during order import
-  // If customer is not already in Shopify, fail the order with a clear message
-  // This avoids extra API calls and ensures data integrity
-  if (!shopifyCustomerId) {
-    const reason = customerEmail 
-      ? `Kunde med email "${customerEmail}" blev ikke fundet i Shopify. Upload kunder først.`
-      : `Ordre mangler kunde-email og kan ikke knyttes til en Shopify-kunde.`;
-    console.log(`[Order] Strict binding failed: ${reason}`);
-    throw new Error(reason);
-  }
-
-  // Map line items with Shopify variant IDs - using cache
-  const lineItems = [];
-  const sourceLineItems = data.line_items || [];
-
-  // If no line items, create a fallback based on order total
-  if (sourceLineItems.length === 0 && data.total_price > 0) {
+  
+  // Build line items
+  const lineItems: any[] = [];
+  for (const item of (data.line_items || [])) {
     lineItems.push({
-      title: 'Ordre total',
-      quantity: 1,
-      price: String(data.total_price),
+      title: item.title || 'Unknown Product',
+      quantity: item.quantity || 1,
+      price: String(item.price || 0),
+      sku: item.sku || '',
+      requires_shipping: true,
+      taxable: true,
     });
   }
-
-  for (const item of sourceLineItems) {
-    // Use cache for product variant lookup
-    const cached = orderProductVariantCache.get(item.product_external_id);
-    
-    if (cached?.variantId) {
-      lineItems.push({
-        variant_id: Number(cached.variantId),
-        quantity: item.quantity,
-        price: String(item.price),
-      });
-      continue;
-    }
-
-    // Fallback if not in cache
-    if (!cached?.fetched) {
-      const { data: product } = await supabase
-        .from('canonical_products')
-        .select('shopify_id')
-        .eq('project_id', projectId)
-        .eq('external_id', item.product_external_id)
-        .maybeSingle();
-
-      if (product?.shopify_id) {
-        const { response: variantResponse, body: variantBody } = await shopifyFetch(
-          `${shopifyUrl}/products/${product.shopify_id}.json?fields=id,variants`,
-          { headers: { 'X-Shopify-Access-Token': token } },
-          2,
-          { maxWaitMs: 5000 }
-        );
-
-        if (variantResponse.ok) {
-          const productData = JSON.parse(variantBody);
-          const variant = productData.product?.variants?.[0];
-          if (variant) {
-            orderProductVariantCache.set(item.product_external_id, { 
-              variantId: String(variant.id), 
-              fetched: true 
-            });
-            lineItems.push({
-              variant_id: variant.id,
-              quantity: item.quantity,
-              price: String(item.price),
-            });
-            continue;
-          }
-        }
-      }
-      
-      orderProductVariantCache.set(item.product_external_id, { variantId: null, fetched: true });
-    }
-
-    // Fallback: create custom line item
-    lineItems.push({
-      title: item.title || item.sku,
-      quantity: item.quantity,
-      price: String(item.price),
-    });
+  
+  if (lineItems.length === 0) {
+    throw new Error('Ingen linjer i ordren');
   }
-
-  // Use the original order ID from DanDomain as the order name/number
-  const orderName = data.external_id ? `#${data.external_id}` : undefined;
-
-  const billingAddressPayload = buildShopifyAddress(
-    data.billing_address,
-    rawCustomerAddress,
-    { first_name: customerFirstName, last_name: customerLastName, phone: customerPhone }
-  );
-  const shippingAddressPayload = buildShopifyAddress(
-    data.shipping_address,
-    rawCustomerAddress,
-    { first_name: customerFirstName, last_name: customerLastName, phone: customerPhone }
-  );
-
-  const orderPayload = {
+  
+  // Build addresses
+  const billingAddress = hasMeaningfulAddress(data.billing_address) 
+    ? buildShopifyAddress(data.billing_address, data.customer_phone)
+    : null;
+  
+  const shippingAddress = hasMeaningfulAddress(data.shipping_address)
+    ? buildShopifyAddress(data.shipping_address, data.customer_phone)
+    : billingAddress;
+  
+  // Build order payload
+  const orderPayload: any = {
     order: {
-      // Set the order name/number to match the original system
-      name: orderName,
-      // Link to customer (by id)
-      customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
-      email: customerEmail || undefined,
-      phone: customerPhone || undefined,
       line_items: lineItems,
       financial_status: mapFinancialStatus(data.financial_status),
       fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
       currency: data.currency || 'DKK',
-      billing_address: hasMeaningfulAddress(billingAddressPayload) ? billingAddressPayload : undefined,
-      shipping_address: hasMeaningfulAddress(shippingAddressPayload) ? shippingAddressPayload : undefined,
-      created_at: data.order_date,
-      transactions: [{
-        kind: 'sale',
-        status: 'success',
-        amount: String(data.total_price || 0),
-      }],
-    },
+      created_at: data.order_date || new Date().toISOString(),
+      tags: 'imported,dandomain',
+      send_receipt: false,
+      send_fulfillment_receipt: false,
+      inventory_behaviour: 'bypass',
+    }
   };
-
-  const { response, body } = await shopifyFetch(
-    `${shopifyUrl}/orders.json`,
-    {
+  
+  if (customerId) {
+    orderPayload.order.customer = { id: parseInt(customerId, 10) };
+  } else if (customerEmail) {
+    orderPayload.order.email = customerEmail;
+  }
+  
+  if (billingAddress) {
+    orderPayload.order.billing_address = {
+      ...billingAddress,
+      first_name: data.customer_first_name || '',
+      last_name: data.customer_last_name || '',
+    };
+  }
+  
+  if (shippingAddress) {
+    orderPayload.order.shipping_address = {
+      ...shippingAddress,
+      first_name: data.customer_first_name || '',
+      last_name: data.customer_last_name || '',
+    };
+  }
+  
+  // Add shipping
+  if (data.shipping_price && parseFloat(String(data.shipping_price)) > 0) {
+    orderPayload.order.shipping_lines = [{
+      title: 'Shipping',
+      price: String(data.shipping_price),
+      code: 'STANDARD',
+    }];
+  }
+  
+  // Add discounts
+  if (data.discount_total && parseFloat(String(data.discount_total)) > 0) {
+    orderPayload.order.discount_codes = [{
+      code: 'IMPORT_DISCOUNT',
+      amount: String(data.discount_total),
+      type: 'fixed_amount',
+    }];
+  }
+  
+  const { response, body } = await shopifyFetch(`${shopifyUrl}/orders.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': token,
     },
     body: JSON.stringify(orderPayload),
-    },
-    2,
-    { maxWaitMs: 5000 }
-  );
-
+  }, 5, { entityType: 'orders' });
+  
   if (!response.ok) {
-    throw new Error(`Shopify API error: ${response.status} - ${body}`);
+    throw new Error(`Failed to create order: ${response.status} - ${body}`);
   }
-
+  
   const result = JSON.parse(body);
   return String(result.order.id);
 }
 
-async function uploadPage(shopifyUrl: string, token: string, data: any): Promise<string> {
+async function uploadPage(shopifyUrl: string, token: string, data: any): Promise<string | null> {
   const pagePayload = {
     page: {
-      title: data.title,
+      title: data.title || 'Untitled Page',
       body_html: data.body_html || '',
-      handle: data.slug || undefined,
       published: data.published !== false,
+      handle: data.slug || undefined,
     }
   };
-
+  
   const { response, body } = await shopifyFetch(`${shopifyUrl}/pages.json`, {
     method: 'POST',
     headers: {
@@ -1899,35 +1623,50 @@ async function uploadPage(shopifyUrl: string, token: string, data: any): Promise
       'X-Shopify-Access-Token': token,
     },
     body: JSON.stringify(pagePayload),
-  });
-
+  }, 5, { entityType: 'pages' });
+  
   if (!response.ok) {
-    throw new Error(`Shopify API error: ${response.status} - ${body}`);
+    throw new Error(`Failed to create page: ${response.status} - ${body}`);
   }
-
+  
   const result = JSON.parse(body);
   return String(result.page.id);
 }
 
-function mapFinancialStatus(status: string): string {
+function mapFinancialStatus(status: string | null | undefined): string {
+  if (!status) return 'paid';
+  
+  const lower = status.toLowerCase();
   const mapping: Record<string, string> = {
     'paid': 'paid',
     'betalt': 'paid',
     'pending': 'pending',
     'afventer': 'pending',
+    'authorized': 'authorized',
+    'partially_paid': 'partially_paid',
     'refunded': 'refunded',
-    'refunderet': 'refunded',
+    'voided': 'voided',
   };
-  return mapping[status?.toLowerCase()] || 'paid';
+  
+  return mapping[lower] || 'paid';
 }
 
-function mapFulfillmentStatus(status: string): string | null {
-  const mapping: Record<string, string> = {
+function mapFulfillmentStatus(status: string | null | undefined): string | null {
+  if (!status) return 'fulfilled';
+  
+  const lower = status.toLowerCase();
+  const mapping: Record<string, string | null> = {
     'fulfilled': 'fulfilled',
     'afsendt': 'fulfilled',
     'shipped': 'fulfilled',
+    'delivered': 'fulfilled',
+    'leveret': 'fulfilled',
+    'unfulfilled': null,
+    'pending': null,
+    'afventer': null,
     'partial': 'partial',
-    'delvist': 'partial',
+    'partially_fulfilled': 'partial',
   };
-  return mapping[status?.toLowerCase()] || null;
+  
+  return mapping[lower] ?? 'fulfilled';
 }
