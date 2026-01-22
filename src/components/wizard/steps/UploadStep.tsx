@@ -534,6 +534,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
     ? Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000)
     : 0;
+  const waitingSeconds = getWaitingSeconds(runningJob) ?? null;
 
   // UI-only "live" progress so the counter/bar can move smoothly between DB updates.
   // We cap the estimate to at most one batch.
@@ -627,11 +628,35 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return `${seconds}s siden`;
   };
 
+  function getLatestWorkerMessage(job?: UploadJob): string | null {
+    const details = job?.error_details || [];
+    for (let i = details.length - 1; i >= 0; i--) {
+      if (details[i]?.externalId === '__worker__' && details[i]?.message) {
+        return details[i].message;
+      }
+    }
+    return null;
+  }
+
+  function getWaitingSeconds(job?: UploadJob): number | null {
+    const msg = getLatestWorkerMessage(job);
+    if (!msg) return null;
+    // Matches: "venter 30s" or "retry om 60s"
+    const m = msg.match(/venter\s+(\d+)s/i) || msg.match(/retry\s+om\s+(\d+)s/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
+
   // Get current activity message
   const getActivityMessage = () => {
     if (isStarting) return 'Starter upload…';
     if (!runningJob) return isPaused ? 'Paused' : '';
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
+    const workerMsg = getLatestWorkerMessage(runningJob);
+    if (workerMsg && (workerMsg.includes('Rate limit') || workerMsg.includes('429'))) {
+      return waitingSeconds ? `${label}: venter pga. rate limit (${waitingSeconds}s)…` : `${label}: venter pga. rate limit…`;
+    }
     return `${label}: uploader batch ${runningJob.current_batch || 1}…`;
   };
 
@@ -699,6 +724,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
+                {waitingSeconds != null && (
+                  <span className="bg-muted px-2 py-0.5 rounded-md font-medium">
+                    ⏳ venter {waitingSeconds}s
+                  </span>
+                )}
                 <span className="flex items-center gap-1.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
                   {formatHeartbeat(secondsSinceHeartbeat)}
