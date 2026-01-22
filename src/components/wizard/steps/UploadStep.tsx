@@ -764,11 +764,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 <span className="font-medium text-foreground">{getActivityMessage()}</span>
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
-                {liveWaitingSeconds != null && liveWaitingSeconds > 0 && (
-                  <span className="bg-muted px-2 py-0.5 rounded-md font-medium">
-                    ⏳ venter {liveWaitingSeconds}s
-                  </span>
-                )}
                 <span className="flex items-center gap-1.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
                   {formatHeartbeat(secondsSinceHeartbeat)}
