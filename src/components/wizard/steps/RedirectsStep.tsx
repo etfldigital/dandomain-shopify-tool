@@ -84,17 +84,34 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const loadRedirects = async () => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('project_redirects')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('entity_type')
-        .order('old_path');
+      // Fetch ALL redirects using pagination to bypass 1000 row limit
+      const allRedirects: ProjectRedirect[] = [];
+      const pageSize = 1000;
+      let from = 0;
+      let hasMore = true;
 
-      if (error) throw error;
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('project_redirects')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('entity_type')
+          .order('old_path')
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          allRedirects.push(...(data as ProjectRedirect[]));
+          from += pageSize;
+          hasMore = data.length === pageSize;
+        } else {
+          hasMore = false;
+        }
+      }
 
       setRedirects(
-        (data || []).map(r => ({
+        allRedirects.map(r => ({
           id: r.id,
           entity_type: r.entity_type as RedirectEntityType,
           entity_id: r.entity_id,
@@ -114,6 +131,32 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Reset/clear all redirects for this project
+  const resetRedirects = async () => {
+    try {
+      const { error } = await supabase
+        .from('project_redirects')
+        .delete()
+        .eq('project_id', project.id);
+
+      if (error) throw error;
+
+      setRedirects([]);
+      setUnmatchedUrls([]);
+      toast({
+        title: 'Nulstillet',
+        description: 'Alle redirects er blevet slettet',
+      });
+    } catch (err) {
+      console.error('Error resetting redirects:', err);
+      toast({
+        title: 'Fejl',
+        description: 'Kunne ikke nulstille redirects',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -786,6 +829,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             >
               <Download className="w-4 h-4 mr-2" />
               Download CSV
+            </Button>
+            
+            <Button
+              onClick={resetRedirects}
+              variant="outline"
+              disabled={redirects.length === 0}
+              className="text-destructive hover:text-destructive"
+            >
+              <X className="w-4 h-4 mr-2" />
+              Nulstil
             </Button>
           </div>
           
