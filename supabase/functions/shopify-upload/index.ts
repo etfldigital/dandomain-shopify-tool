@@ -372,9 +372,13 @@ serve(async (req) => {
           case 'orders':
             shopifyId = await uploadOrder(shopifyUrl, shopifyToken, item.data, supabase, projectId);
             break;
-          case 'pages':
-            shopifyId = await uploadPage(shopifyUrl, shopifyToken, item.data);
+          case 'pages': {
+            const pageResult = await uploadPage(shopifyUrl, shopifyToken, item.data);
+            shopifyId = pageResult.id;
+            // Store the actual Shopify handle in data for redirects
+            item.data = { ...item.data, shopify_handle: pageResult.handle };
             break;
+          }
         }
 
         const updatePayload: Record<string, any> = {
@@ -382,6 +386,11 @@ serve(async (req) => {
           shopify_id: shopifyId,
           updated_at: new Date().toISOString(),
         };
+        
+        // For pages, include updated data with shopify_handle
+        if (entityType === 'pages' && item.data?.shopify_handle) {
+          updatePayload.data = item.data;
+        }
 
         const { error: updateError } = await supabase
           .from(tableName)
@@ -879,6 +888,7 @@ async function uploadProductsWithVariants(
 
       const result = JSON.parse(responseBody);
       const shopifyId = String(result.product.id);
+      const shopifyHandle = result.product.handle; // Get actual Shopify-generated handle
       
       existingProducts.set(titleLower, shopifyId);
 
@@ -947,16 +957,19 @@ async function uploadProductsWithVariants(
         }
       }
 
-      // Mark all items as uploaded
-      const ids = items.map((it) => it.id);
-      await supabase
-        .from('canonical_products')
-        .update({
-          status: 'uploaded',
-          shopify_id: shopifyId,
-          updated_at: new Date().toISOString(),
-        })
-        .in('id', ids);
+      // Mark all items as uploaded and store the actual Shopify handle
+      for (const item of items) {
+        const updatedData = { ...item.data, shopify_handle: shopifyHandle };
+        await supabase
+          .from('canonical_products')
+          .update({
+            status: 'uploaded',
+            shopify_id: shopifyId,
+            data: updatedData,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.id);
+      }
 
       processed += items.length;
 
@@ -1076,6 +1089,7 @@ async function uploadCategoriesWithCache(
       const titleLower = collectionTitle.toLowerCase();
       
       let shopifyId: string;
+      let shopifyHandle: string | null = null;
       
       if (existingCollections.has(titleLower)) {
         shopifyId = existingCollections.get(titleLower)!;
@@ -1133,16 +1147,19 @@ async function uploadCategoriesWithCache(
         } else {
           const result = JSON.parse(body);
           shopifyId = String(result.smart_collection.id);
+          shopifyHandle = result.smart_collection.handle; // Get actual Shopify-generated handle
           existingCollections.set(titleLower, shopifyId);
-          console.log(`Created collection "${collectionTitle}" with ID ${shopifyId}`);
+          console.log(`Created collection "${collectionTitle}" with ID ${shopifyId}, handle: ${shopifyHandle}`);
         }
       }
 
+      // Store Shopify handle in shopify_tag field for redirect generation
       await supabase
         .from('canonical_categories')
         .update({
           status: 'uploaded',
           shopify_collection_id: shopifyId,
+          shopify_tag: shopifyHandle || category.shopify_tag, // Preserve actual Shopify handle
           updated_at: new Date().toISOString(),
         })
         .eq('id', category.id);
@@ -1533,7 +1550,7 @@ async function uploadOrder(shopifyUrl: string, token: string, data: any, supabas
   return String(result.order.id);
 }
 
-async function uploadPage(shopifyUrl: string, token: string, data: any): Promise<string | null> {
+async function uploadPage(shopifyUrl: string, token: string, data: any): Promise<{ id: string; handle: string }> {
   const pagePayload = {
     page: {
       title: data.title || 'Untitled Page',
@@ -1557,7 +1574,10 @@ async function uploadPage(shopifyUrl: string, token: string, data: any): Promise
   }
   
   const result = JSON.parse(body);
-  return String(result.page.id);
+  return { 
+    id: String(result.page.id),
+    handle: result.page.handle
+  };
 }
 
 function mapFinancialStatus(status: string | null | undefined): string {
