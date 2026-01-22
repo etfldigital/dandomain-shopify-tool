@@ -34,6 +34,9 @@ const STEP_ORDER: WizardStep[] = [
   'report',
 ];
 
+// DEV MODE: Set to true to unlock all steps during development
+const DEV_UNLOCK_ALL_STEPS = true;
+
 export default function ProjectWizard() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -46,8 +49,13 @@ export default function ProjectWizard() {
       const step = STATUS_TO_STEP[project.status];
       setCurrentStep(step);
       
-      const stepIndex = STEP_ORDER.indexOf(step);
-      setCompletedSteps(STEP_ORDER.slice(0, stepIndex));
+      if (DEV_UNLOCK_ALL_STEPS) {
+        // In dev mode, mark all steps as completed so they're all clickable
+        setCompletedSteps([...STEP_ORDER]);
+      } else {
+        const stepIndex = STEP_ORDER.indexOf(step);
+        setCompletedSteps(STEP_ORDER.slice(0, stepIndex));
+      }
     }
   }, [project]);
 
