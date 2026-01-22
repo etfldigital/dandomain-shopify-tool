@@ -10,6 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
+import * as XLSX from 'xlsx';
 import { 
   ArrowRight, 
   Check, 
@@ -21,7 +22,8 @@ import {
   AlertCircle,
   Loader2,
   Search,
-  FileUp
+  FileUp,
+  FileSpreadsheet
 } from 'lucide-react';
 
 interface RedirectsStepProps {
@@ -41,6 +43,13 @@ interface RedirectRow {
   selected: boolean;
 }
 
+interface UploadedEntity {
+  id: string;
+  source_path: string | null;
+  shopify_handle: string;
+  entity_type: RedirectEntityType;
+}
+
 export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const { toast } = useToast();
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
@@ -51,6 +60,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [activeTab, setActiveTab] = useState<RedirectEntityType>('product');
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [unmatchedCount, setUnmatchedCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load existing redirects
@@ -265,27 +275,130 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
-  // Handle CSV file upload
+  // Fetch all uploaded entities to build a lookup map for matching old URLs
+  const fetchUploadedEntities = async (): Promise<UploadedEntity[]> => {
+    const entities: UploadedEntity[] = [];
+
+    // Products - get source_path and generate handle from title
+    const { data: products } = await supabase
+      .from('canonical_products')
+      .select('id, data, shopify_id')
+      .eq('project_id', project.id)
+      .eq('status', 'uploaded');
+
+    for (const product of products || []) {
+      const data = product.data as Record<string, unknown>;
+      const sourcePath = data?.source_path as string | null;
+      const title = data?.title as string;
+      if (sourcePath && product.shopify_id) {
+        entities.push({
+          id: product.id,
+          source_path: sourcePath,
+          shopify_handle: `/products/${generateShopifyHandle(title)}`,
+          entity_type: 'product',
+        });
+      }
+    }
+
+    // Categories
+    const { data: categories } = await supabase
+      .from('canonical_categories')
+      .select('id, slug, shopify_collection_id, name')
+      .eq('project_id', project.id)
+      .eq('status', 'uploaded');
+
+    for (const category of categories || []) {
+      if (category.slug && category.shopify_collection_id) {
+        entities.push({
+          id: category.id,
+          source_path: `/shop/${category.slug}/`,
+          shopify_handle: `/collections/${generateShopifyHandle(category.name)}`,
+          entity_type: 'category',
+        });
+        // Also add without trailing slash
+        entities.push({
+          id: category.id,
+          source_path: `/shop/${category.slug}`,
+          shopify_handle: `/collections/${generateShopifyHandle(category.name)}`,
+          entity_type: 'category',
+        });
+      }
+    }
+
+    // Pages
+    const { data: pages } = await supabase
+      .from('canonical_pages')
+      .select('id, data, shopify_id')
+      .eq('project_id', project.id)
+      .eq('status', 'uploaded');
+
+    for (const page of pages || []) {
+      const data = page.data as Record<string, unknown>;
+      const slug = data?.slug as string;
+      const title = data?.title as string;
+      if (slug && page.shopify_id) {
+        entities.push({
+          id: page.id,
+          source_path: `/${slug}`,
+          shopify_handle: `/pages/${slug}`,
+          entity_type: 'page',
+        });
+      }
+    }
+
+    return entities;
+  };
+
+  // Normalize URL path for matching
+  const normalizePath = (path: string): string => {
+    let normalized = path.trim().toLowerCase();
+    // Remove domain if present
+    try {
+      const url = new URL(normalized);
+      normalized = url.pathname;
+    } catch {
+      // Not a full URL, continue
+    }
+    // Ensure leading slash
+    if (!normalized.startsWith('/')) {
+      normalized = '/' + normalized;
+    }
+    // Remove trailing slash (except for root)
+    if (normalized.length > 1 && normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1);
+    }
+    return normalized;
+  };
+
+  // Handle Excel file upload with auto-matching
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
+    setUnmatchedCount(0);
+    
     try {
-      const text = await file.text();
-      const lines = text.split('\n').filter(line => line.trim());
-      
-      if (lines.length < 2) {
-        throw new Error('CSV-filen skal indeholde mindst en header-linje og en data-linje');
+      // Read Excel file
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+
+      if (rows.length < 1) {
+        throw new Error('Excel-filen er tom');
       }
 
-      // Parse header
-      const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/"/g, ''));
-      const oldPathIndex = header.findIndex(h => h === 'old_path' || h === 'from' || h === 'redirect from' || h === 'source');
-      const newPathIndex = header.findIndex(h => h === 'new_path' || h === 'to' || h === 'redirect to' || h === 'target' || h === 'destination');
-
-      if (oldPathIndex === -1 || newPathIndex === -1) {
-        throw new Error('CSV-filen skal have kolonner for "old_path" (eller "from") og "new_path" (eller "to")');
+      // Fetch all uploaded entities for matching
+      const uploadedEntities = await fetchUploadedEntities();
+      
+      // Build lookup maps for faster matching
+      const pathToEntity = new Map<string, UploadedEntity>();
+      for (const entity of uploadedEntities) {
+        if (entity.source_path) {
+          pathToEntity.set(normalizePath(entity.source_path), entity);
+        }
       }
 
       const redirectsToInsert: Array<{
@@ -296,65 +409,84 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         new_path: string;
       }> = [];
 
-      // Parse data rows
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i];
-        // Handle quoted CSV values
-        const values = line.match(/("([^"]*)"|[^,]+)/g)?.map(v => v.replace(/^"|"$/g, '').trim()) || [];
+      let unmatched = 0;
+
+      // Parse rows - Column A is optional title, Column B is old URL
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        // Skip empty rows
+        if (!row || row.length === 0) continue;
         
-        const oldPath = values[oldPathIndex]?.trim();
-        const newPath = values[newPathIndex]?.trim();
+        // Column B (index 1) contains the old URL
+        const oldUrlRaw = row[1]?.toString()?.trim();
+        if (!oldUrlRaw) continue;
 
-        if (oldPath && newPath) {
-          // Determine entity type from new_path
-          let entityType: RedirectEntityType = 'product';
-          if (newPath.includes('/collections/')) {
-            entityType = 'category';
-          } else if (newPath.includes('/pages/')) {
-            entityType = 'page';
-          }
-
+        const normalizedOldPath = normalizePath(oldUrlRaw);
+        
+        // Try to find matching entity
+        const matchedEntity = pathToEntity.get(normalizedOldPath);
+        
+        if (matchedEntity) {
           redirectsToInsert.push({
             project_id: project.id,
-            entity_type: entityType,
-            entity_id: `csv-import-${i}`,
-            old_path: oldPath.startsWith('/') ? oldPath : `/${oldPath}`,
-            new_path: newPath.startsWith('/') ? newPath : `/${newPath}`,
+            entity_type: matchedEntity.entity_type,
+            entity_id: matchedEntity.id,
+            old_path: normalizedOldPath,
+            new_path: matchedEntity.shopify_handle,
+          });
+        } else {
+          // No match found - still add but mark as needing manual review
+          unmatched++;
+          redirectsToInsert.push({
+            project_id: project.id,
+            entity_type: 'product', // Default
+            entity_id: `excel-import-${i}`,
+            old_path: normalizedOldPath,
+            new_path: '', // Empty - needs manual input
           });
         }
       }
 
       if (redirectsToInsert.length === 0) {
-        throw new Error('Ingen gyldige redirects fundet i CSV-filen');
+        throw new Error('Ingen URLs fundet i kolonne B');
       }
 
-      // Insert in batches
-      const batchSize = 100;
-      for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
-        const batch = redirectsToInsert.slice(i, i + batchSize);
-        const { error } = await supabase
-          .from('project_redirects')
-          .insert(batch);
-        
-        if (error) throw error;
+      // Filter out unmatched (empty new_path) for now - only insert matched
+      const matchedRedirects = redirectsToInsert.filter(r => r.new_path !== '');
+
+      if (matchedRedirects.length > 0) {
+        // Insert in batches
+        const batchSize = 100;
+        for (let i = 0; i < matchedRedirects.length; i += batchSize) {
+          const batch = matchedRedirects.slice(i, i + batchSize);
+          const { error } = await supabase
+            .from('project_redirects')
+            .insert(batch);
+          
+          if (error) throw error;
+        }
       }
+
+      setUnmatchedCount(unmatched);
 
       toast({
-        title: 'CSV importeret',
-        description: `${redirectsToInsert.length} redirects tilføjet fra CSV`,
+        title: 'Excel importeret',
+        description: unmatched > 0 
+          ? `${matchedRedirects.length} redirects matchet automatisk. ${unmatched} URLs kunne ikke matches.`
+          : `${matchedRedirects.length} redirects matchet automatisk til Shopify URLs.`,
+        variant: unmatched > 0 ? 'default' : 'default',
       });
 
       await loadRedirects();
     } catch (err) {
-      console.error('Error importing CSV:', err);
+      console.error('Error importing Excel:', err);
       toast({
         title: 'Fejl ved import',
-        description: err instanceof Error ? err.message : 'Kunne ikke importere CSV-fil',
+        description: err instanceof Error ? err.message : 'Kunne ikke importere Excel-fil',
         variant: 'destructive',
       });
     } finally {
       setIsUploading(false);
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -500,12 +632,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Generer redirects
             </Button>
             
-            {/* CSV Upload Button */}
+            {/* Excel Upload Button */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileUpload}
-              accept=".csv"
+              accept=".xlsx,.xls"
               className="hidden"
             />
             <Button
@@ -516,9 +648,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               {isUploading ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               ) : (
-                <FileUp className="w-4 h-4 mr-2" />
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
               )}
-              Upload CSV
+              Upload Excel
             </Button>
             
             <Button
@@ -542,10 +674,28 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
           </div>
           
-          {/* CSV format hint */}
-          <p className="text-xs text-muted-foreground mt-3">
-            CSV-format: Kolonner med "old_path" (eller "from") og "new_path" (eller "to")
-          </p>
+          {/* Excel format explanation */}
+          <div className="bg-muted/50 rounded-lg p-4 mt-4">
+            <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+              <FileSpreadsheet className="w-4 h-4" />
+              Excel-format
+            </h4>
+            <p className="text-xs text-muted-foreground">
+              Upload en Excel-fil med gamle URLs i <strong>kolonne B</strong>. Kolonne A kan indeholde sidetitel (valgfrit).
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Programmet matcher automatisk gamle URLs til de nye Shopify-sider baseret på produkter, kollektioner og sider der allerede er uploadet.
+            </p>
+          </div>
+
+          {unmatchedCount > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mt-3">
+              <p className="text-sm text-amber-700 dark:text-amber-400">
+                <AlertCircle className="w-4 h-4 inline mr-2" />
+                {unmatchedCount} URLs kunne ikke matches automatisk og blev sprunget over.
+              </p>
+            </div>
+          )}
 
           {isCreating && progress.total > 0 && (
             <div className="mt-4">
