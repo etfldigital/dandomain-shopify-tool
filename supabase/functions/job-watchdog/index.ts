@@ -60,7 +60,21 @@ serve(async (req) => {
     };
 
     // Find running jobs with stale heartbeat
-    const stalledJobs = await fetchWithRetry();
+    let stalledJobs;
+    try {
+      stalledJobs = await fetchWithRetry();
+    } catch (fetchError) {
+      // Transient network errors are expected occasionally - don't fail the watchdog
+      // The next scheduled run will try again
+      const msg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+      console.warn('[WATCHDOG] Could not fetch stalled jobs (will retry next run):', msg);
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Skipped due to transient network error, will retry next run',
+        warning: msg,
+        checked_at: new Date().toISOString(),
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 
     if (!stalledJobs || stalledJobs.length === 0) {
       return new Response(JSON.stringify({
