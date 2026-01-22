@@ -10,6 +10,8 @@ import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import * as XLSX from 'xlsx';
 import { 
   ArrowRight, 
@@ -23,7 +25,10 @@ import {
   Loader2,
   Search,
   FileUp,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ChevronDown,
+  ChevronRight,
+  AlertTriangle
 } from 'lucide-react';
 
 interface RedirectsStepProps {
@@ -48,9 +53,13 @@ interface UploadedEntity {
   source_path: string | null;
   shopify_handle: string;
   entity_type: RedirectEntityType;
-  // Additional fields for flexible matching
   title?: string;
   external_id?: string;
+}
+
+interface UnmatchedUrl {
+  originalUrl: string;
+  normalizedPath: string;
 }
 
 export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
@@ -63,7 +72,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [activeTab, setActiveTab] = useState<RedirectEntityType>('product');
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
-  const [unmatchedCount, setUnmatchedCount] = useState(0);
+  const [unmatchedUrls, setUnmatchedUrls] = useState<UnmatchedUrl[]>([]);
+  const [unmatchedExpanded, setUnmatchedExpanded] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load existing redirects
@@ -139,7 +149,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const title = data?.title as string;
         
         if (sourcePath && product.shopify_id) {
-          // Generate Shopify handle from title
           const handle = generateShopifyHandle(title);
           redirectsToInsert.push({
             project_id: project.id,
@@ -353,16 +362,33 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     return entities;
   };
 
+  // Strip root domain from URL
+  const stripRootDomain = (url: string): string => {
+    let normalized = url.trim();
+    
+    // Remove common protocols
+    normalized = normalized.replace(/^https?:\/\//, '');
+    
+    // Remove www. prefix
+    normalized = normalized.replace(/^www\./, '');
+    
+    // Find the first slash after the domain
+    const slashIndex = normalized.indexOf('/');
+    if (slashIndex > 0) {
+      normalized = normalized.substring(slashIndex);
+    } else if (slashIndex === -1) {
+      // No path, just domain - return root
+      normalized = '/';
+    }
+    
+    return normalized;
+  };
+
   // Normalize URL path for matching
   const normalizePath = (path: string): string => {
-    let normalized = path.trim().toLowerCase();
-    // Remove domain if present
-    try {
-      const url = new URL(normalized);
-      normalized = url.pathname;
-    } catch {
-      // Not a full URL, continue
-    }
+    // First strip the root domain
+    let normalized = stripRootDomain(path).toLowerCase();
+    
     // Ensure leading slash
     if (!normalized.startsWith('/')) {
       normalized = '/' + normalized;
@@ -405,7 +431,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     if (!file) return;
 
     setIsUploading(true);
-    setUnmatchedCount(0);
+    setUnmatchedUrls([]);
     
     try {
       // Read Excel file
@@ -456,7 +482,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         new_path: string;
       }> = [];
 
-      let unmatched = 0;
+      const newUnmatchedUrls: UnmatchedUrl[] = [];
 
       // Parse rows - Column A contains old URL
       for (let i = 0; i < rows.length; i++) {
@@ -513,16 +539,19 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             new_path: matchedEntity.shopify_handle,
           });
         } else {
-          unmatched++;
+          newUnmatchedUrls.push({
+            originalUrl: oldUrlRaw,
+            normalizedPath: normalizedOldPath,
+          });
         }
       }
 
-      if (redirectsToInsert.length === 0 && unmatched === 0) {
+      if (redirectsToInsert.length === 0 && newUnmatchedUrls.length === 0) {
         throw new Error('Ingen URLs fundet i kolonne A');
       }
 
       if (redirectsToInsert.length > 0) {
-        // Insert in batches
+        // Insert ALL in batches - no limit
         const batchSize = 100;
         for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
           const batch = redirectsToInsert.slice(i, i + batchSize);
@@ -534,15 +563,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
-      setUnmatchedCount(unmatched);
+      setUnmatchedUrls(newUnmatchedUrls);
 
-      const totalFound = redirectsToInsert.length + unmatched;
+      const totalFound = redirectsToInsert.length + newUnmatchedUrls.length;
       toast({
         title: 'Excel importeret',
-        description: unmatched > 0 
-          ? `${redirectsToInsert.length} af ${totalFound} URLs matchet automatisk. ${unmatched} URLs kunne ikke matches.`
+        description: newUnmatchedUrls.length > 0 
+          ? `${redirectsToInsert.length} af ${totalFound} URLs matchet automatisk. ${newUnmatchedUrls.length} URLs kunne ikke matches.`
           : `${redirectsToInsert.length} redirects matchet automatisk til Shopify URLs.`,
-        variant: unmatched > 0 ? 'default' : 'default',
+        variant: newUnmatchedUrls.length > 0 ? 'default' : 'default',
       });
 
       await loadRedirects();
@@ -559,6 +588,24 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         fileInputRef.current.value = '';
       }
     }
+  };
+
+  // Download unmatched URLs as CSV
+  const downloadUnmatchedCSV = () => {
+    const csv = [
+      ['original_url', 'normalized_path'].join(','),
+      ...unmatchedUrls.map(u => 
+        [u.originalUrl, u.normalizedPath].map(v => `"${v}"`).join(',')
+      ),
+    ].join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `unmatched-urls-${project.name}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // Download as CSV
@@ -752,18 +799,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Upload en Excel-fil med alle gamle URLs der skal redirectes i <strong>kolonne A</strong>.
             </p>
             <p className="text-xs text-muted-foreground mt-1">
+              Root-domænet (f.eks. https://maggiesgemakker.dk) fjernes automatisk fra URL'erne.
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
               Programmet matcher automatisk gamle URLs til de nye Shopify-sider baseret på produkter, kollektioner og sider der allerede er uploadet.
             </p>
           </div>
-
-          {unmatchedCount > 0 && (
-            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mt-3">
-              <p className="text-sm text-amber-700 dark:text-amber-400">
-                <AlertCircle className="w-4 h-4 inline mr-2" />
-                {unmatchedCount} URLs kunne ikke matches automatisk og blev sprunget over.
-              </p>
-            </div>
-          )}
 
           {isCreating && progress.total > 0 && (
             <div className="mt-4">
@@ -776,10 +817,84 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         </CardContent>
       </Card>
 
+      {/* Unmatched URLs section */}
+      {unmatchedUrls.length > 0 && (
+        <Card className="border-amber-500/30">
+          <Collapsible open={unmatchedExpanded} onOpenChange={setUnmatchedExpanded}>
+            <CardHeader className="pb-3">
+              <CollapsibleTrigger className="flex items-center justify-between w-full">
+                <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="w-5 h-5" />
+                  Umatchede URLs ({unmatchedUrls.length})
+                </CardTitle>
+                {unmatchedExpanded ? (
+                  <ChevronDown className="w-5 h-5 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                )}
+              </CollapsibleTrigger>
+              <CardDescription>
+                Disse URLs kunne ikke matches automatisk til uploadede produkter, kategorier eller sider
+              </CardDescription>
+            </CardHeader>
+            <CollapsibleContent>
+              <CardContent className="pt-0">
+                <div className="flex justify-end mb-3">
+                  <Button
+                    onClick={downloadUnmatchedCSV}
+                    variant="outline"
+                    size="sm"
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Download umatchede URLs
+                  </Button>
+                </div>
+                <ScrollArea className="h-[300px] border rounded-lg">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Original URL</TableHead>
+                        <TableHead>Normaliseret sti</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {unmatchedUrls.slice(0, 100).map((url, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {url.originalUrl}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {url.normalizedPath}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {unmatchedUrls.length > 100 && (
+                    <div className="p-3 text-center text-sm text-muted-foreground bg-muted/30">
+                      Viser 100 af {unmatchedUrls.length} umatchede URLs. Download CSV for fuld liste.
+                    </div>
+                  )}
+                </ScrollArea>
+              </CardContent>
+            </CollapsibleContent>
+          </Collapsible>
+        </Card>
+      )}
+
       {/* Redirects table */}
       {redirects.length > 0 && (
         <Card>
-          <CardContent className="pt-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Check className="w-5 h-5 text-primary" />
+              Matchede redirects ({stats.total})
+            </CardTitle>
+            <CardDescription>
+              Gennemgå og bekræft redirects før de oprettes i Shopify
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as RedirectEntityType)}>
               <div className="flex items-center justify-between mb-4">
                 <TabsList>
@@ -878,7 +993,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       )}
 
       {/* Empty state */}
-      {redirects.length === 0 && (
+      {redirects.length === 0 && unmatchedUrls.length === 0 && (
         <Card>
           <CardContent className="py-12 text-center">
             <AlertCircle className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
