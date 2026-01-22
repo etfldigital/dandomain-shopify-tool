@@ -150,15 +150,10 @@ function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProp
   if (isTrial) {
     return (
       <div className="flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30">
-            <FlaskConicalOff className="w-3 h-3 mr-1" />
-            Trial butik
-          </Badge>
-          <span className="text-muted-foreground">
-            Observeret hastighed: ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
-          </span>
-        </div>
+        <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30">
+          <FlaskConicalOff className="w-3 h-3 mr-1" />
+          ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
+        </Badge>
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -181,15 +176,10 @@ function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProp
   
   return (
     <div className="flex items-center justify-between text-xs">
-      <div className="flex items-center gap-2">
-        <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
-          <Zap className="w-3 h-3 mr-1" />
-          Betalt butik
-        </Badge>
-        <span className="text-muted-foreground">
-          Upload-hastighed: ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
-        </span>
-      </div>
+      <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
+        <Zap className="w-3 h-3 mr-1" />
+        ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
+      </Badge>
       <span className="text-green-600">
         Fuld hastighed
       </span>
