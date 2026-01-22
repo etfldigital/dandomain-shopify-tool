@@ -43,9 +43,6 @@ import {
   Cloud,
   CloudOff,
   SkipForward,
-  Store,
-  FlaskConicalOff,
-  Zap,
   PartyPopper,
   ArrowRight,
 } from 'lucide-react';
@@ -124,80 +121,14 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
   { type: 'orders', icon: FileText, label: 'Ordrer' },
 ];
 
-// Expected speed ranges for paid vs trial stores (items per minute)
-const SPEED_THRESHOLDS: Record<EntityType, { trialMax: number; paidTypical: number }> = {
-  orders: { trialMax: 5, paidTypical: 40 },      // Trial stores have ~1-2/min hard limit for orders
-  customers: { trialMax: 10, paidTypical: 60 },  // Customers are slightly less restricted
-  products: { trialMax: 15, paidTypical: 80 },   // Products can be faster
-  categories: { trialMax: 20, paidTypical: 100 },
-  pages: { trialMax: 20, paidTypical: 100 },
-};
-
 // How often we run the backend watchdog to auto-restart stalled jobs.
 // This is a safety net for cases where the worker's self-scheduling is interrupted.
 const WATCHDOG_INTERVAL_MS = 60_000;
-
-interface ShopTypeIndicatorProps {
-  entityType: EntityType;
-  itemsPerMinute: number;
-}
-
-function ShopTypeIndicator({ entityType, itemsPerMinute }: ShopTypeIndicatorProps) {
-  const thresholds = SPEED_THRESHOLDS[entityType] || SPEED_THRESHOLDS.products;
-  const isTrial = itemsPerMinute <= thresholds.trialMax;
-  const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label.toLowerCase() || entityType;
-  
-  if (isTrial) {
-    return (
-      <div className="flex items-center justify-between text-xs">
-        <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30">
-          <FlaskConicalOff className="w-3 h-3 mr-1" />
-          ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
-        </Badge>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="text-amber-600 cursor-help underline decoration-dotted">
-                Hvorfor så langsomt?
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              <p className="font-medium mb-1">Hastighed = ikke kun "2 req/sek"</p>
-              <p className="text-sm text-muted-foreground">
-                2 requests/sek er en API-kald grænse. Én ordre kræver ofte flere API-kald (opslag af kunde/produkter + oprettelse)
-                og hvis mange ordrer fejler validering, falder den effektive hastighed.
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-    );
-  }
-  
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
-        <Zap className="w-3 h-3 mr-1" />
-        ~{itemsPerMinute.toFixed(1)} {entityLabel}/min
-      </Badge>
-      <span className="text-green-600">
-        Fuld hastighed
-      </span>
-    </div>
-  );
-}
 
 export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
-
-  // Persistent shop type detection - once detected, stays visible
-  const [detectedShopType, setDetectedShopType] = useState<{
-    type: 'trial' | 'paid';
-    entityType: EntityType;
-    measuredSpeed: number;
-  } | null>(null);
 
   // Status counts for each entity type (for the menu)
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
@@ -665,31 +596,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Calculate overall speed and ETA
   const currentSpeed = runningJob?.items_per_minute || 0;
   
-  // Detect shop type based on upload speed - once detected, it persists
-  useEffect(() => {
-    if (runningJob && runningJob.items_per_minute && runningJob.items_per_minute > 0) {
-      const thresholds = SPEED_THRESHOLDS[runningJob.entity_type] || SPEED_THRESHOLDS.products;
-      const isTrial = runningJob.items_per_minute <= thresholds.trialMax;
-      
-      setDetectedShopType(prev => {
-        // If we haven't detected yet, set initial detection
-        if (!prev) {
-          return {
-            type: isTrial ? 'trial' : 'paid',
-            entityType: runningJob.entity_type,
-            measuredSpeed: runningJob.items_per_minute,
-          };
-        }
-        // Update speed but keep the shop type decision
-        return {
-          ...prev,
-          entityType: runningJob.entity_type,
-          measuredSpeed: runningJob.items_per_minute,
-        };
-      });
-    }
-  }, [runningJob?.items_per_minute, runningJob?.entity_type]);
-  
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
     .filter(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused')
@@ -1047,15 +953,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             </div>
           )}
 
-          {/* Persistent Shop Type Indicator - only show during active upload */}
-          {detectedShopType && isUploading && (
-            <div className="pt-4 border-t">
-              <ShopTypeIndicator 
-                entityType={detectedShopType.entityType}
-                itemsPerMinute={detectedShopType.measuredSpeed}
-              />
-            </div>
-          )}
 
           {/* Summary when not uploading */}
           {!isUploading && fixedTotalItems > 0 && (
