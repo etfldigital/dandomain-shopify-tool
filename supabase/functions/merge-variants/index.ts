@@ -23,6 +23,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 interface MergeRequest {
   projectId: string;
   dryRun?: boolean; // If true, only return what would happen without making changes
+  excludeVariants?: string[]; // SKUs to exclude from merge (user removed them)
   duplicateGroup: {
     key: string;
     shopifyIds: string[]; // Unique Shopify product IDs with same title
@@ -107,7 +108,8 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, duplicateGroup, dryRun = false }: MergeRequest = await req.json();
+    const { projectId, duplicateGroup, dryRun = false, excludeVariants = [] }: MergeRequest = await req.json();
+    const excludeSkusSet = new Set(excludeVariants.map(s => s.toLowerCase()));
 
     console.log(`[MERGE] ${dryRun ? 'DRY RUN - ' : ''}Starting merge for group "${duplicateGroup.key}" with ${duplicateGroup.shopifyIds.length} Shopify products`);
 
@@ -189,6 +191,42 @@ serve(async (req) => {
     console.log(`[MERGE] Primary product: ${primaryProduct.id} (${primaryProduct.title}) with ${primaryProduct.variants.length} variants`);
     console.log(`[MERGE] Duplicate products to merge: ${duplicateProducts.map(p => p.id).join(', ')}`);
 
+    // Valid size patterns - only these will be added as variants
+    const SIZE_PATTERNS = [
+      // Letter sizes (case insensitive)
+      /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
+      // Number sizes
+      /^\d{1,3}$/,  // e.g., 36, 38, 40, 42, 128
+      // Combined letter-number sizes
+      /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,  // e.g., S-36, M/38
+      /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,  // e.g., 36-S
+      // Range sizes
+      /^\d{2,3}[-\/]\d{2,3}$/,  // e.g., 35-38, 128/134
+      // One size
+      /^one[-\s]?size$/i,
+      // Shoe sizes with half sizes
+      /^\d{1,2}[.,]5$/,  // e.g., 7.5, 42,5
+    ];
+
+    function isValidSizeVariant(option: string): boolean {
+      const trimmed = option.trim();
+      return SIZE_PATTERNS.some(pattern => pattern.test(trimmed));
+    }
+
+    function extractSizeFromSku(sku: string): string | null {
+      if (!sku) return null;
+      
+      const parts = sku.split('-');
+      // Check from the end backwards for a size
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const part = parts[i].toUpperCase();
+        if (isValidSizeVariant(part)) {
+          return part;
+        }
+      }
+      return null;
+    }
+
     // Step 3: Collect all variants from duplicate products
     const newVariants: any[] = [];
     const existingSkus = new Set(primaryProduct.variants.map(v => v.sku?.toLowerCase() || ''));
@@ -199,22 +237,30 @@ serve(async (req) => {
         const skuLower = variant.sku?.toLowerCase() || '';
         const optionLower = variant.option1?.toLowerCase() || '';
         
+        // Skip if user excluded this variant
+        if (skuLower && excludeSkusSet.has(skuLower)) {
+          console.log(`[MERGE] Skipping variant ${variant.sku} - excluded by user`);
+          continue;
+        }
+        
         // Skip if variant already exists (by SKU or option)
         if (skuLower && existingSkus.has(skuLower)) {
           console.log(`[MERGE] Skipping variant ${variant.sku} - already exists`);
           continue;
         }
         
-        // Determine variant option (size/color from SKU or use existing option)
+        // Determine variant option - ONLY accept size variants
         let variantOption = variant.option1;
-        if (!variantOption || variantOption === 'Default Title') {
-          // Try to extract from SKU
-          const sku = variant.sku || '';
-          const parts = sku.split('-');
-          if (parts.length > 1) {
-            variantOption = parts[parts.length - 1].toUpperCase();
+        
+        // If the option is not a valid size, try to extract from SKU
+        if (!variantOption || variantOption === 'Default Title' || !isValidSizeVariant(variantOption)) {
+          const sizeFromSku = extractSizeFromSku(variant.sku || '');
+          if (sizeFromSku) {
+            variantOption = sizeFromSku;
           } else {
-            variantOption = `Variant ${newVariants.length + primaryProduct.variants.length + 1}`;
+            // Not a size variant - skip it (this filters out color variants like -grey)
+            console.log(`[MERGE] Skipping variant ${variant.sku} - not a valid size variant (option: ${variant.option1})`);
+            continue;
           }
         }
         
@@ -228,13 +274,14 @@ serve(async (req) => {
           sku: variant.sku,
           price: variant.price,
           compare_at_price: variant.compare_at_price,
-          option1: variantOption,
+          option1: variantOption.toUpperCase(),
           inventory_quantity: variant.inventory_quantity || 0,
           weight: variant.weight || 0,
           weight_unit: variant.weight_unit || 'kg',
           barcode: variant.barcode,
           requires_shipping: variant.requires_shipping ?? true,
           inventory_management: 'shopify',
+          sourceProductId: String(dupProduct.id), // Track source for UI
         });
         
         existingSkus.add(skuLower);
