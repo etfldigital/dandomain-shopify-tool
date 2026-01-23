@@ -22,6 +22,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface MergeRequest {
   projectId: string;
+  dryRun?: boolean; // If true, only return what would happen without making changes
   duplicateGroup: {
     key: string;
     shopifyIds: string[]; // Unique Shopify product IDs with same title
@@ -106,9 +107,9 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, duplicateGroup }: MergeRequest = await req.json();
+    const { projectId, duplicateGroup, dryRun = false }: MergeRequest = await req.json();
 
-    console.log(`[MERGE] Starting merge for group "${duplicateGroup.key}" with ${duplicateGroup.shopifyIds.length} Shopify products`);
+    console.log(`[MERGE] ${dryRun ? 'DRY RUN - ' : ''}Starting merge for group "${duplicateGroup.key}" with ${duplicateGroup.shopifyIds.length} Shopify products`);
 
     // Get project with Shopify credentials
     const { data: project, error: projectError } = await supabase
@@ -242,6 +243,50 @@ serve(async (req) => {
     }
 
     console.log(`[MERGE] Found ${newVariants.length} new variants to add`);
+
+    // If dry run, return the preview without making changes
+    if (dryRun) {
+      console.log(`[MERGE] Dry run complete - returning preview`);
+      return new Response(JSON.stringify({
+        success: true,
+        dryRun: true,
+        preview: {
+          primaryProduct: {
+            id: String(primaryProduct.id),
+            title: primaryProduct.title,
+            variantCount: primaryProduct.variants.length,
+            variants: primaryProduct.variants.map(v => ({
+              sku: v.sku,
+              option: v.option1 || 'Default',
+              price: v.price,
+            })),
+          },
+          duplicateProducts: duplicateProducts.map(p => ({
+            id: String(p.id),
+            title: p.title,
+            variantCount: p.variants.length,
+            variants: p.variants.map(v => ({
+              sku: v.sku,
+              option: v.option1 || 'Default',
+              price: v.price,
+            })),
+          })),
+          newVariantsToAdd: newVariants.map(v => ({
+            sku: v.sku,
+            option: v.option1,
+            price: v.price,
+          })),
+          productsToDelete: duplicateProducts.length,
+          summary: {
+            totalVariantsAfterMerge: primaryProduct.variants.length + newVariants.length,
+            variantsToAdd: newVariants.length,
+            productsToDelete: duplicateProducts.length,
+          },
+        },
+      }), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
 
     if (newVariants.length === 0) {
       // No new variants to add, just delete duplicates
