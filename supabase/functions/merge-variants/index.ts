@@ -355,14 +355,40 @@ serve(async (req) => {
     // Sort new variants by size (smallest to largest)
     const sortedNewVariants = sortVariantsBySize(newVariants);
 
+    // Check if any existing variants on primary product need size correction (Default Title → actual size)
+    const variantsToCorrect: { variantId: number; sku: string; newOption: string }[] = [];
+    for (const variant of primaryProduct.variants) {
+      const option = variant.option1?.toLowerCase() || '';
+      // Check if it's Default Title or not a valid size
+      if (option === 'default title' || option === 'default' || !isValidSizeVariant(variant.option1 || '')) {
+        const sizeFromSku = extractSizeFromSku(variant.sku || '');
+        if (sizeFromSku) {
+          variantsToCorrect.push({
+            variantId: variant.id,
+            sku: variant.sku || '',
+            newOption: sizeFromSku.toUpperCase(),
+          });
+          console.log(`[MERGE] Will correct existing variant ${variant.sku}: "${variant.option1}" → "${sizeFromSku.toUpperCase()}"`);
+        }
+      }
+    }
+
+    // Build corrected existing variants for preview/sorting
+    const correctedExistingVariants = primaryProduct.variants.map(v => {
+      const correction = variantsToCorrect.find(c => c.variantId === v.id);
+      return {
+        ...v,
+        option1: correction ? correction.newOption : (v.option1 || 'Default'),
+        willBeCorrect: !!correction,
+      };
+    });
+
     // If dry run, return the preview without making changes
     if (dryRun) {
       console.log(`[MERGE] Dry run complete - returning preview`);
       
-      // Sort existing variants for display
-      const sortedExistingVariants = sortVariantsBySize(
-        primaryProduct.variants.map(v => ({ ...v, option1: v.option1 || 'Default' }))
-      );
+      // Sort existing variants for display (with corrections applied)
+      const sortedExistingVariants = sortVariantsBySize(correctedExistingVariants);
       
       return new Response(JSON.stringify({
         success: true,
@@ -375,7 +401,10 @@ serve(async (req) => {
             variants: sortedExistingVariants.map(v => ({
               sku: v.sku,
               option: v.option1 || 'Default',
+              originalOption: variantsToCorrect.find(c => c.variantId === v.id) ? 
+                primaryProduct.variants.find(pv => pv.id === v.id)?.option1 : undefined,
               price: v.price,
+              willBeCorrected: !!variantsToCorrect.find(c => c.variantId === v.id),
             })),
           },
           duplicateProducts: duplicateProducts.map(p => ({
@@ -393,10 +422,15 @@ serve(async (req) => {
             option: v.option1,
             price: v.price,
           })),
+          variantsToCorrect: variantsToCorrect.map(v => ({
+            sku: v.sku,
+            newOption: v.newOption,
+          })),
           productsToDelete: duplicateProducts.length,
           summary: {
             totalVariantsAfterMerge: primaryProduct.variants.length + sortedNewVariants.length,
             variantsToAdd: sortedNewVariants.length,
+            variantsToCorrect: variantsToCorrect.length,
             productsToDelete: duplicateProducts.length,
           },
         },
@@ -405,14 +439,55 @@ serve(async (req) => {
       });
     }
 
-    if (sortedNewVariants.length === 0) {
-      // No new variants to add, just delete duplicates
-      console.log(`[MERGE] No new variants found, proceeding to delete duplicates only`);
-    } else {
-      // Step 4: Add new variants to the primary product
+    // Step 4a: Correct existing variants with Default Title
+    if (variantsToCorrect.length > 0) {
+      console.log(`[MERGE] Correcting ${variantsToCorrect.length} existing variants...`);
+      for (const correction of variantsToCorrect) {
+        const variantResult = await shopifyFetch(
+          `${shopifyUrl}/variants/${correction.variantId}.json`,
+          {
+            method: 'PUT',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'X-Shopify-Access-Token': shopifyToken 
+            },
+            body: JSON.stringify({
+              variant: {
+                id: correction.variantId,
+                option1: correction.newOption,
+              }
+            }),
+          }
+        );
+        
+        if ('rateLimited' in variantResult) {
+          return new Response(JSON.stringify({
+            success: false,
+            rateLimited: true,
+            retryAfterMs: variantResult.retryAfterMs,
+          }), { 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+        
+        if (!variantResult.response.ok) {
+          console.warn(`[MERGE] Could not correct variant ${correction.sku}: ${variantResult.body}`);
+        } else {
+          console.log(`[MERGE] Corrected variant ${correction.sku} to "${correction.newOption}"`);
+        }
+        
+        await sleep(300);
+      }
+    }
+
+    if (sortedNewVariants.length === 0 && variantsToCorrect.length === 0) {
+      // No new variants to add or correct, just delete duplicates
+      console.log(`[MERGE] No new variants or corrections, proceeding to delete duplicates only`);
+    } else if (sortedNewVariants.length > 0) {
+      // Step 4b: Add new variants to the primary product
       // First, update the product's options to include all variant values (sorted)
       const allVariantsForSorting = [
-        ...primaryProduct.variants.map(v => ({ option1: v.option1 || 'Default' })),
+        ...correctedExistingVariants.map(v => ({ option1: v.option1 })),
         ...sortedNewVariants.map(v => ({ option1: v.option1 })),
       ];
       const sortedAllVariants = sortVariantsBySize(allVariantsForSorting);

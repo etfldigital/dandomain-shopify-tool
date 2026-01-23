@@ -44,7 +44,13 @@ interface MergePreview {
     id: string;
     title: string;
     variantCount: number;
-    variants: { sku: string; option: string; price: string }[];
+    variants: { 
+      sku: string; 
+      option: string; 
+      originalOption?: string;
+      price: string;
+      willBeCorrected?: boolean;
+    }[];
   };
   duplicateProducts: {
     id: string;
@@ -53,10 +59,12 @@ interface MergePreview {
     variants: { sku: string; option: string; price: string }[];
   }[];
   newVariantsToAdd: { sku: string; option: string; price: string; sourceProductId?: string }[];
+  variantsToCorrect?: { sku: string; newOption: string }[];
   productsToDelete: number;
   summary: {
     totalVariantsAfterMerge: number;
     variantsToAdd: number;
+    variantsToCorrect?: number;
     productsToDelete: number;
   };
 }
@@ -937,12 +945,30 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                     Varianter på produktet ({mergePreview.preview.primaryProduct.variantCount + mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length} i alt):
                   </div>
                   
-                  {/* Existing variants (cannot be removed) */}
+                  {/* Existing variants (with corrections shown) */}
                   <div className="flex flex-wrap gap-2 mb-4">
                     {mergePreview.preview.primaryProduct.variants.map((v, i) => (
-                      <div key={`existing-${i}`} className="flex items-center gap-1 bg-muted rounded-md px-3 py-1.5">
-                        <span className="text-sm font-medium">{v.option}</span>
+                      <div 
+                        key={`existing-${i}`} 
+                        className={`flex items-center gap-1 rounded-md px-3 py-1.5 ${
+                          v.willBeCorrected 
+                            ? 'bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800' 
+                            : 'bg-muted'
+                        }`}
+                      >
+                        {v.willBeCorrected && v.originalOption && (
+                          <>
+                            <span className="text-sm text-muted-foreground line-through">{v.originalOption}</span>
+                            <ArrowRight className="w-3 h-3 text-amber-600" />
+                          </>
+                        )}
+                        <span className={`text-sm font-medium ${v.willBeCorrected ? 'text-amber-700 dark:text-amber-400' : ''}`}>
+                          {v.option}
+                        </span>
                         <span className="text-xs text-muted-foreground">({v.sku || 'No SKU'})</span>
+                        {v.willBeCorrected && (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-amber-600 ml-1" />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -997,13 +1023,19 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               {/* Summary */}
               <Card>
                 <CardContent className="py-4">
-                  <div className="grid grid-cols-3 gap-4 text-center">
+                  <div className={`grid gap-4 text-center ${mergePreview.preview.summary.variantsToCorrect ? 'grid-cols-4' : 'grid-cols-3'}`}>
                     <div>
                       <div className="text-2xl font-bold text-primary">
                         {mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length}
                       </div>
                       <div className="text-sm text-muted-foreground">Varianter tilføjes</div>
                     </div>
+                    {mergePreview.preview.summary.variantsToCorrect && mergePreview.preview.summary.variantsToCorrect > 0 && (
+                      <div>
+                        <div className="text-2xl font-bold text-amber-600">{mergePreview.preview.summary.variantsToCorrect}</div>
+                        <div className="text-sm text-muted-foreground">Rettes</div>
+                      </div>
+                    )}
                     <div>
                       <div className="text-2xl font-bold text-destructive">{mergePreview.preview.summary.productsToDelete}</div>
                       <div className="text-sm text-muted-foreground">Produkter slettes</div>
