@@ -192,21 +192,31 @@ serve(async (req) => {
     console.log(`[MERGE] Duplicate products to merge: ${duplicateProducts.map(p => p.id).join(', ')}`);
 
     // Valid size patterns - only these will be added as variants
+    // IMPORTANT: Numeric sizes must be in realistic ranges to avoid matching product codes
     const SIZE_PATTERNS = [
       // Letter sizes (case insensitive)
       /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
-      // Number sizes
-      /^\d{1,3}$/,  // e.g., 36, 38, 40, 42, 128
       // Combined letter-number sizes
       /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,  // e.g., S-36, M/38
       /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,  // e.g., 36-S
-      // Range sizes
-      /^\d{2,3}[-\/]\d{2,3}$/,  // e.g., 35-38, 128/134
+      // Range sizes (must be 2-digit numbers in valid ranges)
+      /^\d{2}[-\/]\d{2}$/,  // e.g., 35-38
       // One size
       /^one[-\s]?size$/i,
       // Shoe sizes with half sizes
       /^\d{1,2}[.,]5$/,  // e.g., 7.5, 42,5
     ];
+
+    // Valid numeric size ranges (to filter out product codes like 601)
+    const VALID_NUMERIC_SIZE_RANGES = [
+      { min: 0, max: 20 },    // US/UK shoe sizes, baby sizes
+      { min: 32, max: 60 },   // European clothing sizes (pants, shirts)
+      { min: 86, max: 194 },  // Kids clothing sizes (height-based: 86, 92, 98... 176, 194)
+    ];
+
+    function isValidNumericSize(num: number): boolean {
+      return VALID_NUMERIC_SIZE_RANGES.some(range => num >= range.min && num <= range.max);
+    }
 
     // Size order for sorting variants from smallest to largest
     const SIZE_ORDER: Record<string, number> = {
@@ -247,7 +257,20 @@ serve(async (req) => {
 
     function isValidSizeVariant(option: string): boolean {
       const trimmed = option.trim();
-      return SIZE_PATTERNS.some(pattern => pattern.test(trimmed));
+      
+      // First check pattern-based sizes (letters, combinations, etc.)
+      if (SIZE_PATTERNS.some(pattern => pattern.test(trimmed))) {
+        return true;
+      }
+      
+      // Then check if it's a pure number in a valid size range
+      const numMatch = trimmed.match(/^(\d+)$/);
+      if (numMatch) {
+        const num = parseInt(numMatch[1], 10);
+        return isValidNumericSize(num);
+      }
+      
+      return false;
     }
 
     function extractSizeFromSku(sku: string): string | null {
