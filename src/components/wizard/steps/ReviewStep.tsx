@@ -52,13 +52,19 @@ interface MergePreview {
     variantCount: number;
     variants: { sku: string; option: string; price: string }[];
   }[];
-  newVariantsToAdd: { sku: string; option: string; price: string }[];
+  newVariantsToAdd: { sku: string; option: string; price: string; sourceProductId?: string }[];
   productsToDelete: number;
   summary: {
     totalVariantsAfterMerge: number;
     variantsToAdd: number;
     productsToDelete: number;
   };
+}
+
+interface MergePreviewState {
+  group: DuplicateGroup;
+  preview: MergePreview;
+  excludedVariants: Set<string>; // SKUs that user has removed
 }
 
 interface ReviewStepProps {
@@ -93,7 +99,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   const [mergingGroup, setMergingGroup] = useState<string | null>(null);
   const [mergingAll, setMergingAll] = useState<EntityType | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
-  const [mergePreview, setMergePreview] = useState<{ group: DuplicateGroup; preview: MergePreview } | null>(null);
+  const [mergePreview, setMergePreview] = useState<MergePreviewState | null>(null);
 
   const scanForDuplicates = async (entityType: EntityType) => {
     setScanning(entityType);
@@ -301,7 +307,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   };
 
   // Merge a single duplicate group as variants
-  const mergeAsVariants = async (group: DuplicateGroup) => {
+  const mergeAsVariants = async (group: DuplicateGroup, excludeVariants: string[] = []) => {
     if (group.shopifyIds.length < 2) {
       toast.error('Der skal være mindst 2 produkter i Shopify for at merge varianter');
       return;
@@ -313,6 +319,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
       const { data, error } = await supabase.functions.invoke('merge-variants', {
         body: {
           projectId: project.id,
+          excludeVariants,
           duplicateGroup: {
             key: group.key,
             shopifyIds: group.shopifyIds,
@@ -383,7 +390,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         throw new Error(data.error || 'Kunne ikke hente preview');
       }
 
-      setMergePreview({ group, preview: data.preview });
+      setMergePreview({ group, preview: data.preview, excludedVariants: new Set() });
     } catch (error) {
       console.error('Error previewing merge:', error);
       toast.error(`Fejl ved preview: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
@@ -908,18 +915,93 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               Preview: Merge "{mergePreview?.group.title || mergePreview?.group.key}"
             </DialogTitle>
             <DialogDescription>
-              Se hvad der vil ske når du merger disse produkter som varianter
+              Se hvilke varianter der vil være på produktet efter merge. Fjern varianter du ikke ønsker.
             </DialogDescription>
           </DialogHeader>
 
           {mergePreview && (
             <div className="space-y-4">
+              {/* Final Product Preview - What will exist after merge */}
+              <Card className="border-primary">
+                <CardHeader className="py-3 bg-primary/5">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Package className="w-4 h-4 text-primary" />
+                    Produkt efter merge
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    {mergePreview.preview.primaryProduct.title}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="py-4">
+                  <div className="text-xs text-muted-foreground mb-3">
+                    Varianter på produktet ({mergePreview.preview.primaryProduct.variantCount + mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length} i alt):
+                  </div>
+                  
+                  {/* Existing variants (cannot be removed) */}
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    {mergePreview.preview.primaryProduct.variants.map((v, i) => (
+                      <div key={`existing-${i}`} className="flex items-center gap-1 bg-muted rounded-md px-3 py-1.5">
+                        <span className="text-sm font-medium">{v.option}</span>
+                        <span className="text-xs text-muted-foreground">({v.sku || 'No SKU'})</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* New variants (can be removed) */}
+                  {mergePreview.preview.newVariantsToAdd.length > 0 && (
+                    <>
+                      <div className="text-xs text-muted-foreground mb-2 flex items-center gap-2">
+                        <ArrowRight className="w-3 h-3" />
+                        Nye varianter der tilføjes (klik for at fjerne):
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {mergePreview.preview.newVariantsToAdd.map((v, i) => {
+                          const isExcluded = mergePreview.excludedVariants.has(v.sku);
+                          return (
+                            <button
+                              key={`new-${i}`}
+                              onClick={() => {
+                                const newExcluded = new Set(mergePreview.excludedVariants);
+                                if (isExcluded) {
+                                  newExcluded.delete(v.sku);
+                                } else {
+                                  newExcluded.add(v.sku);
+                                }
+                                setMergePreview({ ...mergePreview, excludedVariants: newExcluded });
+                              }}
+                              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 border transition-all ${
+                                isExcluded 
+                                  ? 'bg-muted/50 border-muted text-muted-foreground line-through opacity-50' 
+                                  : 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20'
+                              }`}
+                            >
+                              <span className="text-sm font-medium">{v.option}</span>
+                              <span className="text-xs opacity-75">({v.sku || 'No SKU'})</span>
+                              {!isExcluded && <Trash2 className="w-3 h-3 ml-1 opacity-50" />}
+                              {isExcluded && <span className="text-xs ml-1">(klik for at tilføje igen)</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {mergePreview.preview.newVariantsToAdd.length === 0 && (
+                    <div className="text-sm text-muted-foreground italic">
+                      Ingen nye størrelser fundet at tilføje
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
               {/* Summary */}
-              <Card className="border-primary/50 bg-primary/5">
+              <Card>
                 <CardContent className="py-4">
                   <div className="grid grid-cols-3 gap-4 text-center">
                     <div>
-                      <div className="text-2xl font-bold text-primary">{mergePreview.preview.summary.variantsToAdd}</div>
+                      <div className="text-2xl font-bold text-primary">
+                        {mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length}
+                      </div>
                       <div className="text-sm text-muted-foreground">Varianter tilføjes</div>
                     </div>
                     <div>
@@ -927,94 +1009,35 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                       <div className="text-sm text-muted-foreground">Produkter slettes</div>
                     </div>
                     <div>
-                      <div className="text-2xl font-bold">{mergePreview.preview.summary.totalVariantsAfterMerge}</div>
+                      <div className="text-2xl font-bold">
+                        {mergePreview.preview.primaryProduct.variantCount + mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length}
+                      </div>
                       <div className="text-sm text-muted-foreground">Varianter i alt</div>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Primary Product */}
-              <Card>
-                <CardHeader className="py-3">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-primary" />
-                    Primært produkt (beholdes)
-                  </CardTitle>
-                  <CardDescription className="text-xs">
-                    Shopify ID: {mergePreview.preview.primaryProduct.id}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="py-2">
-                  <div className="text-sm font-medium mb-2">{mergePreview.preview.primaryProduct.title}</div>
-                  <div className="text-xs text-muted-foreground mb-2">
-                    Eksisterende varianter ({mergePreview.preview.primaryProduct.variantCount}):
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {mergePreview.preview.primaryProduct.variants.map((v, i) => (
-                      <Badge key={i} variant="secondary" className="text-xs">
-                        {v.option} - {v.sku || 'No SKU'} ({v.price} DKK)
-                      </Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Duplicate Products */}
+              {/* Duplicate Products that will be deleted */}
               <Card className="border-destructive/30">
                 <CardHeader className="py-3">
                   <CardTitle className="text-sm flex items-center gap-2 text-destructive">
                     <Trash2 className="w-4 h-4" />
-                    Duplikater (slettes fra Shopify)
+                    Disse produkter slettes fra Shopify
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="py-2 space-y-3">
-                  {mergePreview.preview.duplicateProducts.map((product, idx) => (
-                    <div key={idx} className="border-l-2 border-destructive/30 pl-3">
-                      <div className="text-xs text-muted-foreground">Shopify ID: {product.id}</div>
-                      <div className="text-sm">{product.title}</div>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {product.variants.map((v, i) => (
-                          <Badge key={i} variant="outline" className="text-xs">
-                            {v.option} - {v.sku || 'No SKU'}
-                          </Badge>
-                        ))}
+                <CardContent className="py-2">
+                  <div className="space-y-2">
+                    {mergePreview.preview.duplicateProducts.map((product, idx) => (
+                      <div key={idx} className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <span className="font-mono text-xs">{product.id}</span>
+                        <span>-</span>
+                        <span className="truncate">{product.title}</span>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </CardContent>
               </Card>
-
-              {/* New Variants to Add */}
-              {mergePreview.preview.newVariantsToAdd.length > 0 && (
-                <Card className="border-primary/30">
-                  <CardHeader className="py-3">
-                    <CardTitle className="text-sm flex items-center gap-2 text-primary">
-                      <ArrowRight className="w-4 h-4" />
-                      Nye varianter der tilføjes
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {mergePreview.preview.newVariantsToAdd.map((v, i) => (
-                        <Badge key={i} className="text-xs bg-primary/10 text-primary border-primary/30">
-                          {v.option} - {v.sku || 'No SKU'} ({v.price} DKK)
-                        </Badge>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {mergePreview.preview.newVariantsToAdd.length === 0 && (
-                <Card className="border-muted">
-                  <CardContent className="py-4 text-center text-muted-foreground">
-                    <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                    <p className="text-sm">Ingen nye varianter at tilføje (alle varianter findes allerede)</p>
-                    <p className="text-xs mt-1">Duplikaterne vil stadig blive slettet fra Shopify</p>
-                  </CardContent>
-                </Card>
-              )}
             </div>
           )}
 
@@ -1023,7 +1046,10 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               Annuller
             </Button>
             <Button
-              onClick={() => mergePreview && mergeAsVariants(mergePreview.group)}
+              onClick={() => mergePreview && mergeAsVariants(
+                mergePreview.group, 
+                Array.from(mergePreview.excludedVariants)
+              )}
               disabled={mergingGroup !== null}
               className="gap-2"
             >
