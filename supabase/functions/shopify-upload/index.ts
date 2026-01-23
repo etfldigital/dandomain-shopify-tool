@@ -206,10 +206,11 @@ serve(async (req) => {
 });
 
 // ============================================================================
-// PRODUCT UPLOAD
+// PRODUCT UPLOAD - NO PRE-LOADING, JUST CREATE & HANDLE DUPLICATES
 // ============================================================================
 
-const existingProducts: Map<string, string> = new Map();
+// Cache products we've already uploaded in this session (title -> shopify_id)
+const sessionProductCache: Map<string, string> = new Map();
 
 async function uploadProducts(
   supabase: any,
@@ -237,13 +238,6 @@ async function uploadProducts(
 
   if (!pendingProducts || pendingProducts.length === 0) {
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
-  }
-
-  // Load existing Shopify products once per session
-  if (existingProducts.size === 0) {
-    console.log('[PRODUCTS] Fetching existing Shopify products for deduplication...');
-    await loadExistingProducts(shopifyUrl, token);
-    console.log(`[PRODUCTS] Found ${existingProducts.size} existing products`);
   }
 
   // Group products by title for variant handling
@@ -325,42 +319,8 @@ async function uploadProducts(
   };
 }
 
-async function loadExistingProducts(shopifyUrl: string, token: string): Promise<void> {
-  let pageInfo: string | null = null;
-  let hasMorePages = true;
-  
-  while (hasMorePages) {
-    const url = pageInfo 
-      ? `${shopifyUrl}/products.json?limit=250&page_info=${pageInfo}&fields=id,title`
-      : `${shopifyUrl}/products.json?limit=250&fields=id,title`;
-    
-    const result = await shopifyFetch(url, { headers: { 'X-Shopify-Access-Token': token } });
-    
-    if ('rateLimited' in result) {
-      await sleep(result.retryAfterMs);
-      continue;
-    }
-    
-    if (!result.response.ok) {
-      console.error(`Failed to fetch existing products: ${result.response.status}`);
-      break;
-    }
-    
-    const data = JSON.parse(result.body);
-    for (const product of (data.products || [])) {
-      existingProducts.set(product.title.toLowerCase(), String(product.id));
-    }
-    
-    const linkHeader = result.response.headers.get('Link');
-    if (linkHeader && linkHeader.includes('rel="next"')) {
-      const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
-      pageInfo = match ? match[1] : null;
-      hasMorePages = !!pageInfo;
-    } else {
-      hasMorePages = false;
-    }
-  }
-}
+// REMOVED: loadExistingProducts - we handle duplicates via Shopify's 422 response instead
+// This avoids rate limiting from fetching all products before uploading
 
 function groupProductsByTitle(products: any[]): Map<string, any[]> {
   const groups: Map<string, any[]> = new Map();
@@ -409,10 +369,10 @@ async function processProductGroup(
   
   const titleLower = transformedTitle.toLowerCase();
   
-  // Check if already exists
-  if (existingProducts.has(titleLower)) {
-    const existingId = existingProducts.get(titleLower)!;
-    console.log(`[PRODUCTS] "${transformedTitle}" already exists, skipping`);
+  // Check session cache first (products we've uploaded in this function invocation)
+  if (sessionProductCache.has(titleLower)) {
+    const existingId = sessionProductCache.get(titleLower)!;
+    console.log(`[PRODUCTS] "${transformedTitle}" already in session cache, skipping`);
     
     const ids = items.map((it) => it.id);
     await supabase
@@ -544,7 +504,7 @@ async function processProductGroup(
   const shopifyId = String(responseData.product.id);
   const shopifyHandle = responseData.product.handle;
   
-  existingProducts.set(titleLower, shopifyId);
+  sessionProductCache.set(titleLower, shopifyId);
 
   // Update all items
   for (const item of items) {
