@@ -139,6 +139,7 @@ const WATCHDOG_INTERVAL_MS = 60_000;
 export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isStarting, setIsStarting] = useState(false);
+  const [isForceRestarting, setIsForceRestarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
   
   // Countdown timer state for rate limit waits
@@ -373,15 +374,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
 
   const handleForceRestart = async () => {
+    if (isForceRestarting) return;
+    setIsForceRestarting(true);
+    const tId = toast.loading('Genstarter upload…');
     try {
       const { error } = await supabase.functions.invoke('upload-worker', {
         body: { projectId: project.id, action: 'force-restart' },
       });
       if (error) throw error;
+      toast.dismiss(tId);
       toast.success('Upload genstartet');
       await fetchJobs();
     } catch (error) {
+      toast.dismiss(tId);
       toast.error('Kunne ikke genstarte upload');
+    } finally {
+      setIsForceRestarting(false);
     }
   };
 
@@ -1156,9 +1164,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="outline" onClick={handleForceRestart}>
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Genstart
+                    <Button
+                      variant="outline"
+                      onClick={handleForceRestart}
+                      disabled={isForceRestarting}
+                    >
+                      <RefreshCw className={`w-4 h-4 mr-2 ${isForceRestarting ? 'animate-spin' : ''}`} />
+                      {isForceRestarting ? 'Genstarter…' : 'Genstart'}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
@@ -1199,7 +1211,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           entity_type: j.entity_type,
           skipped_count: j.skipped_count,
           error_count: j.error_count,
-          error_details: j.error_details,
+          // Hide transient worker-level operational messages from the error report.
+          // They are shown elsewhere as "venter" via next_attempt_at.
+          error_details: (j.error_details || []).filter(e => e.externalId !== '__worker__'),
         }))}
         statusCounts={statusCounts}
         onRetryFailed={handleRetryFailed}
