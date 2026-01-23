@@ -1,9 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   Table,
   TableBody,
@@ -16,66 +17,34 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { 
   Loader2, 
-  Copy, 
-  Trash2, 
-  AlertTriangle, 
   Package, 
   Users, 
   ShoppingCart, 
   Folder,
+  FileText,
   CheckCircle2,
-  Download,
   ExternalLink,
-  Merge,
-  Eye,
-  ArrowRight,
   Search,
+  Eye,
+  Image as ImageIcon,
+  Tag,
+  DollarSign,
+  Hash,
+  MapPin,
+  Mail,
+  Phone,
+  Calendar,
+  Truck,
+  CreditCard,
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-
-interface MergePreview {
-  primaryProduct: {
-    id: string;
-    title: string;
-    variantCount: number;
-    variants: { 
-      sku: string; 
-      option: string; 
-      originalOption?: string;
-      price: string;
-      willBeCorrected?: boolean;
-    }[];
-  };
-  duplicateProducts: {
-    id: string;
-    title: string;
-    variantCount: number;
-    variants: { sku: string; option: string; price: string }[];
-  }[];
-  newVariantsToAdd: { sku: string; option: string; price: string; sourceProductId?: string }[];
-  variantsToCorrect?: { sku: string; newOption: string }[];
-  productsToDelete: number;
-  summary: {
-    totalVariantsAfterMerge: number;
-    variantsToAdd: number;
-    variantsToCorrect?: number;
-    productsToDelete: number;
-  };
-}
-
-interface MergePreviewState {
-  group: DuplicateGroup;
-  preview: MergePreview;
-  excludedVariants: Set<string>; // SKUs that user has removed
-}
 
 interface ReviewStepProps {
   project: Project;
@@ -83,448 +52,317 @@ interface ReviewStepProps {
   onNext: () => void;
 }
 
-interface DuplicateGroup {
-  key: string;
-  count: number;
-  ids: string[];
-  externalIds: string[];
-  shopifyIds: string[];
-  title?: string;
-  items: any[];
+interface EntityStats {
+  total: number;
+  pending: number;
+  uploaded: number;
+  failed: number;
 }
 
+interface ProductPreview {
+  id: string;
+  external_id: string;
+  shopify_id: string | null;
+  title: string;
+  vendor: string;
+  sku: string;
+  price: string;
+  stock: number;
+  images: string[];
+  variants: { sku: string; option: string; price: string }[];
+  status: string;
+}
+
+interface CustomerPreview {
+  id: string;
+  external_id: string;
+  shopify_id: string | null;
+  name: string;
+  email: string;
+  phone: string;
+  address: {
+    address1: string;
+    city: string;
+    zip: string;
+    country: string;
+  } | null;
+  status: string;
+}
+
+interface OrderPreview {
+  id: string;
+  external_id: string;
+  shopify_id: string | null;
+  orderNumber: string;
+  customerEmail: string;
+  totalPrice: string;
+  lineItemsCount: number;
+  financialStatus: string;
+  fulfillmentStatus: string;
+  createdAt: string;
+  status: string;
+}
+
+interface CategoryPreview {
+  id: string;
+  external_id: string;
+  shopify_id: string | null;
+  name: string;
+  slug: string | null;
+  parentId: string | null;
+  status: string;
+}
+
+/**
+ * REVIEW STEP - READ-ONLY PREVIEW
+ * 
+ * This step is intentionally read-only. It shows exactly how entities 
+ * WILL appear (or already appear) in Shopify.
+ * 
+ * NO corrective logic, NO merge decisions, NO data modifications.
+ * If something looks wrong, the fix belongs in earlier steps.
+ */
 export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps) {
-  const [duplicates, setDuplicates] = useState<Record<EntityType, DuplicateGroup[]>>({
-    products: [],
-    customers: [],
-    orders: [],
-    categories: [],
-    pages: [],
-  });
-  const [scanning, setScanning] = useState<EntityType | null>(null);
+  const [activeTab, setActiveTab] = useState<EntityType>('products');
+  const [loading, setLoading] = useState<EntityType | null>(null);
   const [saving, setSaving] = useState(false);
-  const [expandedEntity, setExpandedEntity] = useState<EntityType | null>(null);
-  const [downloadingCsv, setDownloadingCsv] = useState<EntityType | null>(null);
-  const [deletingAll, setDeletingAll] = useState<EntityType | null>(null);
-  const [mergingGroup, setMergingGroup] = useState<string | null>(null);
-  const [mergingAll, setMergingAll] = useState<EntityType | null>(null);
-  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
-  const [mergePreview, setMergePreview] = useState<MergePreviewState | null>(null);
-  const [searchQueries, setSearchQueries] = useState<Record<EntityType, string>>({
-    products: '',
-    customers: '',
-    orders: '',
-    categories: '',
-    pages: '',
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Entity data
+  const [products, setProducts] = useState<ProductPreview[]>([]);
+  const [customers, setCustomers] = useState<CustomerPreview[]>([]);
+  const [orders, setOrders] = useState<OrderPreview[]>([]);
+  const [categories, setCategories] = useState<CategoryPreview[]>([]);
+  
+  // Stats
+  const [stats, setStats] = useState<Record<EntityType, EntityStats>>({
+    products: { total: 0, pending: 0, uploaded: 0, failed: 0 },
+    customers: { total: 0, pending: 0, uploaded: 0, failed: 0 },
+    orders: { total: 0, pending: 0, uploaded: 0, failed: 0 },
+    categories: { total: 0, pending: 0, uploaded: 0, failed: 0 },
+    pages: { total: 0, pending: 0, uploaded: 0, failed: 0 },
   });
 
-  // Filter duplicates based on search query
-  const filteredDuplicates = useMemo(() => {
-    const result: Record<EntityType, DuplicateGroup[]> = {
-      products: [],
-      customers: [],
-      orders: [],
-      categories: [],
-      pages: [],
-    };
-    
-    for (const entityType of Object.keys(duplicates) as EntityType[]) {
-      const query = searchQueries[entityType].toLowerCase().trim();
-      if (!query) {
-        result[entityType] = duplicates[entityType];
-      } else {
-        result[entityType] = duplicates[entityType].filter(group => {
-          // Search in key, title, and shopify IDs
-          const keyMatch = group.key.toLowerCase().includes(query);
-          const titleMatch = group.title?.toLowerCase().includes(query);
-          const shopifyIdMatch = group.shopifyIds.some(id => id.toLowerCase().includes(query));
-          const externalIdMatch = group.externalIds.some(id => id.toLowerCase().includes(query));
-          return keyMatch || titleMatch || shopifyIdMatch || externalIdMatch;
-        });
-      }
-    }
-    
-    return result;
-  }, [duplicates, searchQueries]);
+  // Detail dialog
+  const [selectedProduct, setSelectedProduct] = useState<ProductPreview | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerPreview | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<OrderPreview | null>(null);
 
-  const scanForDuplicates = async (entityType: EntityType) => {
-    setScanning(entityType);
+  // Load stats on mount
+  useEffect(() => {
+    loadAllStats();
+  }, [project.id]);
+
+  // Load entity data when tab changes
+  useEffect(() => {
+    loadEntityData(activeTab);
+  }, [activeTab, project.id]);
+
+  const loadAllStats = async () => {
+    const entityTypes: EntityType[] = ['products', 'customers', 'orders', 'categories', 'pages'];
+    const newStats: Record<EntityType, EntityStats> = { ...stats };
+
+    await Promise.all(entityTypes.map(async (entityType) => {
+      const tableName = entityType === 'categories' 
+        ? 'canonical_categories' 
+        : `canonical_${entityType}` as const;
+
+      const [totalRes, pendingRes, uploadedRes, failedRes] = await Promise.all([
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+      ]);
+
+      newStats[entityType] = {
+        total: totalRes.count || 0,
+        pending: pendingRes.count || 0,
+        uploaded: uploadedRes.count || 0,
+        failed: failedRes.count || 0,
+      };
+    }));
+
+    setStats(newStats);
+  };
+
+  const loadEntityData = async (entityType: EntityType) => {
+    setLoading(entityType);
     
     try {
-      const tableName = `canonical_${entityType}` as const;
-      
-      // Fetch all items for the entity type
-      let allItems: any[] = [];
-      let page = 0;
-      const pageSize = 1000;
-      
-      while (true) {
-        const { data, error } = await supabase
-          .from(tableName)
-          .select('id, external_id, data, shopify_id')
-          .eq('project_id', project.id)
-          .range(page * pageSize, (page + 1) * pageSize - 1);
-        
-        if (error) throw error;
-        if (!data || data.length === 0) break;
-        
-        allItems = [...allItems, ...data];
-        if (data.length < pageSize) break;
-        page++;
-      }
-
-      // Find duplicates based on different criteria
-      const duplicateGroups: DuplicateGroup[] = [];
-      
       if (entityType === 'products') {
-        // For products: Find actual duplicates in Shopify by looking for
-        // multiple DIFFERENT Shopify product IDs with the same title.
-        // Multiple DB records with the same shopify_id = variants of same product (OK, not duplicates)
-        
-        // Step 1: Get unique Shopify product IDs with their titles
-        const shopifyProductMap = new Map<string, { shopifyId: string; title: string; items: any[] }>();
-        
-        for (const item of allItems) {
-          const shopifyId = item.shopify_id;
-          
-          if (shopifyId) {
-            if (!shopifyProductMap.has(shopifyId)) {
-              shopifyProductMap.set(shopifyId, {
-                shopifyId,
-                title: item.data?.title || 'Ukendt',
-                items: [item],
-              });
-            } else {
-              // Same Shopify ID = variants, add to existing group
-              shopifyProductMap.get(shopifyId)!.items.push(item);
-            }
-          }
-        }
-        
-        // Step 2: Group unique Shopify products by title
-        const titleToShopifyProducts = new Map<string, { shopifyId: string; title: string; items: any[] }[]>();
-        
-        for (const product of shopifyProductMap.values()) {
-          const titleKey = product.title.toLowerCase().trim();
-          if (titleKey && titleKey !== 'untitled') {
-            if (!titleToShopifyProducts.has(titleKey)) {
-              titleToShopifyProducts.set(titleKey, []);
-            }
-            titleToShopifyProducts.get(titleKey)!.push(product);
-          }
-        }
-        
-        // Step 3: Only report as duplicates if there are multiple DIFFERENT Shopify products with same title
-        for (const [titleKey, products] of titleToShopifyProducts) {
-          if (products.length > 1) {
-            // Multiple unique Shopify products with same title = real duplicates in Shopify
-            const allItemsInGroup = products.flatMap(p => p.items);
-            duplicateGroups.push({
-              key: titleKey,
-              count: products.length, // Count of unique Shopify products, not DB rows/variants
-              ids: allItemsInGroup.map(i => i.id),
-              externalIds: allItemsInGroup.map(i => i.external_id),
-              shopifyIds: products.map(p => p.shopifyId), // Unique Shopify product IDs
-              title: products[0].title,
-              items: allItemsInGroup,
-            });
-          }
-        }
-      } else if (entityType === 'customers') {
-        // Check for duplicate emails
-        const emailMap = new Map<string, any[]>();
-        for (const item of allItems) {
-          const email = item.data?.email?.toLowerCase()?.trim();
-          if (email) {
-            if (!emailMap.has(email)) {
-              emailMap.set(email, []);
-            }
-            emailMap.get(email)!.push(item);
-          }
-        }
-        
-        for (const [email, items] of emailMap) {
-          if (items.length > 1) {
-            duplicateGroups.push({
-              key: email,
-              count: items.length,
-              ids: items.map(i => i.id),
-              externalIds: items.map(i => i.external_id),
-              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
-              title: `${items[0].data?.first_name} ${items[0].data?.last_name}`,
-              items: items,
-            });
-          }
-        }
-      } else if (entityType === 'orders') {
-        // Check for duplicate order numbers/external_ids
-        const orderMap = new Map<string, any[]>();
-        for (const item of allItems) {
-          const orderId = item.external_id;
-          if (orderId) {
-            if (!orderMap.has(orderId)) {
-              orderMap.set(orderId, []);
-            }
-            orderMap.get(orderId)!.push(item);
-          }
-        }
-        
-        for (const [orderId, items] of orderMap) {
-          if (items.length > 1) {
-            duplicateGroups.push({
-              key: orderId,
-              count: items.length,
-              ids: items.map(i => i.id),
-              externalIds: items.map(i => i.external_id),
-              shopifyIds: items.map(i => i.shopify_id).filter(Boolean),
-              items: items,
-            });
-          }
-        }
-      } else if (entityType === 'categories') {
-        // Check for duplicate category names
-        const nameMap = new Map<string, any[]>();
-        for (const item of allItems) {
-          const name = (item as any).name?.toLowerCase()?.trim();
-          if (name) {
-            if (!nameMap.has(name)) {
-              nameMap.set(name, []);
-            }
-            nameMap.get(name)!.push(item);
-          }
-        }
-        
-        for (const [name, items] of nameMap) {
-          if (items.length > 1) {
-            duplicateGroups.push({
-              key: name,
-              count: items.length,
-              ids: items.map(i => i.id),
-              externalIds: items.map(i => i.external_id),
-              shopifyIds: items.map(i => (i as any).shopify_collection_id).filter(Boolean),
-              title: (items[0] as any).name,
-              items: items,
-            });
-          }
-        }
-      }
-      
-      // Sort by count descending
-      duplicateGroups.sort((a, b) => b.count - a.count);
-      
-      setDuplicates(prev => ({
-        ...prev,
-        [entityType]: duplicateGroups,
-      }));
-      
-      toast.success(`Fandt ${duplicateGroups.length} grupper af duplikater i ${entityType}`);
-    } catch (error) {
-      console.error('Error scanning for duplicates:', error);
-      toast.error('Fejl ved scanning af duplikater');
-    } finally {
-      setScanning(null);
-    }
-  };
-
-  const deleteDuplicates = async (entityType: EntityType, group: DuplicateGroup) => {
-    // Keep the first one, delete the rest
-    const idsToDelete = group.ids.slice(1);
-    const tableName = `canonical_${entityType}` as const;
-    
-    try {
-      const { error } = await supabase
-        .from(tableName)
-        .delete()
-        .in('id', idsToDelete);
-      
-      if (error) throw error;
-      
-      // Update local state
-      setDuplicates(prev => ({
-        ...prev,
-        [entityType]: prev[entityType].filter(g => g.key !== group.key),
-      }));
-      
-      toast.success(`Slettede ${idsToDelete.length} duplikater fra databasen. Bemærk: Produkter i Shopify skal slettes manuelt.`);
-    } catch (error) {
-      console.error('Error deleting duplicates:', error);
-      toast.error('Fejl ved sletning af duplikater');
-    }
-  };
-
-  // Merge a single duplicate group as variants
-  const mergeAsVariants = async (group: DuplicateGroup, excludeVariants: string[] = []) => {
-    if (group.shopifyIds.length < 2) {
-      toast.error('Der skal være mindst 2 produkter i Shopify for at merge varianter');
-      return;
-    }
-
-    setMergingGroup(group.key);
-
-    try {
-      const { data, error } = await supabase.functions.invoke('merge-variants', {
-        body: {
-          projectId: project.id,
-          excludeVariants,
-          duplicateGroup: {
-            key: group.key,
-            shopifyIds: group.shopifyIds,
-            itemIds: group.ids,
-          },
-        },
-      });
-
-      if (error) throw error;
-      
-      if (data.rateLimited) {
-        toast.error(`Rate limited - vent ${Math.ceil(data.retryAfterMs / 1000)}s og prøv igen`);
-        return;
-      }
-
-      if (!data.success) {
-        throw new Error(data.error || 'Ukendt fejl');
-      }
-
-      // Remove this group from duplicates
-      setDuplicates(prev => ({
-        ...prev,
-        products: prev.products.filter(g => g.key !== group.key),
-      }));
-
-      // Close preview dialog
-      setMergePreview(null);
-
-      toast.success(`Merged ${data.variantsAdded} varianter ind i produkt ${data.primaryProductId}. Slettede ${data.productsDeleted} duplikater fra Shopify.`);
-    } catch (error) {
-      console.error('Error merging variants:', error);
-      toast.error(`Fejl ved merge: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
-    } finally {
-      setMergingGroup(null);
-    }
-  };
-
-  // Preview merge without making changes
-  const previewMerge = async (group: DuplicateGroup) => {
-    if (group.shopifyIds.length < 2) {
-      toast.error('Der skal være mindst 2 produkter i Shopify for at merge varianter');
-      return;
-    }
-
-    setPreviewLoading(group.key);
-
-    try {
-      const { data, error } = await supabase.functions.invoke('merge-variants', {
-        body: {
-          projectId: project.id,
-          dryRun: true,
-          duplicateGroup: {
-            key: group.key,
-            shopifyIds: group.shopifyIds,
-            itemIds: group.ids,
-          },
-        },
-      });
-
-      if (error) throw error;
-      
-      if (data.rateLimited) {
-        toast.error(`Rate limited - vent ${Math.ceil(data.retryAfterMs / 1000)}s og prøv igen`);
-        return;
-      }
-
-      if (!data.success || !data.preview) {
-        throw new Error(data.error || 'Kunne ikke hente preview');
-      }
-
-      setMergePreview({ group, preview: data.preview, excludedVariants: new Set() });
-    } catch (error) {
-      console.error('Error previewing merge:', error);
-      toast.error(`Fejl ved preview: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
-    } finally {
-      setPreviewLoading(null);
-    }
-  };
-
-  // Merge all duplicate groups as variants
-  const mergeAllAsVariants = async (entityType: EntityType) => {
-    const groups = duplicates[entityType];
-    if (groups.length === 0) return;
-    
-    // Only for products
-    if (entityType !== 'products') {
-      toast.error('Merge som varianter er kun tilgængelig for produkter');
-      return;
-    }
-
-    // Filter to groups that have multiple Shopify IDs
-    const mergeableGroups = groups.filter(g => g.shopifyIds.length >= 2);
-    if (mergeableGroups.length === 0) {
-      toast.error('Ingen grupper med flere Shopify produkter at merge');
-      return;
-    }
-
-    setMergingAll(entityType);
-    
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const group of mergeableGroups) {
-      try {
-        const { data, error } = await supabase.functions.invoke('merge-variants', {
-          body: {
-            projectId: project.id,
-            duplicateGroup: {
-              key: group.key,
-              shopifyIds: group.shopifyIds,
-              itemIds: group.ids,
-            },
-          },
-        });
+        // Fetch uploaded products grouped by shopify_id
+        const { data, error } = await supabase
+          .from('canonical_products')
+          .select('id, external_id, shopify_id, data, status')
+          .eq('project_id', project.id)
+          .order('updated_at', { ascending: false })
+          .limit(500);
 
         if (error) throw error;
+
+        // Group by shopify_id to show as single products with variants
+        const productMap = new Map<string, ProductPreview>();
         
-        if (data.rateLimited) {
-          toast.info(`Rate limited - venter ${Math.ceil(data.retryAfterMs / 1000)}s...`);
-          await new Promise(r => setTimeout(r, data.retryAfterMs + 1000));
-          // Retry this group
-          const retryResult = await supabase.functions.invoke('merge-variants', {
-            body: {
-              projectId: project.id,
-              duplicateGroup: {
-                key: group.key,
-                shopifyIds: group.shopifyIds,
-                itemIds: group.ids,
-              },
-            },
-          });
-          if (retryResult.data?.success) {
-            successCount++;
+        for (const item of data || []) {
+          const d = (item.data || {}) as Record<string, any>;
+          const shopifyId = item.shopify_id || item.id;
+          
+          if (productMap.has(shopifyId)) {
+            // Add as variant
+            const existing = productMap.get(shopifyId)!;
+            const variantSize = extractSizeFromData(d);
+            if (variantSize) {
+              existing.variants.push({
+                sku: d.sku || '',
+                option: variantSize,
+                price: d.price || '0',
+              });
+            }
           } else {
-            errorCount++;
+            // New product
+            const variantSize = extractSizeFromData(d);
+            productMap.set(shopifyId, {
+              id: item.id,
+              external_id: item.external_id,
+              shopify_id: item.shopify_id,
+              title: d.title || 'Untitled',
+              vendor: d.vendor || '',
+              sku: d.sku || '',
+              price: d.price || '0',
+              stock: d.stock_quantity || 0,
+              images: d.images || [],
+              variants: variantSize ? [{ sku: d.sku || '', option: variantSize, price: d.price || '0' }] : [],
+              status: item.status,
+            });
           }
-          continue;
         }
 
-        if (data.success) {
-          successCount++;
-        } else {
-          errorCount++;
-        }
-      } catch (error) {
-        console.error(`Error merging group ${group.key}:`, error);
-        errorCount++;
+        setProducts(Array.from(productMap.values()));
       }
+      else if (entityType === 'customers') {
+        const { data, error } = await supabase
+          .from('canonical_customers')
+          .select('id, external_id, shopify_id, data, status')
+          .eq('project_id', project.id)
+          .order('updated_at', { ascending: false })
+          .limit(500);
 
-      // Small delay between groups to avoid rate limiting
-      await new Promise(r => setTimeout(r, 500));
+        if (error) throw error;
+
+        setCustomers((data || []).map(item => {
+          const d = (item.data || {}) as Record<string, any>;
+          return {
+            id: item.id,
+            external_id: item.external_id,
+            shopify_id: item.shopify_id,
+            name: `${d.first_name || ''} ${d.last_name || ''}`.trim() || 'Ukendt',
+            email: d.email || '',
+            phone: d.phone || '',
+            address: d.address ? {
+              address1: d.address.address1 || d.address.street || '',
+              city: d.address.city || '',
+              zip: d.address.zip || d.address.postal_code || '',
+              country: d.address.country || 'DK',
+            } : null,
+            status: item.status,
+          };
+        }));
+      }
+      else if (entityType === 'orders') {
+        const { data, error } = await supabase
+          .from('canonical_orders')
+          .select('id, external_id, shopify_id, data, status')
+          .eq('project_id', project.id)
+          .order('updated_at', { ascending: false })
+          .limit(500);
+
+        if (error) throw error;
+
+        setOrders((data || []).map(item => {
+          const d = (item.data || {}) as Record<string, any>;
+          return {
+            id: item.id,
+            external_id: item.external_id,
+            shopify_id: item.shopify_id,
+            orderNumber: d.order_number || item.external_id,
+            customerEmail: d.customer_email || d.email || '',
+            totalPrice: d.total_price || '0',
+            lineItemsCount: (d.line_items || []).length,
+            financialStatus: d.financial_status || 'pending',
+            fulfillmentStatus: d.fulfillment_status || 'unfulfilled',
+            createdAt: d.created_at || '',
+            status: item.status,
+          };
+        }));
+      }
+      else if (entityType === 'categories') {
+        const { data, error } = await supabase
+          .from('canonical_categories')
+          .select('id, external_id, name, slug, parent_external_id, shopify_collection_id, status')
+          .eq('project_id', project.id)
+          .order('name', { ascending: true })
+          .limit(500);
+
+        if (error) throw error;
+
+        setCategories((data || []).map(item => ({
+          id: item.id,
+          external_id: item.external_id,
+          shopify_id: item.shopify_collection_id,
+          name: item.name,
+          slug: item.slug,
+          parentId: item.parent_external_id,
+          status: item.status,
+        })));
+      }
+    } catch (error) {
+      console.error(`Error loading ${entityType}:`, error);
+      toast.error(`Fejl ved indlæsning af ${entityType}`);
+    } finally {
+      setLoading(null);
     }
-
-    // Rescan to update the list
-    await scanForDuplicates('products');
-
-    setMergingAll(null);
-    toast.success(`Merged ${successCount} grupper. ${errorCount > 0 ? `${errorCount} fejlede.` : ''}`);
   };
+
+  // Filter data based on search query
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery) return products;
+    const q = searchQuery.toLowerCase();
+    return products.filter(p => 
+      p.title.toLowerCase().includes(q) ||
+      p.sku.toLowerCase().includes(q) ||
+      p.vendor.toLowerCase().includes(q) ||
+      p.shopify_id?.includes(q)
+    );
+  }, [products, searchQuery]);
+
+  const filteredCustomers = useMemo(() => {
+    if (!searchQuery) return customers;
+    const q = searchQuery.toLowerCase();
+    return customers.filter(c => 
+      c.name.toLowerCase().includes(q) ||
+      c.email.toLowerCase().includes(q) ||
+      c.shopify_id?.includes(q)
+    );
+  }, [customers, searchQuery]);
+
+  const filteredOrders = useMemo(() => {
+    if (!searchQuery) return orders;
+    const q = searchQuery.toLowerCase();
+    return orders.filter(o => 
+      o.orderNumber.toLowerCase().includes(q) ||
+      o.customerEmail.toLowerCase().includes(q) ||
+      o.shopify_id?.includes(q)
+    );
+  }, [orders, searchQuery]);
+
+  const filteredCategories = useMemo(() => {
+    if (!searchQuery) return categories;
+    const q = searchQuery.toLowerCase();
+    return categories.filter(c => 
+      c.name.toLowerCase().includes(q) ||
+      c.slug?.toLowerCase().includes(q)
+    );
+  }, [categories, searchQuery]);
 
   const handleContinue = async () => {
     setSaving(true);
@@ -533,146 +371,17 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     onNext();
   };
 
-  const downloadDuplicatesCsv = async (entityType: EntityType) => {
-    const groups = duplicates[entityType];
-    if (groups.length === 0) {
-      toast.error('Ingen duplikater at downloade');
-      return;
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'uploaded':
+        return <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">I Shopify</Badge>;
+      case 'pending':
+        return <Badge variant="secondary">Afventer</Badge>;
+      case 'failed':
+        return <Badge variant="destructive">Fejlet</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
     }
-
-    setDownloadingCsv(entityType);
-
-    try {
-      let csv = '';
-      
-      if (entityType === 'products') {
-        csv = 'Gruppe,Titel,External ID,Shopify ID,SKU,Pris,Status\n';
-        for (const group of groups) {
-          for (const item of group.items) {
-            const d = item.data || {};
-            csv += [
-              `"${group.key.replace(/"/g, '""')}"`,
-              `"${(d.title || '').replace(/"/g, '""')}"`,
-              `"${item.external_id || ''}"`,
-              `"${item.shopify_id || 'Ikke oprettet'}"`,
-              `"${d.sku || ''}"`,
-              `"${d.price || ''}"`,
-              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
-            ].join(',') + '\n';
-          }
-        }
-      } else if (entityType === 'customers') {
-        csv = 'Gruppe,Navn,Email,External ID,Shopify ID,Status\n';
-        for (const group of groups) {
-          for (const item of group.items) {
-            const d = item.data || {};
-            csv += [
-              `"${group.key.replace(/"/g, '""')}"`,
-              `"${(d.first_name || '')} ${(d.last_name || '')}"`,
-              `"${d.email || ''}"`,
-              `"${item.external_id || ''}"`,
-              `"${item.shopify_id || 'Ikke oprettet'}"`,
-              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
-            ].join(',') + '\n';
-          }
-        }
-      } else if (entityType === 'orders') {
-        csv = 'Gruppe,Ordre ID,External ID,Shopify ID,Status\n';
-        for (const group of groups) {
-          for (const item of group.items) {
-            csv += [
-              `"${group.key.replace(/"/g, '""')}"`,
-              `"${item.external_id || ''}"`,
-              `"${item.external_id || ''}"`,
-              `"${item.shopify_id || 'Ikke oprettet'}"`,
-              `"${item.shopify_id ? 'I Shopify' : 'Kun i database'}"`,
-            ].join(',') + '\n';
-          }
-        }
-      } else if (entityType === 'categories') {
-        csv = 'Gruppe,Navn,External ID,Shopify Collection ID,Status\n';
-        for (const group of groups) {
-          for (const item of group.items) {
-            csv += [
-              `"${group.key.replace(/"/g, '""')}"`,
-              `"${(item as any).name || ''}"`,
-              `"${item.external_id || ''}"`,
-              `"${(item as any).shopify_collection_id || 'Ikke oprettet'}"`,
-              `"${(item as any).shopify_collection_id ? 'I Shopify' : 'Kun i database'}"`,
-            ].join(',') + '\n';
-          }
-        }
-      }
-
-      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `duplikater_${entityType}_${new Date().toISOString().split('T')[0]}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      toast.success('CSV downloadet');
-    } finally {
-      setDownloadingCsv(null);
-    }
-  };
-
-  const deleteAllDuplicates = async (entityType: EntityType) => {
-    const groups = duplicates[entityType];
-    if (groups.length === 0) return;
-
-    setDeletingAll(entityType);
-
-    try {
-      // Collect all IDs to delete (keep first of each group)
-      const allIdsToDelete: string[] = [];
-      for (const group of groups) {
-        allIdsToDelete.push(...group.ids.slice(1));
-      }
-
-      if (allIdsToDelete.length === 0) {
-        toast.info('Ingen duplikater at slette');
-        return;
-      }
-
-      const tableName = `canonical_${entityType}` as const;
-
-      // Delete in batches
-      const batchSize = 100;
-      for (let i = 0; i < allIdsToDelete.length; i += batchSize) {
-        const batch = allIdsToDelete.slice(i, i + batchSize);
-        const { error } = await supabase
-          .from(tableName)
-          .delete()
-          .in('id', batch);
-
-        if (error) throw error;
-      }
-
-      // Clear duplicates for this entity type
-      setDuplicates(prev => ({
-        ...prev,
-        [entityType]: [],
-      }));
-
-      toast.success(`Slettede ${allIdsToDelete.length} duplikater fra databasen`);
-    } catch (error) {
-      console.error('Error deleting all duplicates:', error);
-      toast.error('Fejl ved sletning af duplikater');
-    } finally {
-      setDeletingAll(null);
-    }
-  };
-
-  const getTotalDuplicateCount = (entityType: EntityType) => {
-    return duplicates[entityType].reduce((sum, g) => sum + g.count - 1, 0);
-  };
-
-  const getShopifyDuplicateCount = (entityType: EntityType) => {
-    return duplicates[entityType].reduce((sum, g) => sum + (g.shopifyIds.length > 1 ? g.shopifyIds.length - 1 : 0), 0);
   };
 
   const entityIcons: Record<EntityType, React.ReactNode> = {
@@ -680,291 +389,314 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     customers: <Users className="w-4 h-4" />,
     orders: <ShoppingCart className="w-4 h-4" />,
     categories: <Folder className="w-4 h-4" />,
-    pages: <Folder className="w-4 h-4" />,
+    pages: <FileText className="w-4 h-4" />,
   };
 
-  const entityLabels: Record<EntityType, string> = {
-    products: 'Produkter',
-    customers: 'Kunder',
-    orders: 'Ordrer',
-    categories: 'Kategorier',
-    pages: 'Sider',
-  };
+  const shopifyDomain = project.shopify_store_domain?.replace('.myshopify.com', '');
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-6">
+      {/* Header */}
       <div className="text-center mb-8">
-        <h2 className="text-2xl font-semibold mb-2">Gennemgang</h2>
+        <h2 className="text-2xl font-semibold mb-2">Review</h2>
         <p className="text-muted-foreground">
-          Tjek for duplikater før du afslutter
+          Gennemgå dine data før afslutning. Dette er en read-only preview.
         </p>
       </div>
 
-      <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Scan for duplikater</CardTitle>
-              <CardDescription>
-                Find og fjern duplikerede records i dine data
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {(['products', 'customers', 'orders', 'categories'] as EntityType[]).map(entityType => (
-                  <Button
-                    key={entityType}
-                    variant="outline"
-                    onClick={() => scanForDuplicates(entityType)}
-                    disabled={scanning !== null}
-                    className="h-auto py-3 flex flex-col gap-1"
-                  >
-                    {scanning === entityType ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : (
-                      <>
-                        {entityIcons[entityType]}
-                        <span className="text-xs">{entityLabels[entityType]}</span>
-                        {duplicates[entityType].length > 0 && (
-                          <Badge variant="destructive" className="text-xs">
-                            {duplicates[entityType].length}
-                          </Badge>
-                        )}
-                      </>
-                    )}
-                  </Button>
-                ))}
+      {/* Stats Overview */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {(['products', 'customers', 'orders', 'categories', 'pages'] as EntityType[]).map(entityType => (
+          <Card 
+            key={entityType} 
+            className={`cursor-pointer transition-colors ${activeTab === entityType ? 'border-primary ring-1 ring-primary' : 'hover:border-muted-foreground/30'}`}
+            onClick={() => setActiveTab(entityType)}
+          >
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 mb-2">
+                {entityIcons[entityType]}
+                <span className="text-sm font-medium capitalize">{entityType}</span>
               </div>
-
-              {/* Show duplicate results */}
-              {Object.entries(duplicates).map(([entityType, groups]) => (
-                groups.length > 0 && (
-                  <Card key={entityType} className="border-destructive/50">
-                    <CardHeader className="py-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-destructive" />
-                          <CardTitle className="text-sm">
-                            {entityLabels[entityType as EntityType]} - {groups.length} duplikatgrupper
-                          </CardTitle>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="text-xs">
-                            {getTotalDuplicateCount(entityType as EntityType)} ekstra i DB
-                          </Badge>
-                          {getShopifyDuplicateCount(entityType as EntityType) > 0 && (
-                            <Badge variant="destructive" className="text-xs">
-                              {getShopifyDuplicateCount(entityType as EntityType)} ekstra i Shopify
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                      <CardDescription className="text-xs mt-1">
-                        {entityType === 'products' 
-                          ? 'Disse produkter har samme titel men er oprettet som separate produkter. Du kan merge dem som varianter.'
-                          : 'Produkter med Shopify ID er oprettet i din Shopify butik.'}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="py-0 pb-3 space-y-3">
-                      {/* Search and action buttons */}
-                      <div className="flex flex-col gap-3">
-                        {/* Search field */}
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                          <Input
-                            placeholder={`Søg i ${entityLabels[entityType as EntityType].toLowerCase()}...`}
-                            value={searchQueries[entityType as EntityType]}
-                            onChange={(e) => setSearchQueries(prev => ({
-                              ...prev,
-                              [entityType]: e.target.value
-                            }))}
-                            className="pl-9 h-9"
-                          />
-                        </div>
-
-                        {/* Action buttons */}
-                        <div className="flex gap-2 flex-wrap">
-                          {entityType === 'products' && getShopifyDuplicateCount('products') > 0 && (
-                            <Button
-                              variant="default"
-                              size="sm"
-                              onClick={() => mergeAllAsVariants('products')}
-                              disabled={mergingAll === 'products'}
-                              className="bg-primary"
-                            >
-                              {mergingAll === 'products' ? (
-                                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                              ) : (
-                                <Merge className="w-4 h-4 mr-1" />
-                              )}
-                              Merge alle som varianter
-                            </Button>
-                          )}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => downloadDuplicatesCsv(entityType as EntityType)}
-                            disabled={downloadingCsv === entityType}
-                          >
-                            {downloadingCsv === entityType ? (
-                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                            ) : (
-                              <Download className="w-4 h-4 mr-1" />
-                            )}
-                            Download CSV
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => deleteAllDuplicates(entityType as EntityType)}
-                            disabled={deletingAll === entityType}
-                          >
-                            {deletingAll === entityType ? (
-                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4 mr-1" />
-                            )}
-                            Slet fra DB
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setExpandedEntity(expandedEntity === entityType ? null : entityType as EntityType)}
-                          >
-                            {expandedEntity === entityType ? 'Skjul detaljer' : `Vis ${filteredDuplicates[entityType as EntityType].length} grupper`}
-                          </Button>
-                        </div>
-                      </div>
-                      
-                      {/* Scrollable table */}
-                      <ScrollArea className={expandedEntity === entityType ? "h-[500px]" : "h-64"}>
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Titel/Nøgle</TableHead>
-                              <TableHead className="w-20">Antal</TableHead>
-                              <TableHead className="w-32">I Shopify?</TableHead>
-                              <TableHead className="w-48">Shopify IDs</TableHead>
-                              <TableHead className="w-28">Handling</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {filteredDuplicates[entityType as EntityType].length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                                  {searchQueries[entityType as EntityType] 
-                                    ? `Ingen resultater for "${searchQueries[entityType as EntityType]}"` 
-                                    : 'Ingen duplikater fundet'}
-                                </TableCell>
-                              </TableRow>
-                            ) : null}
-                            {filteredDuplicates[entityType as EntityType].map(group => (
-                              <TableRow key={group.key}>
-                                <TableCell className="font-medium max-w-xs truncate" title={group.title || group.key}>
-                                  {group.title || group.key}
-                                </TableCell>
-                                <TableCell>
-                                  <Badge variant="destructive">{group.count}x</Badge>
-                                </TableCell>
-                                <TableCell>
-                                  {group.shopifyIds.length > 0 ? (
-                                    <Badge variant="default" className="bg-primary">
-                                      {group.shopifyIds.length}x i Shopify
-                                    </Badge>
-                                  ) : (
-                                    <Badge variant="secondary">Kun i DB</Badge>
-                                  )}
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex flex-col gap-0.5">
-                                    {group.shopifyIds.slice(0, 2).map((sid, i) => (
-                                      <span key={i} className="text-xs text-muted-foreground font-mono flex items-center gap-1">
-                                        {sid}
-                                        {entityType === 'products' && (
-                                          <a 
-                                            href={`https://admin.shopify.com/store/${project.shopify_store_domain?.replace('.myshopify.com', '')}/products/${sid}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="text-primary hover:underline"
-                                          >
-                                            <ExternalLink className="w-3 h-3" />
-                                          </a>
-                                        )}
-                                      </span>
-                                    ))}
-                                    {group.shopifyIds.length > 2 && (
-                                      <span className="text-xs text-muted-foreground">
-                                        +{group.shopifyIds.length - 2} mere
-                                      </span>
-                                    )}
-                                  </div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex gap-1">
-                                    {entityType === 'products' && group.shopifyIds.length >= 2 && (
-                                      <>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => previewMerge(group)}
-                                          disabled={previewLoading === group.key}
-                                          title="Preview merge"
-                                        >
-                                          {previewLoading === group.key ? (
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                          ) : (
-                                            <Eye className="w-4 h-4" />
-                                          )}
-                                        </Button>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => mergeAsVariants(group)}
-                                          disabled={mergingGroup === group.key}
-                                          className="text-primary hover:text-primary"
-                                          title="Merge som varianter"
-                                        >
-                                          {mergingGroup === group.key ? (
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                          ) : (
-                                            <Merge className="w-4 h-4" />
-                                          )}
-                                        </Button>
-                                      </>
-                                    )}
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => deleteDuplicates(entityType as EntityType, group)}
-                                      className="text-destructive hover:text-destructive"
-                                      title="Slet fra DB"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </Button>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </ScrollArea>
-                    </CardContent>
-                  </Card>
-                )
-              ))}
-
-              {Object.values(duplicates).every(g => g.length === 0) && (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Copy className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                  <p>Klik på en entity-type ovenfor for at scanne for duplikater</p>
-                  <p className="text-sm mt-2">Scanningen viser alle duplikater inkl. dem der er oprettet i Shopify</p>
-                </div>
-              )}
+              <div className="text-2xl font-bold">{stats[entityType].total}</div>
+              <div className="flex gap-2 mt-1 text-xs">
+                <span className="text-green-600">{stats[entityType].uploaded} ✓</span>
+                {stats[entityType].pending > 0 && (
+                  <span className="text-muted-foreground">{stats[entityType].pending} afventer</span>
+                )}
+                {stats[entityType].failed > 0 && (
+                  <span className="text-destructive">{stats[entityType].failed} fejl</span>
+                )}
+              </div>
             </CardContent>
           </Card>
+        ))}
+      </div>
 
+      {/* Main Content */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-lg flex items-center gap-2">
+                {entityIcons[activeTab]}
+                <span className="capitalize">{activeTab}</span>
+                {loading === activeTab && <Loader2 className="w-4 h-4 animate-spin" />}
+              </CardTitle>
+              <CardDescription>
+                Preview af data som de vises i Shopify
+              </CardDescription>
+            </div>
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Søg..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <ScrollArea className="h-[500px]">
+            {/* Products Table */}
+            {activeTab === 'products' && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12"></TableHead>
+                    <TableHead>Produkt</TableHead>
+                    <TableHead>SKU</TableHead>
+                    <TableHead>Varianter</TableHead>
+                    <TableHead className="text-right">Pris</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="w-12"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredProducts.map(product => (
+                    <TableRow key={product.id}>
+                      <TableCell>
+                        {product.images.length > 0 ? (
+                          <img 
+                            src={product.images[0]} 
+                            alt="" 
+                            className="w-10 h-10 object-cover rounded"
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                          />
+                        ) : (
+                          <div className="w-10 h-10 bg-muted rounded flex items-center justify-center">
+                            <ImageIcon className="w-4 h-4 text-muted-foreground" />
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium">{product.title}</div>
+                        {product.vendor && (
+                          <div className="text-xs text-muted-foreground">{product.vendor}</div>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{product.sku}</TableCell>
+                      <TableCell>
+                        {product.variants.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {product.variants.slice(0, 5).map((v, i) => (
+                              <Badge key={i} variant="outline" className="text-xs">
+                                {v.option}
+                              </Badge>
+                            ))}
+                            {product.variants.length > 5 && (
+                              <Badge variant="secondary" className="text-xs">
+                                +{product.variants.length - 5}
+                              </Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">{product.price} kr</TableCell>
+                      <TableCell>{getStatusBadge(product.status)}</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedProduct(product)}
+                          >
+                            <Eye className="w-4 h-4" />
+                          </Button>
+                          {product.shopify_id && shopifyDomain && (
+                            <a
+                              href={`https://admin.shopify.com/store/${shopifyDomain}/products/${product.shopify_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <Button variant="ghost" size="sm">
+                                <ExternalLink className="w-4 h-4" />
+                              </Button>
+                            </a>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredProducts.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        {searchQuery ? 'Ingen produkter matcher søgningen' : 'Ingen produkter fundet'}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            )}
+
+            {/* Customers Table */}
+            {activeTab === 'customers' && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Kunde</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Telefon</TableHead>
+                    <TableHead>Adresse</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="w-12"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredCustomers.map(customer => (
+                    <TableRow key={customer.id}>
+                      <TableCell className="font-medium">{customer.name}</TableCell>
+                      <TableCell className="text-sm">{customer.email}</TableCell>
+                      <TableCell className="text-sm font-mono">{customer.phone || '-'}</TableCell>
+                      <TableCell className="text-sm">
+                        {customer.address ? (
+                          <span>{customer.address.city}, {customer.address.country}</span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>{getStatusBadge(customer.status)}</TableCell>
+                      <TableCell>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setSelectedCustomer(customer)}
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredCustomers.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                        {searchQuery ? 'Ingen kunder matcher søgningen' : 'Ingen kunder fundet'}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            )}
+
+            {/* Orders Table */}
+            {activeTab === 'orders' && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Ordre</TableHead>
+                    <TableHead>Kunde</TableHead>
+                    <TableHead>Varer</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead>Betaling</TableHead>
+                    <TableHead>Levering</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredOrders.map(order => (
+                    <TableRow key={order.id}>
+                      <TableCell className="font-mono font-medium">#{order.orderNumber}</TableCell>
+                      <TableCell className="text-sm">{order.customerEmail || '-'}</TableCell>
+                      <TableCell>{order.lineItemsCount} varer</TableCell>
+                      <TableCell className="text-right font-mono">{order.totalPrice} kr</TableCell>
+                      <TableCell>
+                        <Badge variant={order.financialStatus === 'paid' ? 'default' : 'secondary'} className="text-xs">
+                          {order.financialStatus}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={order.fulfillmentStatus === 'fulfilled' ? 'default' : 'outline'} className="text-xs">
+                          {order.fulfillmentStatus || 'unfulfilled'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{getStatusBadge(order.status)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredOrders.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        {searchQuery ? 'Ingen ordrer matcher søgningen' : 'Ingen ordrer fundet'}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            )}
+
+            {/* Categories Table */}
+            {activeTab === 'categories' && (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Navn</TableHead>
+                    <TableHead>Handle</TableHead>
+                    <TableHead>Shopify ID</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredCategories.map(category => (
+                    <TableRow key={category.id}>
+                      <TableCell className="font-medium">{category.name}</TableCell>
+                      <TableCell className="font-mono text-sm text-muted-foreground">
+                        {category.slug || '-'}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {category.shopify_id || '-'}
+                      </TableCell>
+                      <TableCell>{getStatusBadge(category.status)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredCategories.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
+                        {searchQuery ? 'Ingen kategorier matcher søgningen' : 'Ingen kategorier fundet'}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            )}
+
+            {/* Pages placeholder */}
+            {activeTab === 'pages' && (
+              <div className="text-center py-12 text-muted-foreground">
+                <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p>Sider preview kommer snart</p>
+              </div>
+            )}
+          </ScrollArea>
+        </CardContent>
+      </Card>
+
+      {/* Continue Button */}
       <div className="flex justify-between gap-3 pt-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <CheckCircle2 className="w-4 h-4 text-green-500" />
-          Upload gennemført - gennemgå og juster før afslutning
+          Upload gennemført - review dine data før afslutning
         </div>
         <Button onClick={handleContinue} disabled={saving}>
           {saving ? (
@@ -978,187 +710,151 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         </Button>
       </div>
 
-      {/* Merge Preview Dialog */}
-      <Dialog open={mergePreview !== null} onOpenChange={() => setMergePreview(null)}>
-        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+      {/* Product Detail Dialog */}
+      <Dialog open={selectedProduct !== null} onOpenChange={() => setSelectedProduct(null)}>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Eye className="w-5 h-5" />
-              Preview: Merge "{mergePreview?.group.title || mergePreview?.group.key}"
+              <Package className="w-5 h-5" />
+              {selectedProduct?.title}
             </DialogTitle>
             <DialogDescription>
-              Se hvilke varianter der vil være på produktet efter merge. Fjern varianter du ikke ønsker.
+              Shopify produkt preview
             </DialogDescription>
           </DialogHeader>
-
-          {mergePreview && (
+          
+          {selectedProduct && (
             <div className="space-y-4">
-              {/* Final Product Preview - What will exist after merge */}
-              <Card className="border-primary">
-                <CardHeader className="py-3 bg-primary/5">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Package className="w-4 h-4 text-primary" />
-                    Produkt efter merge
-                  </CardTitle>
-                  <CardDescription className="text-xs">
-                    {mergePreview.preview.primaryProduct.title}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="py-4">
-                  <div className="text-xs text-muted-foreground mb-3">
-                    Varianter på produktet ({mergePreview.preview.primaryProduct.variantCount + mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length} i alt):
-                  </div>
-                  
-                  {/* Existing variants (with corrections shown) */}
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    {mergePreview.preview.primaryProduct.variants.map((v, i) => (
-                      <div 
-                        key={`existing-${i}`} 
-                        className={`flex items-center gap-1 rounded-md px-3 py-1.5 ${
-                          v.willBeCorrected 
-                            ? 'bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800' 
-                            : 'bg-muted'
-                        }`}
-                      >
-                        {v.willBeCorrected && v.originalOption && (
-                          <>
-                            <span className="text-sm text-muted-foreground line-through">{v.originalOption}</span>
-                            <ArrowRight className="w-3 h-3 text-amber-600" />
-                          </>
-                        )}
-                        <span className={`text-sm font-medium ${v.willBeCorrected ? 'text-amber-700 dark:text-amber-400' : ''}`}>
-                          {v.option}
-                        </span>
-                        <span className="text-xs text-muted-foreground">({v.sku || 'No SKU'})</span>
-                        {v.willBeCorrected && (
-                          <CheckCircle2 className="w-3.5 h-3.5 text-amber-600 ml-1" />
-                        )}
-                      </div>
+              {/* Images */}
+              {selectedProduct.images.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {selectedProduct.images.slice(0, 5).map((img, i) => (
+                    <img 
+                      key={i}
+                      src={img} 
+                      alt="" 
+                      className="w-20 h-20 object-cover rounded border"
+                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Details */}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">Vendor:</span>
+                  <span className="font-medium">{selectedProduct.vendor || '-'}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Hash className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">SKU:</span>
+                  <span className="font-mono">{selectedProduct.sku}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">Pris:</span>
+                  <span className="font-mono">{selectedProduct.price} kr</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Package className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">Lager:</span>
+                  <span>{selectedProduct.stock} stk</span>
+                </div>
+              </div>
+
+              {/* Variants */}
+              {selectedProduct.variants.length > 0 && (
+                <div>
+                  <h4 className="font-medium mb-2">Varianter ({selectedProduct.variants.length})</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedProduct.variants.map((v, i) => (
+                      <Badge key={i} variant="outline">
+                        {v.option} - {v.price} kr
+                      </Badge>
                     ))}
                   </div>
+                </div>
+              )}
 
-                  {/* New variants (can be removed) */}
-                  {mergePreview.preview.newVariantsToAdd.length > 0 && (
-                    <>
-                      <div className="text-xs text-muted-foreground mb-2 flex items-center gap-2">
-                        <ArrowRight className="w-3 h-3" />
-                        Nye varianter der tilføjes (klik for at fjerne):
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {mergePreview.preview.newVariantsToAdd.map((v, i) => {
-                          const isExcluded = mergePreview.excludedVariants.has(v.sku);
-                          return (
-                            <button
-                              key={`new-${i}`}
-                              onClick={() => {
-                                const newExcluded = new Set(mergePreview.excludedVariants);
-                                if (isExcluded) {
-                                  newExcluded.delete(v.sku);
-                                } else {
-                                  newExcluded.add(v.sku);
-                                }
-                                setMergePreview({ ...mergePreview, excludedVariants: newExcluded });
-                              }}
-                              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 border transition-all ${
-                                isExcluded 
-                                  ? 'bg-muted/50 border-muted text-muted-foreground line-through opacity-50' 
-                                  : 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20'
-                              }`}
-                            >
-                              <span className="text-sm font-medium">{v.option}</span>
-                              <span className="text-xs opacity-75">({v.sku || 'No SKU'})</span>
-                              {!isExcluded && <Trash2 className="w-3 h-3 ml-1 opacity-50" />}
-                              {isExcluded && <span className="text-xs ml-1">(klik for at tilføje igen)</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-
-                  {mergePreview.preview.newVariantsToAdd.length === 0 && (
-                    <div className="text-sm text-muted-foreground italic">
-                      Ingen nye størrelser fundet at tilføje
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Summary */}
-              <Card>
-                <CardContent className="py-4">
-                  <div className={`grid gap-4 text-center ${mergePreview.preview.summary.variantsToCorrect ? 'grid-cols-4' : 'grid-cols-3'}`}>
-                    <div>
-                      <div className="text-2xl font-bold text-primary">
-                        {mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length}
-                      </div>
-                      <div className="text-sm text-muted-foreground">Varianter tilføjes</div>
-                    </div>
-                    {mergePreview.preview.summary.variantsToCorrect && mergePreview.preview.summary.variantsToCorrect > 0 && (
-                      <div>
-                        <div className="text-2xl font-bold text-amber-600">{mergePreview.preview.summary.variantsToCorrect}</div>
-                        <div className="text-sm text-muted-foreground">Rettes</div>
-                      </div>
-                    )}
-                    <div>
-                      <div className="text-2xl font-bold text-destructive">{mergePreview.preview.summary.productsToDelete}</div>
-                      <div className="text-sm text-muted-foreground">Produkter slettes</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold">
-                        {mergePreview.preview.primaryProduct.variantCount + mergePreview.preview.newVariantsToAdd.filter(v => !mergePreview.excludedVariants.has(v.sku)).length}
-                      </div>
-                      <div className="text-sm text-muted-foreground">Varianter i alt</div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Duplicate Products that will be deleted */}
-              <Card className="border-destructive/30">
-                <CardHeader className="py-3">
-                  <CardTitle className="text-sm flex items-center gap-2 text-destructive">
-                    <Trash2 className="w-4 h-4" />
-                    Disse produkter slettes fra Shopify
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="py-2">
-                  <div className="space-y-2">
-                    {mergePreview.preview.duplicateProducts.map((product, idx) => (
-                      <div key={idx} className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <span className="font-mono text-xs">{product.id}</span>
-                        <span>-</span>
-                        <span className="truncate">{product.title}</span>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
+              {/* Shopify Link */}
+              {selectedProduct.shopify_id && shopifyDomain && (
+                <a
+                  href={`https://admin.shopify.com/store/${shopifyDomain}/products/${selectedProduct.shopify_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-primary hover:underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Åbn i Shopify Admin
+                </a>
+              )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
 
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setMergePreview(null)}>
-              Annuller
-            </Button>
-            <Button
-              onClick={() => mergePreview && mergeAsVariants(
-                mergePreview.group, 
-                Array.from(mergePreview.excludedVariants)
+      {/* Customer Detail Dialog */}
+      <Dialog open={selectedCustomer !== null} onOpenChange={() => setSelectedCustomer(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users className="w-5 h-5" />
+              {selectedCustomer?.name}
+            </DialogTitle>
+            <DialogDescription>
+              Shopify kunde preview
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedCustomer && (
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-muted-foreground" />
+                <span>{selectedCustomer.email}</span>
+              </div>
+              {selectedCustomer.phone && (
+                <div className="flex items-center gap-2">
+                  <Phone className="w-4 h-4 text-muted-foreground" />
+                  <span>{selectedCustomer.phone}</span>
+                </div>
               )}
-              disabled={mergingGroup !== null}
-              className="gap-2"
-            >
-              {mergingGroup ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Merge className="w-4 h-4" />
+              {selectedCustomer.address && (
+                <div className="flex items-start gap-2">
+                  <MapPin className="w-4 h-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <div>{selectedCustomer.address.address1}</div>
+                    <div>{selectedCustomer.address.zip} {selectedCustomer.address.city}</div>
+                    <div>{selectedCustomer.address.country}</div>
+                  </div>
+                </div>
               )}
-              Udfør merge
-            </Button>
-          </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+// Helper function to extract size from product data
+function extractSizeFromData(data: any): string | null {
+  if (data.variant_option && data.variant_option !== 'Default Title') {
+    return data.variant_option;
+  }
+  
+  const sku = data.sku || '';
+  if (!sku) return null;
+  
+  const parts = sku.split('-');
+  const lastPart = parts[parts.length - 1]?.toUpperCase();
+  
+  // Check if it's a valid size
+  const sizePatterns = /^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|\d{2}|\d{2}-\d{2}|ONE-?SIZE)$/i;
+  if (lastPart && sizePatterns.test(lastPart)) {
+    return lastPart;
+  }
+  
+  return null;
 }
