@@ -30,6 +30,7 @@ serve(async (req) => {
   try {
     const now = Date.now();
     const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
+    const nowIso = new Date(now).toISOString();
 
     // Retry helper for transient network errors
     const fetchWithRetry = async (retries = 3, delay = 500) => {
@@ -39,7 +40,12 @@ serve(async (req) => {
             .from('upload_jobs')
             .select('*')
             .eq('status', 'running')
-            .lt('last_heartbeat_at', stallCutoff);
+            // Consider a job "stalled" either when:
+            // 1) heartbeat is stale (classic stall)
+            // 2) next_attempt_at is due (rate-limit backoff finished but no retrigger happened)
+            .or(
+              `last_heartbeat_at.lt.${stallCutoff},and(next_attempt_at.not.is.null,next_attempt_at.lte.${nowIso})`
+            );
           
           if (error) throw error;
           return data;
@@ -98,6 +104,8 @@ serve(async (req) => {
         .from('upload_jobs')
         .update({ 
           last_heartbeat_at: new Date().toISOString(),
+          // If we are resuming from a scheduled retry, clear it so UI doesn't keep showing waiting.
+          next_attempt_at: null,
         })
         .eq('id', job.id);
 

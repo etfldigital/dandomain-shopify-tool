@@ -279,6 +279,46 @@ serve(async (req) => {
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
+        // If a retry has been scheduled in the future, don't hit shopify-upload yet.
+        // This prevents noisy retry loops and makes the system resilient even if multiple triggers happen.
+        if (job.next_attempt_at) {
+          const nowMs = Date.now();
+          const nextMs = new Date(job.next_attempt_at).getTime();
+          if (Number.isFinite(nextMs) && nextMs - nowMs > 500) {
+            const waitMs = Math.max(0, nextMs - nowMs);
+            const waitSeconds = Math.ceil(waitMs / 1000);
+
+            // Keep heartbeat fresh so UI shows "venter" instead of "stalled".
+            await supabase
+              .from('upload_jobs')
+              .update({ last_heartbeat_at: new Date().toISOString() })
+              .eq('id', jobId);
+
+            // Self-schedule the retry (best-effort). The watchdog is a secondary safety net.
+            runInBackground(
+              (async () => {
+                await sleep(waitMs);
+                const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+                await fetch(functionUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${supabaseServiceKey}`,
+                  },
+                  body: JSON.stringify({ jobId, action: 'process' }),
+                });
+              })()
+            );
+
+            return new Response(JSON.stringify({
+              success: true,
+              waiting: true,
+              nextAttemptAt: job.next_attempt_at,
+              waitSeconds,
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          }
+        }
+
         // Get project for Shopify credentials
         const { data: project, error: projectError } = await supabase
           .from('projects')
@@ -351,6 +391,10 @@ serve(async (req) => {
           const message = fetchError instanceof Error ? fetchError.message : 'Unknown fetch error';
           console.error('shopify-upload call failed:', fetchError);
 
+           // Treat rate-limit/timeouts/aborts as transient operational states.
+           // They should not spam error counters as "failures" in the UI.
+           const isTransient = isRateLimitError(message) || isGatewayOrTimeoutError(message);
+
           // Record the worker-level error so it is visible in the UI
           const existingErrors = job.error_details || [];
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
@@ -376,50 +420,40 @@ serve(async (req) => {
             ` (retry om ${Math.round(retryDelayMs / 1000)}s)`;
 
           const workerError = { externalId: '__worker__', message: displayMessage };
-          const mergedErrors = [...existingErrors, workerError].slice(-100);
+          const mergedErrors = [...existingErrors, workerError].slice(-30);
 
           // Update job with error and retry in the background
           await supabase
             .from('upload_jobs')
             .update({
               last_heartbeat_at: new Date().toISOString(),
-              error_count: job.error_count + 1,
+              error_count: job.error_count + (isTransient ? 0 : 1),
               error_details: mergedErrors,
               next_attempt_at: nextAttemptAtIso,
               ...(shouldReduceBatchSize ? { batch_size: reducedBatchSize } : {}),
             })
             .eq('id', jobId);
 
-          // IMPORTANT: Long sleeps in background tasks are not reliable on the platform.
-          // For short delays we self-schedule; for longer backoffs we rely on the watchdog
-          // (which will re-trigger once next_attempt_at is due).
-          const SHOULD_SELF_SCHEDULE_MAX_DELAY_MS = 5_000;
-          const shouldSelfSchedule = retryDelayMs <= SHOULD_SELF_SCHEDULE_MAX_DELAY_MS;
-          if (shouldSelfSchedule) {
-            const scheduleRetry = async () => {
-              await sleep(retryDelayMs);
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${supabaseServiceKey}`,
-                },
-                body: JSON.stringify({ jobId, action: 'process' }),
-              });
-              console.log(`[WORKER] Retrying job ${jobId} after error (self-scheduled)`);
-            };
+          // Self-schedule retries (best-effort). The watchdog remains a secondary safety net.
+          const scheduleRetry = async () => {
+            await sleep(retryDelayMs);
+            const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+            await fetch(functionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseServiceKey}`,
+              },
+              body: JSON.stringify({ jobId, action: 'process' }),
+            });
+            console.log(`[WORKER] Retrying job ${jobId} after error (self-scheduled, delay=${Math.round(retryDelayMs / 1000)}s)`);
+          };
 
-            const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
-            if (typeof waitUntil === 'function') {
-              waitUntil(scheduleRetry());
-            } else {
-              scheduleRetry().catch((e) => console.error('[WORKER] Failed to retry after error:', e));
-            }
+          const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+          if (typeof waitUntil === 'function') {
+            waitUntil(scheduleRetry());
           } else {
-            console.log(
-              `[WORKER] Not self-scheduling retry (delay=${Math.round(retryDelayMs / 1000)}s). Watchdog will resume at ${nextAttemptAtIso}`
-            );
+            scheduleRetry().catch((e) => console.error('[WORKER] Failed to retry after error:', e));
           }
 
           return new Response(JSON.stringify({
