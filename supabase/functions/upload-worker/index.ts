@@ -269,6 +269,41 @@ serve(async (req) => {
           throw new Error('Job not found');
         }
 
+        // Robustness: ensure only ONE active job per (project_id, entity_type).
+        // If multiple running/paused jobs exist (e.g. due to retries/restarts), cancel the older ones to
+        // avoid duplicate workers fighting each other and spamming rate limits.
+        {
+          const { data: newestJobs } = await supabase
+            .from('upload_jobs')
+            .select('id, created_at')
+            .eq('project_id', job.project_id)
+            .eq('entity_type', job.entity_type)
+            .in('status', ['running', 'paused'])
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          const newestJobId = newestJobs?.[0]?.id;
+          if (newestJobId && newestJobId !== job.id) {
+            console.log(`[WORKER] Cancelling superseded job ${job.id} (newest is ${newestJobId})`);
+            await supabase
+              .from('upload_jobs')
+              .update({
+                status: 'cancelled',
+                completed_at: new Date().toISOString(),
+                next_attempt_at: null,
+              })
+              .eq('id', job.id);
+
+            return new Response(
+              JSON.stringify({
+                success: true,
+                message: 'Job superseded by a newer active job; cancelled to prevent duplicate processing',
+              }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+            );
+          }
+        }
+
         console.log(`[WORKER] Processing job ${job.id} (${job.entity_type}) batch=${job.current_batch} processed=${job.processed_count}/${job.total_count}`);
 
         // Check if job should continue
@@ -395,8 +430,10 @@ serve(async (req) => {
            // They should not spam error counters as "failures" in the UI.
            const isTransient = isRateLimitError(message) || isGatewayOrTimeoutError(message);
 
-          // Record the worker-level error so it is visible in the UI
-          const existingErrors = job.error_details || [];
+          // Keep only non-worker errors in the persisted report.
+          // Worker operational states (rate-limit, timeouts, bucket full) are communicated via next_attempt_at
+          // and should not spam the error report.
+          const existingErrors = (job.error_details || []).filter((e: any) => e?.externalId !== '__worker__');
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
           const rateLimitCount = countRateLimitErrors(existingErrors);
           const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message, rateLimitCount);
@@ -419,8 +456,11 @@ serve(async (req) => {
             (shouldReduceBatchSize ? ` (reducerer batch til ${reducedBatchSize})` : '') +
             ` (retry om ${Math.round(retryDelayMs / 1000)}s)`;
 
-          const workerError = { externalId: '__worker__', message: displayMessage };
-          const mergedErrors = [...existingErrors, workerError].slice(-30);
+          // Only persist worker errors if they are NOT transient.
+          // Transient states should not pollute the error report.
+          const mergedErrors = isTransient
+            ? existingErrors
+            : [...existingErrors, { externalId: '__worker__', message: displayMessage }].slice(-30);
 
           // Update job with error and retry in the background
           await supabase
@@ -503,14 +543,10 @@ serve(async (req) => {
         console.log(`[WORKER] Speed: last_batch=${batchItemsPerMinute.toFixed(1)}/min, rolling_avg=${itemsPerMinute?.toFixed(1) || 'null'}/min`);
 
         // Merge error details
-        const existingErrors = job.error_details || [];
+        const existingErrors = (job.error_details || []).filter((e: any) => e?.externalId !== '__worker__');
         const newErrors = result.errorDetails || [];
 
-        const workerInfo = rateLimited && retryAfterSeconds > 0
-          ? [{ externalId: '__worker__', message: `Rate limit (429): venter ${retryAfterSeconds}s før næste batch` }]
-          : [];
-
-        const allErrors = [...existingErrors, ...workerInfo, ...newErrors].slice(-100); // Keep last 100
+        const allErrors = [...existingErrors, ...newErrors].slice(-100); // Keep last 100
 
         // Calculate next attempt time if rate limited
         const nextAttemptAt = rateLimited && retryAfterSeconds > 0
@@ -821,7 +857,40 @@ serve(async (req) => {
         const restartedIds: string[] = [];
 
         if (jobsToRestart && jobsToRestart.length > 0) {
-          for (const jobToRestart of jobsToRestart) {
+          // If multiple jobs exist for the same entity_type, only restart the newest one.
+          // Cancel the rest to prevent duplicate workers and rate-limit thrashing.
+          const newestByEntity = new Map<string, any>();
+          for (const j of jobsToRestart) {
+            const key = String(j.entity_type);
+            const existing = newestByEntity.get(key);
+            if (!existing) {
+              newestByEntity.set(key, j);
+              continue;
+            }
+            const a = new Date(j.created_at).getTime();
+            const b = new Date(existing.created_at).getTime();
+            if (Number.isFinite(a) && Number.isFinite(b) ? a > b : j.created_at > existing.created_at) {
+              newestByEntity.set(key, j);
+            }
+          }
+
+          const jobsToActuallyRestart = Array.from(newestByEntity.values());
+          const keepIds = new Set(jobsToActuallyRestart.map((j) => j.id));
+          const cancelIds = jobsToRestart.filter((j) => !keepIds.has(j.id)).map((j) => j.id);
+
+          if (cancelIds.length > 0) {
+            console.log(`[WORKER] Cancelling ${cancelIds.length} superseded job(s) during force-restart`);
+            await supabase
+              .from('upload_jobs')
+              .update({
+                status: 'cancelled',
+                completed_at: new Date().toISOString(),
+                next_attempt_at: null,
+              })
+              .in('id', cancelIds);
+          }
+
+          for (const jobToRestart of jobsToActuallyRestart) {
             console.log(`[WORKER] Force restarting job ${jobToRestart.id} (${jobToRestart.entity_type})`);
             
             // Clear error details to reset rate limit counters
@@ -830,6 +899,7 @@ serve(async (req) => {
               .update({ 
                 status: 'running',
                 last_heartbeat_at: new Date().toISOString(),
+                next_attempt_at: null,
                 error_details: [], // Clear error history to reset backoff
               })
               .eq('id', jobToRestart.id);
