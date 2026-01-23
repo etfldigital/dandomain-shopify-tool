@@ -142,10 +142,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [isForceRestarting, setIsForceRestarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
   
-  // Countdown timer state for rate limit waits
-  const [countdownEndTime, setCountdownEndTime] = useState<number | null>(null);
-  const [countdownTotalSeconds, setCountdownTotalSeconds] = useState<number | null>(null);
-  const [lastWorkerMessage, setLastWorkerMessage] = useState<string | null>(null);
+  // Live speed tracking based on processed_count delta over time
+  const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
 
   // Status counts for each entity type (for the menu)
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
@@ -572,30 +570,40 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     ? Math.max(0, Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000))
     : 0;
   
-  // Detect new rate limit message and start countdown
-  const currentWorkerMessage = getLatestWorkerMessage(runningJob);
+  // Track speed history for live calculation
   useEffect(() => {
-    if (currentWorkerMessage && currentWorkerMessage !== lastWorkerMessage) {
-      setLastWorkerMessage(currentWorkerMessage);
-      const parsedSeconds = getWaitingSeconds(runningJob);
-      if (parsedSeconds && parsedSeconds > 0) {
-        // Set countdown end time based on current time + wait seconds
-        setCountdownEndTime(Date.now() + parsedSeconds * 1000);
-        setCountdownTotalSeconds(parsedSeconds);
-      }
+    if (runningJob && runningJob.status === 'running') {
+      const now = Date.now();
+      const currentProcessed = runningJob.processed_count;
+      
+      setSpeedHistory(prev => {
+        const recent = prev.filter(p => now - p.timestamp < 60_000); // Keep last 60s
+        // Only add if processed count changed
+        if (recent.length === 0 || recent[recent.length - 1].processed !== currentProcessed) {
+          return [...recent, { timestamp: now, processed: currentProcessed }];
+        }
+        return recent;
+      });
+    } else {
+      setSpeedHistory([]);
     }
-    // Reset countdown when job completes or no running job
-    if (!runningJob) {
-      setCountdownEndTime(null);
-      setCountdownTotalSeconds(null);
-      setLastWorkerMessage(null);
-    }
-  }, [currentWorkerMessage, lastWorkerMessage, runningJob]);
-  
-  // Calculate live countdown seconds
-  const liveWaitingSeconds = countdownEndTime 
-    ? Math.max(0, Math.ceil((countdownEndTime - uiNow) / 1000))
-    : null;
+  }, [runningJob?.processed_count, runningJob?.status]);
+
+  // Calculate live speed from history (items processed in last 30-60 seconds)
+  const liveSpeed = (() => {
+    if (speedHistory.length < 2) return null;
+    const now = Date.now();
+    const recentHistory = speedHistory.filter(p => now - p.timestamp < 60_000);
+    if (recentHistory.length < 2) return null;
+    
+    const oldest = recentHistory[0];
+    const newest = recentHistory[recentHistory.length - 1];
+    const deltaItems = newest.processed - oldest.processed;
+    const deltaMs = newest.timestamp - oldest.timestamp;
+    
+    if (deltaMs < 5000 || deltaItems <= 0) return null; // Need at least 5s of data
+    return (deltaItems / deltaMs) * 60_000; // items per minute
+  })();
 
   // UI-only "live" progress so the counter/bar can move smoothly between DB updates.
   // We cap the estimate to at most one batch.
@@ -655,31 +663,15 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
   };
 
-  // Check if we're waiting for next attempt
-  const nextAttemptAt = runningJob?.next_attempt_at ? new Date(runningJob.next_attempt_at).getTime() : null;
-  const isWaitingForRetry = Boolean(nextAttemptAt && nextAttemptAt > uiNow);
-  const secondsUntilRetry = isWaitingForRetry && nextAttemptAt ? Math.ceil((nextAttemptAt - uiNow) / 1000) : null;
-
-  // Calculate ACTUAL current speed (from last completed batch) and smoothed average
-  // last_batch_speed = actual throughput of the most recent batch (what really happened)
-  // items_per_minute = rolling average for ETA calculations
+  // Calculate ACTUAL current speed - prioritize live speed, then last_batch_speed
   const actualBatchSpeed = runningJob?.last_batch_speed ?? null;
   const smoothedSpeed = runningJob?.items_per_minute ?? 0;
 
-  // For display, prefer actual batch speed when available and recent
-  // If last heartbeat is more than 30s ago, the batch speed is stale
-  const isSpeedStale = runningJob?.last_heartbeat_at
-    ? (uiNow - new Date(runningJob.last_heartbeat_at).getTime()) > 30_000
-    : true;
-
-  // IMPORTANT: When we're explicitly waiting for a scheduled retry, do NOT show the last speed.
-  // Showing stale speed during a cooldown is misleading.
-  const currentSpeed = (isSpeedStale || isWaitingForRetry) ? 0 : (actualBatchSpeed ?? smoothedSpeed);
+  // Use live speed if available, otherwise fall back to batch speed
+  const currentSpeed = liveSpeed ?? actualBatchSpeed ?? smoothedSpeed;
 
   // For ETA, use smoothed average (more stable)
-  const etaSpeed = smoothedSpeed;
-
-  const isRateLimited = Boolean(currentWorkerMessage && /rate limit|\b429\b/i.test(currentWorkerMessage));
+  const etaSpeed = smoothedSpeed > 0 ? smoothedSpeed : (liveSpeed ?? 0);
   
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
@@ -697,55 +689,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
   
   const formatSpeed = (speed: number) => {
-    if (speed === 0) return 'venter...';
     if (speed >= 100) {
       return `${Math.round(speed)} / min`;
     }
-    return `${speed.toFixed(1).replace('.', ',')} / min`;
+    if (speed > 0) {
+      return `${speed.toFixed(1).replace('.', ',')} / min`;
+    }
+    return null; // Return null when no speed available
   };
 
-  const getHeartbeatStatus = (seconds: number) => {
-    if (seconds > 60) {
-      return { label: 'Afventer', color: 'bg-amber-500' };
-    }
-    return { label: 'Aktiv', color: 'bg-green-500' };
-  };
-
-  function getLatestWorkerMessage(job?: UploadJob): string | null {
-    const details = job?.error_details || [];
-    for (let i = details.length - 1; i >= 0; i--) {
-      if (details[i]?.externalId === '__worker__' && details[i]?.message) {
-        return details[i].message;
-      }
-    }
-    return null;
-  }
-
-  function getWaitingSeconds(job?: UploadJob): number | null {
-    const msg = getLatestWorkerMessage(job);
-    if (!msg) return null;
-    // Matches: "venter 30s" or "retry om 60s"
-    const m = msg.match(/venter\s+(\d+)s/i) || msg.match(/retry\s+om\s+(\d+)s/i);
-    if (!m) return null;
-    const n = Number(m[1]);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  // Get current activity message
+  // Get current activity message - no "venter" text
   const getActivityMessage = () => {
     if (isStarting) return 'Starter upload…';
     if (!runningJob) return isPaused ? 'Paused' : '';
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
-    
-    // Show waiting status with countdown
-    if (isWaitingForRetry && secondsUntilRetry) {
-      return `${label}: venter ${secondsUntilRetry}s før næste batch…`;
-    }
-    
-    const workerMsg = getLatestWorkerMessage(runningJob);
-    if (workerMsg && (workerMsg.includes('Rate limit') || workerMsg.includes('429'))) {
-      return liveWaitingSeconds ? `${label}: venter pga. rate limit (${liveWaitingSeconds}s)…` : `${label}: venter pga. rate limit…`;
-    }
     return `${label}: uploader batch ${runningJob.current_batch || 1}…`;
   };
 
@@ -814,14 +771,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
                 <span className="flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${getHeartbeatStatus(secondsSinceHeartbeat).color} animate-pulse`} />
-                  <span className="text-sm">{getHeartbeatStatus(secondsSinceHeartbeat).label}</span>
+                  <span className={`w-2 h-2 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
+                  <span className="text-sm">{secondsSinceHeartbeat > 60 ? 'Synkroniserer' : 'Aktiv'}</span>
                 </span>
-                {isWaitingForRetry ? (
-                  <span className="text-amber-600 font-medium flex items-center gap-1">
-                    ⏳ venter ({secondsUntilRetry}s)
-                  </span>
-                ) : currentSpeed > 0 ? (
+                {currentSpeed > 0 ? (
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -830,7 +783,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>Faktisk hastighed fra seneste batch</p>
+                        <p>{liveSpeed ? 'Live hastighed (sidste 60 sek)' : 'Seneste batch-hastighed'}</p>
                         {runningJob?.last_batch_items && runningJob?.last_batch_duration_ms && (
                           <p className="text-muted-foreground text-xs mt-1">
                             {runningJob.last_batch_items} items på {Math.round(runningJob.last_batch_duration_ms / 1000)}s
@@ -841,7 +794,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   </TooltipProvider>
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
-                    ⚡ {isSpeedStale && runningJob ? 'stalled' : 'beregner…'}
+                    ⚡ beregner…
                   </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (
@@ -849,16 +802,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help">
-                          {isRateLimited ? 'mindst ' : '~'}{formatEta(etaMinutes)} tilbage
+                          ~{formatEta(etaMinutes)} tilbage
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
                         <p>{totalRemainingItems.toLocaleString('da-DK')} elementer tilbage</p>
-                        {isRateLimited && liveWaitingSeconds != null && liveWaitingSeconds > 0 && (
-                          <p className="text-muted-foreground mt-1">
-                            Beregnet med rate limit (ca. {liveWaitingSeconds}s pause mellem batches)
-                          </p>
-                        )}
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
