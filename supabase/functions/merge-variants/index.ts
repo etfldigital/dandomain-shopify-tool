@@ -254,13 +254,37 @@ serve(async (req) => {
       if (!sku) return null;
       
       const parts = sku.split('-');
-      // Check from the end backwards for a size
+      
+      // First, try to find a simple size from the end (most common case)
+      // Start from the last part and work backwards
       for (let i = parts.length - 1; i >= 0; i--) {
-        const part = parts[i].toUpperCase();
+        const part = parts[i].trim().toUpperCase();
+        
+        // Skip empty parts and common non-size parts
+        if (!part || part.length === 0) continue;
+        
+        // Skip color-like values (common non-size patterns)
+        const colorPatterns = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL)$/i;
+        if (colorPatterns.test(part)) continue;
+        
+        // Check if it's a valid size
         if (isValidSizeVariant(part)) {
           return part;
         }
       }
+      
+      // Special case: check if last TWO parts form a size range like "36-38"
+      if (parts.length >= 2) {
+        const lastTwo = parts.slice(-2).join('-');
+        if (/^\d{2,3}-\d{2,3}$/.test(lastTwo)) {
+          // It's a range - take the last number as the size
+          const lastNum = parts[parts.length - 1];
+          if (/^\d{2,3}$/.test(lastNum)) {
+            return lastNum;
+          }
+        }
+      }
+      
       return null;
     }
 
