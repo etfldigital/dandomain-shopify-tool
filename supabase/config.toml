@@ -17,3 +17,9 @@ verify_jwt = false
 
 [functions.merge-variants]
 verify_jwt = false
+
+[functions.prepare-upload]
+verify_jwt = false
+
+[functions.fetch-metafields]
+verify_jwt = false
