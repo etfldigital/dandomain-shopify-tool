@@ -301,6 +301,8 @@ serve(async (req) => {
           .update({
             last_heartbeat_at: new Date().toISOString(),
             batch_size: effectiveBatchSize,
+            // Clear any scheduled retry once we start processing again
+            next_attempt_at: null,
           })
           .eq('id', jobId);
 
@@ -354,6 +356,7 @@ serve(async (req) => {
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
           const rateLimitCount = countRateLimitErrors(existingErrors);
           const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message, rateLimitCount);
+          const nextAttemptAtIso = new Date(Date.now() + retryDelayMs).toISOString();
 
           // If orders OR products are timing out / gatewaying, reduce batch size so each invocation finishes faster.
           // This avoids being stuck forever in a 502/504 retry loop with batch_size=10.
@@ -382,36 +385,48 @@ serve(async (req) => {
               last_heartbeat_at: new Date().toISOString(),
               error_count: job.error_count + 1,
               error_details: mergedErrors,
+              next_attempt_at: nextAttemptAtIso,
               ...(shouldReduceBatchSize ? { batch_size: reducedBatchSize } : {}),
             })
             .eq('id', jobId);
 
-          const scheduleRetry = async () => {
-            await sleep(retryDelayMs);
-            const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-            await fetch(functionUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${supabaseServiceKey}`,
-              },
-              body: JSON.stringify({ jobId, action: 'process' }),
-            });
-            console.log(`[WORKER] Retrying job ${jobId} after error`);
-          };
+          // IMPORTANT: Long sleeps in background tasks are not reliable on the platform.
+          // For short delays we self-schedule; for longer backoffs we rely on the watchdog
+          // (which will re-trigger once next_attempt_at is due).
+          const SHOULD_SELF_SCHEDULE_MAX_DELAY_MS = 5_000;
+          const shouldSelfSchedule = retryDelayMs <= SHOULD_SELF_SCHEDULE_MAX_DELAY_MS;
+          if (shouldSelfSchedule) {
+            const scheduleRetry = async () => {
+              await sleep(retryDelayMs);
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId, action: 'process' }),
+              });
+              console.log(`[WORKER] Retrying job ${jobId} after error (self-scheduled)`);
+            };
 
-          const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
-          if (typeof waitUntil === 'function') {
-            waitUntil(scheduleRetry());
+            const waitUntil = (globalThis as any).EdgeRuntime?.waitUntil;
+            if (typeof waitUntil === 'function') {
+              waitUntil(scheduleRetry());
+            } else {
+              scheduleRetry().catch((e) => console.error('[WORKER] Failed to retry after error:', e));
+            }
           } else {
-            // Fallback (should rarely happen)
-            scheduleRetry().catch((e) => console.error('[WORKER] Failed to retry after error:', e));
+            console.log(
+              `[WORKER] Not self-scheduling retry (delay=${Math.round(retryDelayMs / 1000)}s). Watchdog will resume at ${nextAttemptAtIso}`
+            );
           }
 
           return new Response(JSON.stringify({
             success: false,
             error: message,
             retrying: true,
+            nextAttemptAt: nextAttemptAtIso,
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
         const elapsed = Date.now() - startTime;
