@@ -578,6 +578,7 @@ export type Database = {
           is_test_mode: boolean
           items_per_minute: number | null
           last_heartbeat_at: string | null
+          next_attempt_at: string | null
           processed_count: number
           project_id: string
           skipped_count: number
@@ -598,6 +599,7 @@ export type Database = {
           is_test_mode?: boolean
           items_per_minute?: number | null
           last_heartbeat_at?: string | null
+          next_attempt_at?: string | null
           processed_count?: number
           project_id: string
           skipped_count?: number
@@ -618,6 +620,7 @@ export type Database = {
           is_test_mode?: boolean
           items_per_minute?: number | null
           last_heartbeat_at?: string | null
+          next_attempt_at?: string | null
           processed_count?: number
           project_id?: string
           skipped_count?: number
