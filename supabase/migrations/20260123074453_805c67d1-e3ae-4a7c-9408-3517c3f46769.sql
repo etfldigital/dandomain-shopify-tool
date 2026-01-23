@@ -1,0 +1,4 @@
+ALTER TABLE public.upload_jobs
+ADD COLUMN IF NOT EXISTS last_batch_speed NUMERIC NULL,
+ADD COLUMN IF NOT EXISTS last_batch_items INTEGER NULL,
+ADD COLUMN IF NOT EXISTS last_batch_duration_ms INTEGER NULL;

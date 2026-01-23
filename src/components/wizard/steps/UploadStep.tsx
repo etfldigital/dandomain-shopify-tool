@@ -86,6 +86,11 @@ interface UploadJob {
   current_batch: number;
   last_heartbeat_at: string | null;
   is_test_mode: boolean;
+  // NEW: Actual batch metrics for accurate speed display
+  last_batch_speed: number | null;
+  last_batch_items: number | null;
+  last_batch_duration_ms: number | null;
+  next_attempt_at: string | null;
 }
 
 const toUploadJob = (raw: UploadJobRaw): UploadJob => ({
@@ -106,6 +111,11 @@ const toUploadJob = (raw: UploadJobRaw): UploadJob => ({
   current_batch: raw.current_batch ?? 1,
   last_heartbeat_at: raw.last_heartbeat_at,
   is_test_mode: raw.is_test_mode ?? false,
+  // NEW fields
+  last_batch_speed: raw.last_batch_speed ?? null,
+  last_batch_items: raw.last_batch_items ?? null,
+  last_batch_duration_ms: raw.last_batch_duration_ms ?? null,
+  next_attempt_at: raw.next_attempt_at ?? null,
 });
 
 interface StatusCounts {
@@ -637,26 +647,37 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
   };
 
-  // Calculate overall speed and ETA
-  const currentSpeed = runningJob?.items_per_minute || 0;
+  // Calculate ACTUAL current speed (from last completed batch) and smoothed average
+  // last_batch_speed = actual throughput of the most recent batch (what really happened)
+  // items_per_minute = rolling average for ETA calculations
+  const actualBatchSpeed = runningJob?.last_batch_speed ?? null;
+  const smoothedSpeed = runningJob?.items_per_minute ?? 0;
+  
+  // For display, prefer actual batch speed when available and recent
+  // If last heartbeat is more than 30s ago, the batch speed is stale
+  const isSpeedStale = runningJob?.last_heartbeat_at 
+    ? (uiNow - new Date(runningJob.last_heartbeat_at).getTime()) > 30_000 
+    : true;
+  
+  // Show actual speed when fresh, otherwise show 0 (stalled)
+  const currentSpeed = isSpeedStale ? 0 : (actualBatchSpeed ?? smoothedSpeed);
+  
+  // For ETA, use smoothed average (more stable)
+  const etaSpeed = smoothedSpeed;
 
   const isRateLimited = Boolean(currentWorkerMessage && /rate limit|\b429\b/i.test(currentWorkerMessage));
-  // If we're rate limited and waiting X seconds between batches, there is a hard throughput cap.
-  const rateLimitSpeedCap =
-    isRateLimited && countdownTotalSeconds != null && countdownTotalSeconds > 0
-      ? ((runningJob?.batch_size ?? 1) * 60) / Math.max(1, countdownTotalSeconds)
-      : null;
-  const effectiveSpeed =
-    rateLimitSpeedCap != null && rateLimitSpeedCap > 0
-      ? Math.min(currentSpeed || 0, rateLimitSpeedCap)
-      : currentSpeed;
+  
+  // Check if we're waiting for next attempt
+  const nextAttemptAt = runningJob?.next_attempt_at ? new Date(runningJob.next_attempt_at).getTime() : null;
+  const isWaitingForRetry = nextAttemptAt && nextAttemptAt > uiNow;
+  const secondsUntilRetry = isWaitingForRetry ? Math.ceil((nextAttemptAt - uiNow) / 1000) : null;
   
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
     .filter(j => j.status === 'running' || j.status === 'pending' || j.status === 'paused')
     .reduce((acc, j) => acc + Math.max(0, j.total_count - j.processed_count), 0);
   
-  const etaMinutes = effectiveSpeed > 0 ? Math.ceil(totalRemainingItems / effectiveSpeed) : null;
+  const etaMinutes = etaSpeed > 0 ? Math.ceil(totalRemainingItems / etaSpeed) : null;
 
   const formatEta = (minutes: number) => {
     if (minutes >= 90) {
@@ -667,6 +688,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
   
   const formatSpeed = (speed: number) => {
+    if (speed === 0) return 'venter...';
     if (speed >= 100) {
       return `${Math.round(speed)} / min`;
     }
@@ -705,6 +727,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (isStarting) return 'Starter upload…';
     if (!runningJob) return isPaused ? 'Paused' : '';
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
+    
+    // Show waiting status with countdown
+    if (isWaitingForRetry && secondsUntilRetry) {
+      return `${label}: venter ${secondsUntilRetry}s før næste batch…`;
+    }
+    
     const workerMsg = getLatestWorkerMessage(runningJob);
     if (workerMsg && (workerMsg.includes('Rate limit') || workerMsg.includes('429'))) {
       return liveWaitingSeconds ? `${label}: venter pga. rate limit (${liveWaitingSeconds}s)…` : `${label}: venter pga. rate limit…`;
@@ -789,13 +817,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>Aktuel upload-hastighed</p>
+                        <p>Faktisk hastighed fra seneste batch</p>
+                        {runningJob?.last_batch_items && runningJob?.last_batch_duration_ms && (
+                          <p className="text-muted-foreground text-xs mt-1">
+                            {runningJob.last_batch_items} items på {Math.round(runningJob.last_batch_duration_ms / 1000)}s
+                          </p>
+                        )}
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
+                ) : isWaitingForRetry ? (
+                  <span className="text-amber-600 font-medium flex items-center gap-1">
+                    ⏳ venter ({secondsUntilRetry}s)
+                  </span>
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
-                    ⚡ beregner…
+                    ⚡ {isSpeedStale && runningJob ? 'stalled' : 'beregner…'}
                   </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (

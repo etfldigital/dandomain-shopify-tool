@@ -70,14 +70,15 @@ const isRateLimitError = (message: string) => {
 const computeRetryDelayMs = (workerErrorStreak: number, message: string, rateLimitCount: number) => {
   // Rate limit errors need much longer cooldown - Shopify bucket refills at 2 req/sec
   if (isRateLimitError(message)) {
-    // After multiple rate limits, wait longer: 30s, 60s, 90s, 120s max
-    const rateLimitDelay = Math.min(30_000 + (rateLimitCount * 30_000), 120_000);
+    // After multiple rate limits, wait longer: 20s base, +10s per consecutive error, max 60s
+    // More aggressive than before to avoid long waits
+    const rateLimitDelay = Math.min(20_000 + (rateLimitCount * 10_000), 60_000);
     return rateLimitDelay;
   }
   // Gateway/timeouts benefit from longer cool-down.
-  const base = isGatewayOrTimeoutError(message) ? 15_000 : WORKER_RETRY_DELAY_MS;
-  const delay = base * Math.pow(2, Math.min(workerErrorStreak, 6));
-  return Math.min(delay, 5 * 60_000); // max 5 minutes
+  const base = isGatewayOrTimeoutError(message) ? 10_000 : WORKER_RETRY_DELAY_MS;
+  const delay = base * Math.pow(2, Math.min(workerErrorStreak, 4));
+  return Math.min(delay, 2 * 60_000); // max 2 minutes
 };
 
 // Batch sizes tuned for Shopify's rate limits (40 bucket, 2 req/sec leak)
@@ -428,6 +429,7 @@ serve(async (req) => {
         const itemsAttempted = (result.processed || 0) + (result.skipped || 0) + (result.errors || 0);
         const itemsSucceeded = (result.processed || 0) + (result.skipped || 0);
 
+        // ACTUAL batch speed - this is the real throughput for THIS batch only
         const batchItemsPerMinute = elapsed > 0 && itemsAttempted > 0
           ? (itemsAttempted / (elapsed / 60000))
           : 0;
@@ -436,7 +438,7 @@ serve(async (req) => {
           `[WORKER] Batch result: succeeded=${itemsSucceeded} (processed=${result.processed}, skipped=${result.skipped}), failed=${result.errors}, elapsed=${elapsed}ms, batchSpeed=${batchItemsPerMinute.toFixed(1)}/min`
         );
 
-        // Simple rolling average speed calculation (70% previous, 30% current batch)
+        // Rolling average for ETA calculations (smoothed)
         let itemsPerMinute: number | null = null;
         
         if (batchItemsPerMinute > 0) {
@@ -449,7 +451,7 @@ serve(async (req) => {
           itemsPerMinute = job.items_per_minute;
         }
 
-        console.log(`[WORKER] Speed calculation: previous=${job.items_per_minute?.toFixed(1) || 'null'}, batch=${batchItemsPerMinute.toFixed(1)}, new=${itemsPerMinute?.toFixed(1) || 'null'}`);
+        console.log(`[WORKER] Speed: last_batch=${batchItemsPerMinute.toFixed(1)}/min, rolling_avg=${itemsPerMinute?.toFixed(1) || 'null'}/min`);
 
         // Merge error details
         const existingErrors = job.error_details || [];
@@ -461,13 +463,22 @@ serve(async (req) => {
 
         const allErrors = [...existingErrors, ...workerInfo, ...newErrors].slice(-100); // Keep last 100
 
-        // Update job progress
+        // Calculate next attempt time if rate limited
+        const nextAttemptAt = rateLimited && retryAfterSeconds > 0
+          ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()
+          : null;
+
+        // Update job progress with ACTUAL batch speed
         const updateData: Record<string, any> = {
-          // IMPORTANT: processed_count must include failures too, otherwise the progress bar never reaches 100%
           processed_count: job.processed_count + itemsAttempted,
           error_count: job.error_count + (result.errors || 0),
           skipped_count: job.skipped_count + (result.skipped || 0),
           items_per_minute: itemsPerMinute,
+          // NEW: Store actual batch metrics for accurate UI display
+          last_batch_speed: batchItemsPerMinute,
+          last_batch_items: itemsAttempted,
+          last_batch_duration_ms: elapsed,
+          next_attempt_at: nextAttemptAt,
           error_details: allErrors,
           last_heartbeat_at: new Date().toISOString(),
           current_batch: job.current_batch + 1,

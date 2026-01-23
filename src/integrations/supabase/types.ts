@@ -577,6 +577,9 @@ export type Database = {
           id: string
           is_test_mode: boolean
           items_per_minute: number | null
+          last_batch_duration_ms: number | null
+          last_batch_items: number | null
+          last_batch_speed: number | null
           last_heartbeat_at: string | null
           next_attempt_at: string | null
           processed_count: number
@@ -598,6 +601,9 @@ export type Database = {
           id?: string
           is_test_mode?: boolean
           items_per_minute?: number | null
+          last_batch_duration_ms?: number | null
+          last_batch_items?: number | null
+          last_batch_speed?: number | null
           last_heartbeat_at?: string | null
           next_attempt_at?: string | null
           processed_count?: number
@@ -619,6 +625,9 @@ export type Database = {
           id?: string
           is_test_mode?: boolean
           items_per_minute?: number | null
+          last_batch_duration_ms?: number | null
+          last_batch_items?: number | null
+          last_batch_speed?: number | null
           last_heartbeat_at?: string | null
           next_attempt_at?: string | null
           processed_count?: number
