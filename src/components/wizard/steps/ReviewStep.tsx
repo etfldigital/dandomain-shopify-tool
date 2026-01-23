@@ -1,8 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { 
   Table,
@@ -21,7 +20,6 @@ import {
   Users, 
   ShoppingCart, 
   Folder,
-  ArrowRight,
   CheckCircle2,
   Download,
   ExternalLink,
@@ -30,7 +28,6 @@ import {
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { FieldMappingEditor } from './FieldMappingEditor';
 
 interface ReviewStepProps {
   project: Project;
@@ -49,7 +46,6 @@ interface DuplicateGroup {
 }
 
 export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps) {
-  const [activeTab, setActiveTab] = useState('duplicates');
   const [duplicates, setDuplicates] = useState<Record<EntityType, DuplicateGroup[]>>({
     products: [],
     customers: [],
@@ -566,26 +562,13 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="text-center mb-8">
-        <h2 className="text-2xl font-semibold mb-2">Gennemgang & Justering</h2>
+        <h2 className="text-2xl font-semibold mb-2">Gennemgang</h2>
         <p className="text-muted-foreground">
-          Tjek for duplikater og tilføj ekstra felt-mappings før du afslutter
+          Tjek for duplikater før du afslutter
         </p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="duplicates" className="gap-2">
-            <Copy className="w-4 h-4" />
-            Duplikater
-          </TabsTrigger>
-          <TabsTrigger value="field-mappings" className="gap-2">
-            <ArrowRight className="w-4 h-4" />
-            Felt-Mappings
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="duplicates" className="mt-6 space-y-4">
-          <Card>
+      <Card>
             <CardHeader>
               <CardTitle className="text-lg">Scan for duplikater</CardTitle>
               <CardDescription>
@@ -803,12 +786,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="field-mappings" className="mt-6">
-          <FieldMappingEditor projectId={project.id} />
-        </TabsContent>
-      </Tabs>
 
       <div className="flex justify-between gap-3 pt-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
