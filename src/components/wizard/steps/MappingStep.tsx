@@ -13,10 +13,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Save, ArrowRight, Folder, Tag, Package, ShoppingCart, Users, FileText } from 'lucide-react';
+import { Loader2, Save, ArrowRight, Folder, Tag, Package, ShoppingCart, Users, FileText, Eye } from 'lucide-react';
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingTab } from './ProductMappingTab';
+import { UploadPreviewTab } from './UploadPreviewTab';
 
 interface MappingStepProps {
   project: Project;
@@ -140,7 +141,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="products" className="gap-2">
             <Package className="w-4 h-4" />
             <span className="hidden sm:inline">Produkter</span>
@@ -165,6 +166,10 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
             <FileText className="w-4 h-4" />
             <span className="hidden sm:inline">Sider</span>
             <Badge variant="secondary" className="ml-1">{entityCounts.pages}</Badge>
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="gap-2">
+            <Eye className="w-4 h-4" />
+            <span className="hidden sm:inline">Preview</span>
           </TabsTrigger>
         </TabsList>
 
@@ -472,6 +477,10 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="preview" className="mt-6">
+          <UploadPreviewTab projectId={project.id} />
         </TabsContent>
       </Tabs>
 
