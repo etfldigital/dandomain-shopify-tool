@@ -247,7 +247,7 @@ serve(async (req) => {
       return 9999;
     }
 
-    function sortVariantsBySize<T extends { option1?: string }>(variants: T[]): T[] {
+    function sortVariantsBySize<T extends { option1?: string | null }>(variants: T[]): T[] {
       return [...variants].sort((a, b) => {
         const priorityA = getSizeSortPriority(a.option1 || 'DEFAULT');
         const priorityB = getSizeSortPriority(b.option1 || 'DEFAULT');
@@ -414,14 +414,31 @@ serve(async (req) => {
     }
 
     // Build corrected existing variants for preview/sorting
-    const correctedExistingVariants = primaryProduct.variants.map(v => {
-      const correction = variantsToCorrect.find(c => c.variantId === v.id);
-      return {
-        ...v,
-        option1: correction ? correction.newOption : (v.option1 || 'Default'),
-        willBeCorrect: !!correction,
-      };
-    });
+    // IMPORTANT: Filter out any variant that would end up with "Default" as option
+    const correctedExistingVariants = primaryProduct.variants
+      .map(v => {
+        const correction = variantsToCorrect.find(c => c.variantId === v.id);
+        const finalOption = correction ? correction.newOption : v.option1;
+        return {
+          ...v,
+          option1: finalOption,
+          willBeCorrect: !!correction,
+        };
+      })
+      .filter(v => {
+        // NEVER include Default variants in preview - they should not exist after merge
+        const option = (v.option1 || '').toLowerCase().trim();
+        if (option === 'default title' || option === 'default' || option === '') {
+          console.log(`[MERGE] Filtering out Default variant from preview: ${v.sku}`);
+          return false;
+        }
+        // Also ensure it's a valid size
+        if (!isValidSizeVariant(v.option1 || '')) {
+          console.log(`[MERGE] Filtering out non-size variant from preview: ${v.sku} (${v.option1})`);
+          return false;
+        }
+        return true;
+      });
 
     // If dry run, return the preview without making changes
     if (dryRun) {
@@ -430,6 +447,38 @@ serve(async (req) => {
       // Sort existing variants for display (with corrections applied)
       const sortedExistingVariants = sortVariantsBySize(correctedExistingVariants);
       
+      // Filter duplicate product variants similarly - only show valid size variants
+      const filteredDuplicateProducts = duplicateProducts.map(p => ({
+        id: String(p.id),
+        title: p.title,
+        variantCount: p.variants.length,
+        variants: p.variants
+          .filter(v => {
+            const option = (v.option1 || '').toLowerCase().trim();
+            // Skip Default Title
+            if (option === 'default title' || option === 'default' || option === '') {
+              // BUT check if we can extract a size from SKU
+              const sizeFromSku = extractSizeFromSku(v.sku || '');
+              return !!sizeFromSku; // Only include if we can extract a valid size
+            }
+            return isValidSizeVariant(v.option1 || '');
+          })
+          .map(v => {
+            const option = (v.option1 || '').toLowerCase().trim();
+            let displayOption = v.option1;
+            // Replace Default Title with extracted size
+            if (option === 'default title' || option === 'default' || option === '') {
+              const sizeFromSku = extractSizeFromSku(v.sku || '');
+              displayOption = sizeFromSku ? sizeFromSku.toUpperCase() : v.option1;
+            }
+            return {
+              sku: v.sku,
+              option: displayOption || 'Default',
+              price: v.price,
+            };
+          }),
+      }));
+      
       return new Response(JSON.stringify({
         success: true,
         dryRun: true,
@@ -437,26 +486,17 @@ serve(async (req) => {
           primaryProduct: {
             id: String(primaryProduct.id),
             title: primaryProduct.title,
-            variantCount: primaryProduct.variants.length,
+            variantCount: sortedExistingVariants.length, // Only count valid variants
             variants: sortedExistingVariants.map(v => ({
               sku: v.sku,
-              option: v.option1 || 'Default',
+              option: v.option1,
               originalOption: variantsToCorrect.find(c => c.variantId === v.id) ? 
                 primaryProduct.variants.find(pv => pv.id === v.id)?.option1 : undefined,
               price: v.price,
               willBeCorrected: !!variantsToCorrect.find(c => c.variantId === v.id),
             })),
           },
-          duplicateProducts: duplicateProducts.map(p => ({
-            id: String(p.id),
-            title: p.title,
-            variantCount: p.variants.length,
-            variants: p.variants.map(v => ({
-              sku: v.sku,
-              option: v.option1 || 'Default',
-              price: v.price,
-            })),
-          })),
+          duplicateProducts: filteredDuplicateProducts,
           newVariantsToAdd: sortedNewVariants.map(v => ({
             sku: v.sku,
             option: v.option1,
@@ -468,7 +508,7 @@ serve(async (req) => {
           })),
           productsToDelete: duplicateProducts.length,
           summary: {
-            totalVariantsAfterMerge: primaryProduct.variants.length + sortedNewVariants.length,
+            totalVariantsAfterMerge: sortedExistingVariants.length + sortedNewVariants.length,
             variantsToAdd: sortedNewVariants.length,
             variantsToCorrect: variantsToCorrect.length,
             productsToDelete: duplicateProducts.length,
