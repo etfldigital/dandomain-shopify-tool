@@ -17,7 +17,7 @@ import { Loader2, Save, ArrowRight, Folder, Tag, Package, ShoppingCart, Users, F
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingTab } from './ProductMappingTab';
-import { UploadPreviewTab } from './UploadPreviewTab';
+import { ReviewPreviewTab } from './ReviewPreviewTab';
 
 interface MappingStepProps {
   project: Project;
@@ -480,7 +480,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </TabsContent>
 
         <TabsContent value="preview" className="mt-6">
-          <UploadPreviewTab projectId={project.id} />
+          <ReviewPreviewTab projectId={project.id} shopifyDomain={project.shopify_store_domain} />
         </TabsContent>
       </Tabs>
 

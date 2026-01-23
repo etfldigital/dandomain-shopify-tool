@@ -243,7 +243,6 @@ export type WizardStep =
   | 'extract' 
   | 'mapping' 
   | 'upload' 
-  | 'review'
   | 'redirects'
   | 'report';
 
@@ -252,9 +251,8 @@ export const WIZARD_STEPS: { id: WizardStep; label: string; number: number }[] =
   { id: 'extract', label: 'Udtræk', number: 2 },
   { id: 'mapping', label: 'Mapping', number: 3 },
   { id: 'upload', label: 'Upload', number: 4 },
-  { id: 'review', label: 'Gennemgang', number: 5 },
-  { id: 'redirects', label: 'Redirects', number: 6 },
-  { id: 'report', label: 'Rapport', number: 7 },
+  { id: 'redirects', label: 'Redirects', number: 5 },
+  { id: 'report', label: 'Rapport', number: 6 },
 ];
 
 // Redirect types

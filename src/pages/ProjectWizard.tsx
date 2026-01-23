@@ -6,7 +6,6 @@ import { ConnectStep } from '@/components/wizard/steps/ConnectStep';
 import { ExtractStep } from '@/components/wizard/steps/ExtractStep';
 import { MappingStep } from '@/components/wizard/steps/MappingStep';
 import { UploadStep } from '@/components/wizard/steps/UploadStep';
-import { ReviewStep } from '@/components/wizard/steps/ReviewStep';
 import { RedirectsStep } from '@/components/wizard/steps/RedirectsStep';
 import { ReportStep } from '@/components/wizard/steps/ReportStep';
 import { useProject } from '@/hooks/useProjects';
@@ -29,7 +28,6 @@ const STEP_ORDER: WizardStep[] = [
   'extract',
   'mapping',
   'upload',
-  'review',
   'redirects',
   'report',
 ];
@@ -152,13 +150,6 @@ export default function ProjectWizard() {
           )}
           {currentStep === 'upload' && (
             <UploadStep
-              project={project}
-              onUpdateProject={handleUpdateProject}
-              onNext={handleNext}
-            />
-          )}
-          {currentStep === 'review' && (
-            <ReviewStep
               project={project}
               onUpdateProject={handleUpdateProject}
               onNext={handleNext}

@@ -4,7 +4,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   Table,
   TableBody,
@@ -27,7 +26,6 @@ import {
   ShoppingCart, 
   Folder,
   FileText,
-  CheckCircle2,
   ExternalLink,
   Search,
   Eye,
@@ -38,18 +36,15 @@ import {
   MapPin,
   Mail,
   Phone,
-  Calendar,
-  Truck,
-  CreditCard,
+  RefreshCw,
 } from 'lucide-react';
-import { Project, EntityType } from '@/types/database';
+import { EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
-interface ReviewStepProps {
-  project: Project;
-  onUpdateProject: (updates: Partial<Project>) => Promise<void>;
-  onNext: () => void;
+interface ReviewPreviewTabProps {
+  projectId: string;
+  shopifyDomain?: string | null;
 }
 
 interface EntityStats {
@@ -114,18 +109,17 @@ interface CategoryPreview {
 }
 
 /**
- * REVIEW STEP - READ-ONLY PREVIEW
+ * REVIEW PREVIEW TAB - READ-ONLY PREVIEW
  * 
- * This step is intentionally read-only. It shows exactly how entities 
- * WILL appear (or already appear) in Shopify.
+ * This component is intentionally read-only. It shows how entities 
+ * will appear (or already appear) in Shopify.
  * 
  * NO corrective logic, NO merge decisions, NO data modifications.
  * If something looks wrong, the fix belongs in earlier steps.
  */
-export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps) {
-  const [activeTab, setActiveTab] = useState<EntityType>('products');
+export function ReviewPreviewTab({ projectId, shopifyDomain }: ReviewPreviewTabProps) {
+  const [activeEntityTab, setActiveEntityTab] = useState<EntityType>('products');
   const [loading, setLoading] = useState<EntityType | null>(null);
-  const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
   // Entity data
@@ -143,20 +137,15 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     pages: { total: 0, pending: 0, uploaded: 0, failed: 0 },
   });
 
-  // Detail dialog
+  // Detail dialogs
   const [selectedProduct, setSelectedProduct] = useState<ProductPreview | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerPreview | null>(null);
-  const [selectedOrder, setSelectedOrder] = useState<OrderPreview | null>(null);
 
   // Load stats on mount
   useEffect(() => {
     loadAllStats();
-  }, [project.id]);
-
-  // Load entity data when tab changes
-  useEffect(() => {
-    loadEntityData(activeTab);
-  }, [activeTab, project.id]);
+    loadEntityData('products');
+  }, [projectId]);
 
   const loadAllStats = async () => {
     const entityTypes: EntityType[] = ['products', 'customers', 'orders', 'categories', 'pages'];
@@ -168,10 +157,10 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         : `canonical_${entityType}` as const;
 
       const [totalRes, pendingRes, uploadedRes, failedRes] = await Promise.all([
-        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
-        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
-        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', projectId),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', projectId).eq('status', 'pending'),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', projectId).eq('status', 'uploaded'),
+        supabase.from(tableName).select('*', { count: 'exact', head: true }).eq('project_id', projectId).eq('status', 'failed'),
       ]);
 
       newStats[entityType] = {
@@ -187,14 +176,14 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
 
   const loadEntityData = async (entityType: EntityType) => {
     setLoading(entityType);
+    setActiveEntityTab(entityType);
     
     try {
       if (entityType === 'products') {
-        // Fetch uploaded products grouped by shopify_id
         const { data, error } = await supabase
           .from('canonical_products')
           .select('id, external_id, shopify_id, data, status')
-          .eq('project_id', project.id)
+          .eq('project_id', projectId)
           .order('updated_at', { ascending: false })
           .limit(500);
 
@@ -208,7 +197,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
           const shopifyId = item.shopify_id || item.id;
           
           if (productMap.has(shopifyId)) {
-            // Add as variant
             const existing = productMap.get(shopifyId)!;
             const variantSize = extractSizeFromData(d);
             if (variantSize) {
@@ -219,7 +207,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               });
             }
           } else {
-            // New product
             const variantSize = extractSizeFromData(d);
             productMap.set(shopifyId, {
               id: item.id,
@@ -243,7 +230,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         const { data, error } = await supabase
           .from('canonical_customers')
           .select('id, external_id, shopify_id, data, status')
-          .eq('project_id', project.id)
+          .eq('project_id', projectId)
           .order('updated_at', { ascending: false })
           .limit(500);
 
@@ -272,7 +259,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         const { data, error } = await supabase
           .from('canonical_orders')
           .select('id, external_id, shopify_id, data, status')
-          .eq('project_id', project.id)
+          .eq('project_id', projectId)
           .order('updated_at', { ascending: false })
           .limit(500);
 
@@ -299,7 +286,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         const { data, error } = await supabase
           .from('canonical_categories')
           .select('id, external_id, name, slug, parent_external_id, shopify_collection_id, status')
-          .eq('project_id', project.id)
+          .eq('project_id', projectId)
           .order('name', { ascending: true })
           .limit(500);
 
@@ -364,13 +351,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     );
   }, [categories, searchQuery]);
 
-  const handleContinue = async () => {
-    setSaving(true);
-    await onUpdateProject({ status: 'completed' });
-    setSaving(false);
-    onNext();
-  };
-
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'uploaded':
@@ -392,39 +372,28 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
     pages: <FileText className="w-4 h-4" />,
   };
 
-  const shopifyDomain = project.shopify_store_domain?.replace('.myshopify.com', '');
+  const shopifyAdmin = shopifyDomain?.replace('.myshopify.com', '');
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-semibold mb-2">Review</h2>
-        <p className="text-muted-foreground">
-          Gennemgå dine data før afslutning. Dette er en read-only preview.
-        </p>
-      </div>
-
+    <div className="space-y-4">
       {/* Stats Overview */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         {(['products', 'customers', 'orders', 'categories', 'pages'] as EntityType[]).map(entityType => (
           <Card 
             key={entityType} 
-            className={`cursor-pointer transition-colors ${activeTab === entityType ? 'border-primary ring-1 ring-primary' : 'hover:border-muted-foreground/30'}`}
-            onClick={() => setActiveTab(entityType)}
+            className={`cursor-pointer transition-colors ${activeEntityTab === entityType ? 'border-primary ring-1 ring-primary' : 'hover:border-muted-foreground/30'}`}
+            onClick={() => loadEntityData(entityType)}
           >
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 mb-2">
+            <CardContent className="pt-3 pb-2">
+              <div className="flex items-center gap-2 mb-1">
                 {entityIcons[entityType]}
-                <span className="text-sm font-medium capitalize">{entityType}</span>
+                <span className="text-xs font-medium capitalize">{entityType}</span>
               </div>
-              <div className="text-2xl font-bold">{stats[entityType].total}</div>
-              <div className="flex gap-2 mt-1 text-xs">
+              <div className="text-xl font-bold">{stats[entityType].total}</div>
+              <div className="flex gap-2 mt-0.5 text-xs">
                 <span className="text-green-600">{stats[entityType].uploaded} ✓</span>
                 {stats[entityType].pending > 0 && (
-                  <span className="text-muted-foreground">{stats[entityType].pending} afventer</span>
-                )}
-                {stats[entityType].failed > 0 && (
-                  <span className="text-destructive">{stats[entityType].failed} fejl</span>
+                  <span className="text-muted-foreground">{stats[entityType].pending} afv.</span>
                 )}
               </div>
             </CardContent>
@@ -432,35 +401,44 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
         ))}
       </div>
 
-      {/* Main Content */}
+      {/* Main Content Card */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-lg flex items-center gap-2">
-                {entityIcons[activeTab]}
-                <span className="capitalize">{activeTab}</span>
-                {loading === activeTab && <Loader2 className="w-4 h-4 animate-spin" />}
+              <CardTitle className="text-base flex items-center gap-2">
+                {entityIcons[activeEntityTab]}
+                <span className="capitalize">{activeEntityTab}</span>
+                {loading === activeEntityTab && <Loader2 className="w-4 h-4 animate-spin" />}
               </CardTitle>
-              <CardDescription>
-                Preview af data som de vises i Shopify
+              <CardDescription className="text-xs">
+                Sådan vil data se ud i Shopify
               </CardDescription>
             </div>
-            <div className="relative w-64">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Søg..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+            <div className="flex items-center gap-2">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => { loadAllStats(); loadEntityData(activeEntityTab); }}
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+              <div className="relative w-48">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  placeholder="Søg..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 h-8 text-sm"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-[500px]">
+          <ScrollArea className="h-[400px]">
             {/* Products Table */}
-            {activeTab === 'products' && (
+            {activeEntityTab === 'products' && (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -491,7 +469,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="font-medium">{product.title}</div>
+                        <div className="font-medium text-sm">{product.title}</div>
                         {product.vendor && (
                           <div className="text-xs text-muted-foreground">{product.vendor}</div>
                         )}
@@ -500,14 +478,14 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                       <TableCell>
                         {product.variants.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
-                            {product.variants.slice(0, 5).map((v, i) => (
+                            {product.variants.slice(0, 3).map((v, i) => (
                               <Badge key={i} variant="outline" className="text-xs">
                                 {v.option}
                               </Badge>
                             ))}
-                            {product.variants.length > 5 && (
+                            {product.variants.length > 3 && (
                               <Badge variant="secondary" className="text-xs">
-                                +{product.variants.length - 5}
+                                +{product.variants.length - 3}
                               </Badge>
                             )}
                           </div>
@@ -515,7 +493,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                           <span className="text-muted-foreground text-xs">-</span>
                         )}
                       </TableCell>
-                      <TableCell className="text-right font-mono">{product.price} kr</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{product.price} kr</TableCell>
                       <TableCell>{getStatusBadge(product.status)}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
@@ -526,9 +504,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                           >
                             <Eye className="w-4 h-4" />
                           </Button>
-                          {product.shopify_id && shopifyDomain && (
+                          {product.shopify_id && shopifyAdmin && (
                             <a
-                              href={`https://admin.shopify.com/store/${shopifyDomain}/products/${product.shopify_id}`}
+                              href={`https://admin.shopify.com/store/${shopifyAdmin}/products/${product.shopify_id}`}
                               target="_blank"
                               rel="noopener noreferrer"
                             >
@@ -553,14 +531,14 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
             )}
 
             {/* Customers Table */}
-            {activeTab === 'customers' && (
+            {activeEntityTab === 'customers' && (
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Kunde</TableHead>
                     <TableHead>Email</TableHead>
                     <TableHead>Telefon</TableHead>
-                    <TableHead>Adresse</TableHead>
+                    <TableHead>By</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
@@ -568,15 +546,11 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                 <TableBody>
                   {filteredCustomers.map(customer => (
                     <TableRow key={customer.id}>
-                      <TableCell className="font-medium">{customer.name}</TableCell>
+                      <TableCell className="font-medium text-sm">{customer.name}</TableCell>
                       <TableCell className="text-sm">{customer.email}</TableCell>
                       <TableCell className="text-sm font-mono">{customer.phone || '-'}</TableCell>
                       <TableCell className="text-sm">
-                        {customer.address ? (
-                          <span>{customer.address.city}, {customer.address.country}</span>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
+                        {customer.address?.city || '-'}
                       </TableCell>
                       <TableCell>{getStatusBadge(customer.status)}</TableCell>
                       <TableCell>
@@ -602,7 +576,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
             )}
 
             {/* Orders Table */}
-            {activeTab === 'orders' && (
+            {activeEntityTab === 'orders' && (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -611,7 +585,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                     <TableHead>Varer</TableHead>
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead>Betaling</TableHead>
-                    <TableHead>Levering</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -627,17 +600,12 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                           {order.financialStatus}
                         </Badge>
                       </TableCell>
-                      <TableCell>
-                        <Badge variant={order.fulfillmentStatus === 'fulfilled' ? 'default' : 'outline'} className="text-xs">
-                          {order.fulfillmentStatus || 'unfulfilled'}
-                        </Badge>
-                      </TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>
                     </TableRow>
                   ))}
                   {filteredOrders.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                         {searchQuery ? 'Ingen ordrer matcher søgningen' : 'Ingen ordrer fundet'}
                       </TableCell>
                     </TableRow>
@@ -647,7 +615,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
             )}
 
             {/* Categories Table */}
-            {activeTab === 'categories' && (
+            {activeEntityTab === 'categories' && (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -682,7 +650,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
             )}
 
             {/* Pages placeholder */}
-            {activeTab === 'pages' && (
+            {activeEntityTab === 'pages' && (
               <div className="text-center py-12 text-muted-foreground">
                 <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
                 <p>Sider preview kommer snart</p>
@@ -691,24 +659,6 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
           </ScrollArea>
         </CardContent>
       </Card>
-
-      {/* Continue Button */}
-      <div className="flex justify-between gap-3 pt-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <CheckCircle2 className="w-4 h-4 text-green-500" />
-          Upload gennemført - review dine data før afslutning
-        </div>
-        <Button onClick={handleContinue} disabled={saving}>
-          {saving ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Gemmer...
-            </>
-          ) : (
-            'Afslut og gå til rapport'
-          )}
-        </Button>
-      </div>
 
       {/* Product Detail Dialog */}
       <Dialog open={selectedProduct !== null} onOpenChange={() => setSelectedProduct(null)}>
@@ -779,9 +729,9 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
               )}
 
               {/* Shopify Link */}
-              {selectedProduct.shopify_id && shopifyDomain && (
+              {selectedProduct.shopify_id && shopifyAdmin && (
                 <a
-                  href={`https://admin.shopify.com/store/${shopifyDomain}/products/${selectedProduct.shopify_id}`}
+                  href={`https://admin.shopify.com/store/${shopifyAdmin}/products/${selectedProduct.shopify_id}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 text-primary hover:underline"
@@ -839,7 +789,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
 }
 
 // Helper function to extract size from product data
-function extractSizeFromData(data: any): string | null {
+function extractSizeFromData(data: Record<string, any>): string | null {
   if (data.variant_option && data.variant_option !== 'Default Title') {
     return data.variant_option;
   }
@@ -850,7 +800,6 @@ function extractSizeFromData(data: any): string | null {
   const parts = sku.split('-');
   const lastPart = parts[parts.length - 1]?.toUpperCase();
   
-  // Check if it's a valid size
   const sizePatterns = /^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|\d{2}|\d{2}-\d{2}|ONE-?SIZE)$/i;
   if (lastPart && sizePatterns.test(lastPart)) {
     return lastPart;
