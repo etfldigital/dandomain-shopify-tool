@@ -560,9 +560,25 @@ serve(async (req) => {
 
         console.log(`[WORKER] Speed: last_batch=${batchItemsPerMinute.toFixed(1)}/min, rolling_avg=${itemsPerMinute?.toFixed(1) || 'null'}/min`);
 
-        // Merge error details
-        const existingErrors = (job.error_details || []).filter((e: any) => e?.externalId !== '__worker__');
-        const newErrors = result.errorDetails || [];
+        // Merge error details - filter out transient operational messages
+        // These are bucket/rate-limit states, NOT real item failures
+        const TRANSIENT_MESSAGES = [
+          'Bucket nearly full',
+          'pausing',
+          'rate limit',
+          'too many requests',
+          'For mange forespørgsler',
+          '429',
+        ];
+        const isTransientError = (msg: string) => 
+          TRANSIENT_MESSAGES.some(t => msg.toLowerCase().includes(t.toLowerCase()));
+        
+        const existingErrors = (job.error_details || []).filter((e: any) => 
+          e?.externalId !== '__worker__' && !isTransientError(e?.message || '')
+        );
+        const newErrors = (result.errorDetails || []).filter((e: any) =>
+          !isTransientError(e?.message || '')
+        );
 
         const allErrors = [...existingErrors, ...newErrors].slice(-100); // Keep last 100
 
