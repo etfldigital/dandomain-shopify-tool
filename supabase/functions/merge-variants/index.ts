@@ -617,29 +617,38 @@ serve(async (req) => {
         
         console.log(`[MERGE] Reordering ${sortedVariantIds.length} variants by size...`);
         
-        // Update product with reordered variants
-        const reorderResult = await shopifyFetch(
-          `${shopifyUrl}/products/${primaryProduct.id}.json`,
-          {
-            method: 'PUT',
-            headers: { 
-              'Content-Type': 'application/json', 
-              'X-Shopify-Access-Token': shopifyToken 
-            },
-            body: JSON.stringify({
-              product: {
-                id: primaryProduct.id,
-                variants: sortedVariantIds,
-              }
-            }),
+        // Use Shopify's variant set positions endpoint to reorder without affecting images
+        // We update each variant's position individually
+        let positionUpdated = 0;
+        for (let i = 0; i < sortedVariantIds.length; i++) {
+          const variantId = sortedVariantIds[i].id;
+          const position = i + 1;
+          
+          const positionResult = await shopifyFetch(
+            `${shopifyUrl}/variants/${variantId}.json`,
+            {
+              method: 'PUT',
+              headers: { 
+                'Content-Type': 'application/json', 
+                'X-Shopify-Access-Token': shopifyToken 
+              },
+              body: JSON.stringify({
+                variant: {
+                  id: variantId,
+                  position: position,
+                }
+              }),
+            }
+          );
+          
+          if (!('rateLimited' in positionResult) && positionResult.response.ok) {
+            positionUpdated++;
           }
-        );
-        
-        if (!('rateLimited' in reorderResult) && reorderResult.response.ok) {
-          console.log(`[MERGE] Successfully reordered variants by size`);
-        } else {
-          console.warn(`[MERGE] Could not reorder variants (non-critical)`);
+          
+          await sleep(200);
         }
+        
+        console.log(`[MERGE] Successfully reordered ${positionUpdated}/${sortedVariantIds.length} variants by size`);
       }
     }
 
