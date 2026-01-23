@@ -121,17 +121,19 @@ function getAvailableBucketSpace(): number {
  */
 async function waitForBucketSpace(): Promise<{ shouldPause: boolean; waitMs: number }> {
   const available = getAvailableBucketSpace();
-  const bufferSize = 5;
+  const bufferSize = 3; // Smaller buffer = more aggressive
   
   if (available <= bufferSize) {
     const waitTime = Math.ceil((bufferSize + 1 - available) / SHOPIFY_LEAK_RATE * 1000);
     
-    // If wait time is > 2s, signal rate limit instead of blocking
-    if (waitTime > 2000) {
+    // If wait time is > 1s, signal rate limit instead of blocking
+    // This is more aggressive - we let the worker handle short waits too
+    if (waitTime > 1000) {
       console.log(`[RATE LIMIT] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), signaling pause for ${waitTime}ms`);
       return { shouldPause: true, waitMs: waitTime };
     }
     
+    // Very short waits we can handle inline
     console.log(`[RATE LIMIT] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), waiting ${waitTime}ms`);
     await sleep(waitTime);
   }
@@ -201,15 +203,14 @@ async function shopifyFetch(
         let waitTime: number;
 
         if (retryAfter) {
-          waitTime = parseInt(retryAfter, 10) * 1000;
-          console.log(`[RATE LIMIT] 429 with Retry-After: ${retryAfter}s`);
+          // Use Shopify's recommendation, but cap at 5s - bucket refills quickly
+          waitTime = Math.min(parseInt(retryAfter, 10) * 1000, 5_000);
+          console.log(`[RATE LIMIT] 429 with Retry-After: ${retryAfter}s, using ${waitTime}ms`);
         } else {
-          // Default wait based on how full bucket is
-          waitTime = Math.min(5000 * Math.pow(2, attempt), 30_000);
+          // Default: short wait since bucket refills at 2 req/sec
+          // Start at 2s, max 5s - we'll retry quickly
+          waitTime = Math.min(2000 * Math.pow(1.5, attempt), 5_000);
         }
-
-        // Cap wait time - let worker handle scheduling
-        waitTime = Math.min(waitTime, maxWaitMs);
 
         console.log(`[RATE LIMIT] 429 (attempt ${attempt + 1}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, suggested wait ${Math.round(waitTime / 1000)}s`);
 

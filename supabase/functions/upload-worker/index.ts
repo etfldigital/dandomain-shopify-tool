@@ -67,37 +67,53 @@ const isRateLimitError = (message: string) => {
   return m.includes('429') || m.includes('rate limit') || m.includes('too many requests') || m.includes('bucket nearly full');
 };
 
-const computeRetryDelayMs = (workerErrorStreak: number, message: string, rateLimitCount: number) => {
-  // Rate limit errors need much longer cooldown - Shopify bucket refills at 2 req/sec
+const computeRetryDelayMs = (workerErrorStreak: number, message: string, rateLimitCount: number, retryAfterSecondsHint?: number) => {
+  // If shopify-upload gave us a specific retry hint, use it (with small buffer)
+  if (typeof retryAfterSecondsHint === 'number' && retryAfterSecondsHint > 0) {
+    // Add 1s buffer but cap at 10s max for rate limits
+    return Math.min((retryAfterSecondsHint + 1) * 1000, 10_000);
+  }
+  
+  // Rate limit errors: short waits - Shopify bucket refills at 2 req/sec (20 requests = 10s)
   if (isRateLimitError(message)) {
-    // After multiple rate limits, wait longer: 20s base, +10s per consecutive error, max 60s
-    // More aggressive than before to avoid long waits
-    const rateLimitDelay = Math.min(20_000 + (rateLimitCount * 10_000), 60_000);
+    // Start at 3s, increase by 2s per consecutive error, max 10s
+    const rateLimitDelay = Math.min(3_000 + (rateLimitCount * 2_000), 10_000);
     return rateLimitDelay;
   }
-  // Gateway/timeouts benefit from longer cool-down.
-  const base = isGatewayOrTimeoutError(message) ? 10_000 : WORKER_RETRY_DELAY_MS;
-  const delay = base * Math.pow(2, Math.min(workerErrorStreak, 4));
-  return Math.min(delay, 2 * 60_000); // max 2 minutes
+  // Gateway/timeouts benefit from moderate cool-down
+  const base = isGatewayOrTimeoutError(message) ? 5_000 : WORKER_RETRY_DELAY_MS;
+  const delay = base * Math.pow(1.5, Math.min(workerErrorStreak, 4));
+  return Math.min(delay, 30_000); // max 30s instead of 2 minutes
 };
 
 // Batch sizes tuned for Shopify's rate limits (40 bucket, 2 req/sec leak)
-// Orders: Each order can be multiple API calls (customer lookup + variant lookup + create)
-// Keep conservative to avoid hitting runtime timeouts.
+// More aggressive defaults - we'll auto-scale down on errors
+const DEFAULT_BATCH_SIZE: Record<string, number> = {
+  customers: 30,
+  orders: 10,      // Orders are complex but we auto-scale on timeout
+  products: 15,    // Products with images/metafields - scale down if needed
+  pages: 30,
+  categories: 30,
+};
+
+const MIN_BATCH_SIZE: Record<string, number> = {
+  customers: 5,
+  orders: 1,
+  products: 1,
+  pages: 5,
+  categories: 5,
+};
+
+const MAX_BATCH_SIZE: Record<string, number> = {
+  customers: 50,
+  orders: 15,
+  products: 25,
+  pages: 50,
+  categories: 50,
+};
+
 const batchSizeForEntity = (entityType: string) => {
-  switch (entityType) {
-    case 'customers':
-      return 25;
-    case 'orders':
-      return 5; // Conservative to avoid 504s/timeouts
-    case 'products':
-      return 10; // Reduced from 25 - products with images/metafields are slow
-    case 'pages':
-    case 'categories':
-      return 25;
-    default:
-      return 25;
-  }
+  return DEFAULT_BATCH_SIZE[entityType] || 25;
 };
 
 interface WorkerRequest {
@@ -436,19 +452,21 @@ serve(async (req) => {
           const existingErrors = (job.error_details || []).filter((e: any) => e?.externalId !== '__worker__');
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
           const rateLimitCount = countRateLimitErrors(existingErrors);
-          const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message, rateLimitCount);
+          // Use shorter delays for rate limits - no explicit hint available in catch block
+          const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message, rateLimitCount, undefined);
           const nextAttemptAtIso = new Date(Date.now() + retryDelayMs).toISOString();
 
-          // If orders OR products are timing out / gatewaying, reduce batch size so each invocation finishes faster.
-          // This avoids being stuck forever in a 502/504 retry loop with batch_size=10.
+          // If orders OR products are timing out / gatewaying, reduce batch size
+          // But respect minimum batch sizes
+          const minBatch = MIN_BATCH_SIZE[job.entity_type] || 1;
           const shouldReduceBatchSize =
             (job.entity_type === 'orders' || job.entity_type === 'products') &&
             !job.is_test_mode &&
             isGatewayOrTimeoutError(message) &&
-            effectiveBatchSize > 1;
+            effectiveBatchSize > minBatch;
 
           const reducedBatchSize = shouldReduceBatchSize
-            ? Math.max(1, Math.floor(effectiveBatchSize / 2))
+            ? Math.max(minBatch, Math.floor(effectiveBatchSize / 2))
             : effectiveBatchSize;
 
           const displayMessage =
@@ -548,10 +566,26 @@ serve(async (req) => {
 
         const allErrors = [...existingErrors, ...newErrors].slice(-100); // Keep last 100
 
-        // Calculate next attempt time if rate limited
+        // Calculate next attempt time if rate limited - use the hint from shopify-upload
         const nextAttemptAt = rateLimited && retryAfterSeconds > 0
-          ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()
+          ? new Date(Date.now() + Math.min(retryAfterSeconds * 1000, 10_000)).toISOString()
           : null;
+
+        // ADAPTIVE BATCH SCALING: Scale UP after successful batches, DOWN on errors
+        // This ensures maximum throughput while respecting Shopify limits
+        let newBatchSize = effectiveBatchSize;
+        const maxBatch = MAX_BATCH_SIZE[job.entity_type] || 50;
+        const minBatch = MIN_BATCH_SIZE[job.entity_type] || 1;
+        
+        if (!rateLimited && result.errors === 0 && itemsAttempted > 0) {
+          // Success! Consider scaling up if below max
+          // Only scale up every 3 successful batches to avoid oscillation
+          const successStreak = (job.current_batch % 3 === 0);
+          if (successStreak && effectiveBatchSize < maxBatch) {
+            newBatchSize = Math.min(maxBatch, Math.ceil(effectiveBatchSize * 1.25));
+            console.log(`[WORKER] Scaling UP batch size: ${effectiveBatchSize} → ${newBatchSize}`);
+          }
+        }
 
         // Update job progress with ACTUAL batch speed
         const updateData: Record<string, any> = {
@@ -567,6 +601,8 @@ serve(async (req) => {
           error_details: allErrors,
           last_heartbeat_at: new Date().toISOString(),
           current_batch: job.current_batch + 1,
+          // Update batch size if changed
+          ...(newBatchSize !== effectiveBatchSize ? { batch_size: newBatchSize } : {}),
         };
 
         // Check if this entity is complete
