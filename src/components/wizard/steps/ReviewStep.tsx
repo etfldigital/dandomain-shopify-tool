@@ -24,7 +24,8 @@ import {
   ArrowRight,
   CheckCircle2,
   Download,
-  ExternalLink
+  ExternalLink,
+  Merge
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -61,6 +62,8 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   const [expandedEntity, setExpandedEntity] = useState<EntityType | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState<EntityType | null>(null);
   const [deletingAll, setDeletingAll] = useState<EntityType | null>(null);
+  const [mergingGroup, setMergingGroup] = useState<string | null>(null);
+  const [mergingAll, setMergingAll] = useState<EntityType | null>(null);
 
   const scanForDuplicates = async (entityType: EntityType) => {
     setScanning(entityType);
@@ -265,6 +268,134 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
       console.error('Error deleting duplicates:', error);
       toast.error('Fejl ved sletning af duplikater');
     }
+  };
+
+  // Merge a single duplicate group as variants
+  const mergeAsVariants = async (group: DuplicateGroup) => {
+    if (group.shopifyIds.length < 2) {
+      toast.error('Der skal være mindst 2 produkter i Shopify for at merge varianter');
+      return;
+    }
+
+    setMergingGroup(group.key);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('merge-variants', {
+        body: {
+          projectId: project.id,
+          duplicateGroup: {
+            key: group.key,
+            shopifyIds: group.shopifyIds,
+            itemIds: group.ids,
+          },
+        },
+      });
+
+      if (error) throw error;
+      
+      if (data.rateLimited) {
+        toast.error(`Rate limited - vent ${Math.ceil(data.retryAfterMs / 1000)}s og prøv igen`);
+        return;
+      }
+
+      if (!data.success) {
+        throw new Error(data.error || 'Ukendt fejl');
+      }
+
+      // Remove this group from duplicates
+      setDuplicates(prev => ({
+        ...prev,
+        products: prev.products.filter(g => g.key !== group.key),
+      }));
+
+      toast.success(`Merged ${data.variantsAdded} varianter ind i produkt ${data.primaryProductId}. Slettede ${data.productsDeleted} duplikater fra Shopify.`);
+    } catch (error) {
+      console.error('Error merging variants:', error);
+      toast.error(`Fejl ved merge: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setMergingGroup(null);
+    }
+  };
+
+  // Merge all duplicate groups as variants
+  const mergeAllAsVariants = async (entityType: EntityType) => {
+    const groups = duplicates[entityType];
+    if (groups.length === 0) return;
+    
+    // Only for products
+    if (entityType !== 'products') {
+      toast.error('Merge som varianter er kun tilgængelig for produkter');
+      return;
+    }
+
+    // Filter to groups that have multiple Shopify IDs
+    const mergeableGroups = groups.filter(g => g.shopifyIds.length >= 2);
+    if (mergeableGroups.length === 0) {
+      toast.error('Ingen grupper med flere Shopify produkter at merge');
+      return;
+    }
+
+    setMergingAll(entityType);
+    
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const group of mergeableGroups) {
+      try {
+        const { data, error } = await supabase.functions.invoke('merge-variants', {
+          body: {
+            projectId: project.id,
+            duplicateGroup: {
+              key: group.key,
+              shopifyIds: group.shopifyIds,
+              itemIds: group.ids,
+            },
+          },
+        });
+
+        if (error) throw error;
+        
+        if (data.rateLimited) {
+          toast.info(`Rate limited - venter ${Math.ceil(data.retryAfterMs / 1000)}s...`);
+          await new Promise(r => setTimeout(r, data.retryAfterMs + 1000));
+          // Retry this group
+          const retryResult = await supabase.functions.invoke('merge-variants', {
+            body: {
+              projectId: project.id,
+              duplicateGroup: {
+                key: group.key,
+                shopifyIds: group.shopifyIds,
+                itemIds: group.ids,
+              },
+            },
+          });
+          if (retryResult.data?.success) {
+            successCount++;
+          } else {
+            errorCount++;
+          }
+          continue;
+        }
+
+        if (data.success) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      } catch (error) {
+        console.error(`Error merging group ${group.key}:`, error);
+        errorCount++;
+      }
+
+      // Small delay between groups to avoid rate limiting
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Rescan to update the list
+    await scanForDuplicates('products');
+
+    setMergingAll(null);
+    toast.success(`Merged ${successCount} grupper. ${errorCount > 0 ? `${errorCount} fejlede.` : ''}`);
   };
 
   const handleContinue = async () => {
@@ -512,12 +643,30 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                         </div>
                       </div>
                       <CardDescription className="text-xs mt-1">
-                        Produkter med Shopify ID er oprettet i din Shopify butik og skal slettes manuelt der.
+                        {entityType === 'products' 
+                          ? 'Disse produkter har samme titel men er oprettet som separate produkter. Du kan merge dem som varianter.'
+                          : 'Produkter med Shopify ID er oprettet i din Shopify butik.'}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="py-0 pb-3 space-y-3">
                       {/* Action buttons */}
                       <div className="flex gap-2 flex-wrap">
+                        {entityType === 'products' && getShopifyDuplicateCount('products') > 0 && (
+                          <Button
+                            variant="default"
+                            size="sm"
+                            onClick={() => mergeAllAsVariants('products')}
+                            disabled={mergingAll === 'products'}
+                            className="bg-primary"
+                          >
+                            {mergingAll === 'products' ? (
+                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                            ) : (
+                              <Merge className="w-4 h-4 mr-1" />
+                            )}
+                            Merge alle som varianter
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
@@ -529,7 +678,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                           ) : (
                             <Download className="w-4 h-4 mr-1" />
                           )}
-                          Download alle ({groups.length} grupper) som CSV
+                          Download CSV
                         </Button>
                         <Button
                           variant="destructive"
@@ -542,14 +691,14 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                           ) : (
                             <Trash2 className="w-4 h-4 mr-1" />
                           )}
-                          Slet alle {getTotalDuplicateCount(entityType as EntityType)} duplikater fra DB
+                          Slet fra DB
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => setExpandedEntity(expandedEntity === entityType ? null : entityType as EntityType)}
                         >
-                          {expandedEntity === entityType ? 'Skjul detaljer' : `Vis alle ${groups.length} grupper`}
+                          {expandedEntity === entityType ? 'Skjul detaljer' : `Vis ${groups.length} grupper`}
                         </Button>
                       </div>
                       
@@ -576,7 +725,7 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                                 </TableCell>
                                 <TableCell>
                                   {group.shopifyIds.length > 0 ? (
-                                    <Badge variant="default" className="bg-green-600">
+                                    <Badge variant="default" className="bg-primary">
                                       {group.shopifyIds.length}x i Shopify
                                     </Badge>
                                   ) : (
@@ -608,15 +757,32 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                                   </div>
                                 </TableCell>
                                 <TableCell>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => deleteDuplicates(entityType as EntityType, group)}
-                                    className="text-destructive hover:text-destructive"
-                                  >
-                                    <Trash2 className="w-4 h-4 mr-1" />
-                                    Slet {group.count - 1}
-                                  </Button>
+                                  <div className="flex gap-1">
+                                    {entityType === 'products' && group.shopifyIds.length >= 2 && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => mergeAsVariants(group)}
+                                        disabled={mergingGroup === group.key}
+                                        className="text-primary hover:text-primary"
+                                      >
+                                        {mergingGroup === group.key ? (
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                          <Merge className="w-4 h-4" />
+                                        )}
+                                      </Button>
+                                    )}
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => deleteDuplicates(entityType as EntityType, group)}
+                                      className="text-destructive hover:text-destructive"
+                                      title="Slet fra DB"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  </div>
                                 </TableCell>
                               </TableRow>
                             ))}
