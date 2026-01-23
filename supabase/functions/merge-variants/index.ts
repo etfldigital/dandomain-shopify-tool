@@ -278,17 +278,34 @@ serve(async (req) => {
       
       const parts = sku.split('-');
       
-      // First, try to find a simple size from the end (most common case)
-      // Start from the last part and work backwards
+      // Start from the last part (most common location for size)
       for (let i = parts.length - 1; i >= 0; i--) {
         const part = parts[i].trim().toUpperCase();
         
-        // Skip empty parts and common non-size parts
+        // Skip empty parts
         if (!part || part.length === 0) continue;
         
         // Skip color-like values (common non-size patterns)
-        const colorPatterns = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL)$/i;
+        const colorPatterns = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL|MULCH|MELANGE|STRIPE)$/i;
         if (colorPatterns.test(part)) continue;
+        
+        // Skip parts that look like product codes (3+ digit numbers in SKU middle parts)
+        // Product codes are usually: first or middle parts with 3+ digits
+        // e.g. GL10300-681-L -> 10300 and 681 are product codes, L is size
+        if (i < parts.length - 1 && /^\d{3,}$/.test(part)) {
+          console.log(`[MERGE] Skipping middle SKU part ${part} - likely product code`);
+          continue;
+        }
+        
+        // For the last part: only accept if it's a letter size or valid numeric size
+        if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
+          // 3+ digit number at end - check if it's a valid size
+          const num = parseInt(part, 10);
+          if (!isValidNumericSize(num)) {
+            console.log(`[MERGE] Skipping end SKU part ${part} - 3+ digit number not in valid size range`);
+            continue;
+          }
+        }
         
         // Check if it's a valid size
         if (isValidSizeVariant(part)) {
@@ -299,11 +316,11 @@ serve(async (req) => {
       // Special case: check if last TWO parts form a size range like "36-38"
       if (parts.length >= 2) {
         const lastTwo = parts.slice(-2).join('-');
-        if (/^\d{2,3}-\d{2,3}$/.test(lastTwo)) {
-          // It's a range - take the last number as the size
-          const lastNum = parts[parts.length - 1];
-          if (/^\d{2,3}$/.test(lastNum)) {
-            return lastNum;
+        if (/^\d{2}-\d{2}$/.test(lastTwo)) {
+          const nums = lastTwo.split('-').map(n => parseInt(n, 10));
+          // Both numbers must be in valid size ranges
+          if (nums.every(n => isValidNumericSize(n))) {
+            return lastTwo;
           }
         }
       }

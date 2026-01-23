@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Input } from '@/components/ui/input';
 import { 
   Table,
   TableBody,
@@ -34,6 +35,7 @@ import {
   Merge,
   Eye,
   ArrowRight,
+  Search,
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -108,6 +110,42 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
   const [mergingAll, setMergingAll] = useState<EntityType | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [mergePreview, setMergePreview] = useState<MergePreviewState | null>(null);
+  const [searchQueries, setSearchQueries] = useState<Record<EntityType, string>>({
+    products: '',
+    customers: '',
+    orders: '',
+    categories: '',
+    pages: '',
+  });
+
+  // Filter duplicates based on search query
+  const filteredDuplicates = useMemo(() => {
+    const result: Record<EntityType, DuplicateGroup[]> = {
+      products: [],
+      customers: [],
+      orders: [],
+      categories: [],
+      pages: [],
+    };
+    
+    for (const entityType of Object.keys(duplicates) as EntityType[]) {
+      const query = searchQueries[entityType].toLowerCase().trim();
+      if (!query) {
+        result[entityType] = duplicates[entityType];
+      } else {
+        result[entityType] = duplicates[entityType].filter(group => {
+          // Search in key, title, and shopify IDs
+          const keyMatch = group.key.toLowerCase().includes(query);
+          const titleMatch = group.title?.toLowerCase().includes(query);
+          const shopifyIdMatch = group.shopifyIds.some(id => id.toLowerCase().includes(query));
+          const externalIdMatch = group.externalIds.some(id => id.toLowerCase().includes(query));
+          return keyMatch || titleMatch || shopifyIdMatch || externalIdMatch;
+        });
+      }
+    }
+    
+    return result;
+  }, [duplicates, searchQueries]);
 
   const scanForDuplicates = async (entityType: EntityType) => {
     setScanning(entityType);
@@ -726,57 +764,74 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="py-0 pb-3 space-y-3">
-                      {/* Action buttons */}
-                      <div className="flex gap-2 flex-wrap">
-                        {entityType === 'products' && getShopifyDuplicateCount('products') > 0 && (
+                      {/* Search and action buttons */}
+                      <div className="flex flex-col gap-3">
+                        {/* Search field */}
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                          <Input
+                            placeholder={`Søg i ${entityLabels[entityType as EntityType].toLowerCase()}...`}
+                            value={searchQueries[entityType as EntityType]}
+                            onChange={(e) => setSearchQueries(prev => ({
+                              ...prev,
+                              [entityType]: e.target.value
+                            }))}
+                            className="pl-9 h-9"
+                          />
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex gap-2 flex-wrap">
+                          {entityType === 'products' && getShopifyDuplicateCount('products') > 0 && (
+                            <Button
+                              variant="default"
+                              size="sm"
+                              onClick={() => mergeAllAsVariants('products')}
+                              disabled={mergingAll === 'products'}
+                              className="bg-primary"
+                            >
+                              {mergingAll === 'products' ? (
+                                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                              ) : (
+                                <Merge className="w-4 h-4 mr-1" />
+                              )}
+                              Merge alle som varianter
+                            </Button>
+                          )}
                           <Button
-                            variant="default"
+                            variant="outline"
                             size="sm"
-                            onClick={() => mergeAllAsVariants('products')}
-                            disabled={mergingAll === 'products'}
-                            className="bg-primary"
+                            onClick={() => downloadDuplicatesCsv(entityType as EntityType)}
+                            disabled={downloadingCsv === entityType}
                           >
-                            {mergingAll === 'products' ? (
+                            {downloadingCsv === entityType ? (
                               <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                             ) : (
-                              <Merge className="w-4 h-4 mr-1" />
+                              <Download className="w-4 h-4 mr-1" />
                             )}
-                            Merge alle som varianter
+                            Download CSV
                           </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => downloadDuplicatesCsv(entityType as EntityType)}
-                          disabled={downloadingCsv === entityType}
-                        >
-                          {downloadingCsv === entityType ? (
-                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                          ) : (
-                            <Download className="w-4 h-4 mr-1" />
-                          )}
-                          Download CSV
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => deleteAllDuplicates(entityType as EntityType)}
-                          disabled={deletingAll === entityType}
-                        >
-                          {deletingAll === entityType ? (
-                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4 mr-1" />
-                          )}
-                          Slet fra DB
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setExpandedEntity(expandedEntity === entityType ? null : entityType as EntityType)}
-                        >
-                          {expandedEntity === entityType ? 'Skjul detaljer' : `Vis ${groups.length} grupper`}
-                        </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => deleteAllDuplicates(entityType as EntityType)}
+                            disabled={deletingAll === entityType}
+                          >
+                            {deletingAll === entityType ? (
+                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4 mr-1" />
+                            )}
+                            Slet fra DB
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setExpandedEntity(expandedEntity === entityType ? null : entityType as EntityType)}
+                          >
+                            {expandedEntity === entityType ? 'Skjul detaljer' : `Vis ${filteredDuplicates[entityType as EntityType].length} grupper`}
+                          </Button>
+                        </div>
                       </div>
                       
                       {/* Scrollable table */}
@@ -792,7 +847,16 @@ export function ReviewStep({ project, onUpdateProject, onNext }: ReviewStepProps
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {groups.map(group => (
+                            {filteredDuplicates[entityType as EntityType].length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                                  {searchQueries[entityType as EntityType] 
+                                    ? `Ingen resultater for "${searchQueries[entityType as EntityType]}"` 
+                                    : 'Ingen duplikater fundet'}
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
+                            {filteredDuplicates[entityType as EntityType].map(group => (
                               <TableRow key={group.key}>
                                 <TableCell className="font-medium max-w-xs truncate" title={group.title || group.key}>
                                   {group.title || group.key}
