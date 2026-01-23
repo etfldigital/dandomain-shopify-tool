@@ -427,7 +427,20 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
   const productJob = jobs.find(j => j.entity_type === 'products');
   const totalSkipped = productJob?.skipped_count || 0;
 
-  // Fetch failed and skipped items from database
+  // Stable fetch trigger - only refetch when actual failure counts change
+  const failedCountsKey = JSON.stringify({
+    products: statusCounts.products.failed,
+    customers: statusCounts.customers.failed,
+    orders: statusCounts.orders.failed,
+    categories: statusCounts.categories.failed,
+    pages: statusCounts.pages.failed,
+  });
+  
+  const skippedCountsKey = JSON.stringify(
+    jobs.map(j => ({ type: j.entity_type, skipped: j.skipped_count }))
+  );
+
+  // Fetch failed and skipped items from database - with stable dependencies
   useEffect(() => {
     const fetchItems = async () => {
       // Only show loading spinner on initial load
@@ -563,7 +576,9 @@ export function UploadErrorReport({ projectId, jobs, statusCounts, onRetryFailed
     };
 
     fetchItems();
-  }, [projectId, statusCounts, jobs]);
+  // Use stable keys instead of full objects to prevent unnecessary refetches
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, failedCountsKey, skippedCountsKey]);
 
   // Extract the specific field name from error message for better grouping
   const extractFieldFromError = (message: string): string | null => {
