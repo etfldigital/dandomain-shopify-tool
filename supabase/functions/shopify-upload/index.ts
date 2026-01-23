@@ -169,15 +169,14 @@ async function shopifyFetch(
       // Update bucket state from headers (even on non-2xx responses)
       updateBucketFromHeaders(response);
 
-      // Handle rate limiting with intelligent backoff
+      // Handle rate limiting - IMMEDIATELY return to worker, don't retry internally
       if (response.status === 429) {
-        attempt++;
         consecutiveRateLimits++;
-
+        
         // Aggressively increase backoff on 429
-        backoffMultiplier = Math.min(backoffMultiplier * 2, 10);
+        backoffMultiplier = Math.min(backoffMultiplier * 2, 8);
 
-        // If we didn't get a usable bucket header, assume it's full so future calls wait.
+        // If we didn't get a usable bucket header, assume it's full
         const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
         if (!callLimit) {
           shopifyBucketUsed = SHOPIFY_BUCKET_SIZE;
@@ -192,19 +191,16 @@ async function shopifyFetch(
           waitTime = parseInt(retryAfter, 10) * 1000;
           console.log(`[RATE LIMIT] 429 with Retry-After: ${retryAfter}s`);
         } else {
-          // Exponential backoff with jitter
-          const baseWait = 2000 * Math.pow(2, attempt);
-          const jitter = Math.random() * 1000;
-          waitTime = Math.min(baseWait + jitter, 60_000);
+          // Default wait based on how full bucket is
+          waitTime = Math.min(5000 * Math.pow(2, attempt), 30_000);
         }
 
-        // Cap wait time
+        // Cap wait time - let worker handle scheduling
         waitTime = Math.min(waitTime, maxWaitMs);
 
-        console.log(`[RATE LIMIT] 429 (attempt ${attempt}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, suggested wait ${Math.round(waitTime / 1000)}s`);
+        console.log(`[RATE LIMIT] 429 (attempt ${attempt + 1}/${maxRetries}), backoff=${backoffMultiplier.toFixed(1)}x, suggested wait ${Math.round(waitTime / 1000)}s`);
 
-        // IMPORTANT: Don't sleep inside this function for long waits.
-        // Instead, bubble up so the worker can schedule the next attempt and keep UI responsive.
+        // IMMEDIATELY throw - don't sleep internally, let worker schedule retry
         throw new RateLimitError(waitTime, 'Shopify rate limited (429)');
       }
       
