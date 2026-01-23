@@ -566,6 +566,58 @@ serve(async (req) => {
       }
       
       console.log(`[MERGE] Successfully added ${variantsAdded} variants to primary product`);
+      
+      // Step 4c: Reorder all variants by size (S, M, L, XL order)
+      // Fetch the updated product to get all variant IDs
+      await sleep(500);
+      
+      const updatedProductResult = await shopifyFetch(
+        `${shopifyUrl}/products/${primaryProduct.id}.json`,
+        { headers: { 'X-Shopify-Access-Token': shopifyToken } }
+      );
+      
+      if (!('rateLimited' in updatedProductResult) && updatedProductResult.response.ok) {
+        const updatedProduct = JSON.parse(updatedProductResult.body).product;
+        
+        // Sort variants by size
+        const sortedVariantIds = updatedProduct.variants
+          .map((v: any) => ({
+            id: v.id,
+            option1: v.option1 || 'Default',
+          }))
+          .sort((a: any, b: any) => {
+            const priorityA = getSizeSortPriority(a.option1);
+            const priorityB = getSizeSortPriority(b.option1);
+            return priorityA - priorityB;
+          })
+          .map((v: any) => ({ id: v.id }));
+        
+        console.log(`[MERGE] Reordering ${sortedVariantIds.length} variants by size...`);
+        
+        // Update product with reordered variants
+        const reorderResult = await shopifyFetch(
+          `${shopifyUrl}/products/${primaryProduct.id}.json`,
+          {
+            method: 'PUT',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'X-Shopify-Access-Token': shopifyToken 
+            },
+            body: JSON.stringify({
+              product: {
+                id: primaryProduct.id,
+                variants: sortedVariantIds,
+              }
+            }),
+          }
+        );
+        
+        if (!('rateLimited' in reorderResult) && reorderResult.response.ok) {
+          console.log(`[MERGE] Successfully reordered variants by size`);
+        } else {
+          console.warn(`[MERGE] Could not reorder variants (non-critical)`);
+        }
+      }
     }
 
     // Step 5: Delete duplicate products from Shopify
