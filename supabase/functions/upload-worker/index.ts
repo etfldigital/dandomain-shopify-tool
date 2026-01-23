@@ -64,7 +64,7 @@ const countRateLimitErrors = (details: Array<{ externalId?: string; message?: st
 
 const isRateLimitError = (message: string) => {
   const m = message.toLowerCase();
-  return m.includes('429') || m.includes('rate limit') || m.includes('too many requests');
+  return m.includes('429') || m.includes('rate limit') || m.includes('too many requests') || m.includes('bucket nearly full');
 };
 
 const computeRetryDelayMs = (workerErrorStreak: number, message: string, rateLimitCount: number) => {

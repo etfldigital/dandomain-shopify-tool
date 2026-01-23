@@ -116,16 +116,26 @@ function getAvailableBucketSpace(): number {
 
 /**
  * Wait until there's space in the rate limit bucket.
+ * IMPORTANT: If bucket is nearly full, return immediately with rate limit flag
+ * instead of waiting - let worker schedule retry
  */
-async function waitForBucketSpace(): Promise<void> {
+async function waitForBucketSpace(): Promise<{ shouldPause: boolean; waitMs: number }> {
   const available = getAvailableBucketSpace();
   const bufferSize = 5;
   
   if (available <= bufferSize) {
     const waitTime = Math.ceil((bufferSize + 1 - available) / SHOPIFY_LEAK_RATE * 1000);
+    
+    // If wait time is > 2s, signal rate limit instead of blocking
+    if (waitTime > 2000) {
+      console.log(`[RATE LIMIT] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), signaling pause for ${waitTime}ms`);
+      return { shouldPause: true, waitMs: waitTime };
+    }
+    
     console.log(`[RATE LIMIT] Bucket near full (${SHOPIFY_BUCKET_SIZE - available}/${SHOPIFY_BUCKET_SIZE}), waiting ${waitTime}ms`);
     await sleep(waitTime);
   }
+  return { shouldPause: false, waitMs: 0 };
 }
 
 type ShopifyFetchLimits = {
@@ -145,8 +155,11 @@ async function shopifyFetch(
 ): Promise<{ response: Response; body: string }> {
   const entityType = limits.entityType || 'default';
   
-  // Wait for bucket space before making request
-  await waitForBucketSpace();
+  // Check bucket space - if nearly full, immediately return rate limit
+  const bucketCheck = await waitForBucketSpace();
+  if (bucketCheck.shouldPause) {
+    throw new RateLimitError(bucketCheck.waitMs, 'Bucket nearly full, pausing');
+  }
   
   // Enforce optimal delay between requests
   const optimalDelay = getOptimalDelay(entityType);
