@@ -51,8 +51,30 @@ const countTrailingWorkerErrors = (details: Array<{ externalId?: string; message
   return streak;
 };
 
-const computeRetryDelayMs = (workerErrorStreak: number, message: string) => {
-  // Exponential backoff with cap. Gateway/timeouts benefit from longer cool-down.
+const countRateLimitErrors = (details: Array<{ externalId?: string; message?: string }> | null | undefined) => {
+  if (!details || details.length === 0) return 0;
+  // Count rate limit errors in last 10 entries
+  const recent = details.slice(-10);
+  return recent.filter(d => 
+    d?.message?.includes('429') || 
+    d?.message?.includes('rate limit') ||
+    d?.message?.includes('Rate limit')
+  ).length;
+};
+
+const isRateLimitError = (message: string) => {
+  const m = message.toLowerCase();
+  return m.includes('429') || m.includes('rate limit') || m.includes('too many requests');
+};
+
+const computeRetryDelayMs = (workerErrorStreak: number, message: string, rateLimitCount: number) => {
+  // Rate limit errors need much longer cooldown - Shopify bucket refills at 2 req/sec
+  if (isRateLimitError(message)) {
+    // After multiple rate limits, wait longer: 30s, 60s, 90s, 120s max
+    const rateLimitDelay = Math.min(30_000 + (rateLimitCount * 30_000), 120_000);
+    return rateLimitDelay;
+  }
+  // Gateway/timeouts benefit from longer cool-down.
   const base = isGatewayOrTimeoutError(message) ? 15_000 : WORKER_RETRY_DELAY_MS;
   const delay = base * Math.pow(2, Math.min(workerErrorStreak, 6));
   return Math.min(delay, 5 * 60_000); // max 5 minutes
@@ -80,7 +102,7 @@ const batchSizeForEntity = (entityType: string) => {
 interface WorkerRequest {
   jobId?: string;
   projectId?: string;
-  action: 'start' | 'process' | 'pause' | 'resume' | 'cancel' | 'status';
+  action: 'start' | 'process' | 'pause' | 'resume' | 'cancel' | 'status' | 'force-restart';
   entityTypes?: string[];
   isTestMode?: boolean;
 }
@@ -329,7 +351,8 @@ serve(async (req) => {
           // Record the worker-level error so it is visible in the UI
           const existingErrors = job.error_details || [];
           const workerErrorStreak = countTrailingWorkerErrors(existingErrors) + 1;
-          const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message);
+          const rateLimitCount = countRateLimitErrors(existingErrors);
+          const retryDelayMs = computeRetryDelayMs(workerErrorStreak, message, rateLimitCount);
 
           // If orders OR products are timing out / gatewaying, reduce batch size so each invocation finishes faster.
           // This avoids being stuck forever in a 502/504 retry loop with batch_size=10.
@@ -715,20 +738,64 @@ serve(async (req) => {
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      case 'status': {
-        if (!projectId) {
-          throw new Error('projectId required for status action');
+      case 'force-restart': {
+        // Force restart a stuck job regardless of current status
+        if (!jobId && !projectId) {
+          throw new Error('jobId or projectId required for force-restart action');
         }
 
-        const { data: jobs } = await supabase
+        // Find the job(s) to restart
+        let query = supabase
           .from('upload_jobs')
           .select('*')
-          .eq('project_id', projectId)
-          .order('created_at', { ascending: true });
+          .in('status', ['running', 'paused']);
+
+        if (jobId) {
+          query = query.eq('id', jobId);
+        } else if (projectId) {
+          query = query.eq('project_id', projectId);
+        }
+
+        const { data: jobsToRestart } = await query;
+        const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+        const restartedIds: string[] = [];
+
+        if (jobsToRestart && jobsToRestart.length > 0) {
+          for (const jobToRestart of jobsToRestart) {
+            console.log(`[WORKER] Force restarting job ${jobToRestart.id} (${jobToRestart.entity_type})`);
+            
+            // Clear error details to reset rate limit counters
+            await supabase
+              .from('upload_jobs')
+              .update({ 
+                status: 'running',
+                last_heartbeat_at: new Date().toISOString(),
+                error_details: [], // Clear error history to reset backoff
+              })
+              .eq('id', jobToRestart.id);
+
+            // Trigger processing
+            runInBackground(
+              fetch(functionUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${supabaseServiceKey}`,
+                },
+                body: JSON.stringify({ jobId: jobToRestart.id, action: 'process' }),
+              })
+                .then(() => console.log(`[WORKER] Force restarted job ${jobToRestart.id}`))
+                .catch((e) => console.error(`[WORKER] Failed to force restart job ${jobToRestart.id}:`, e))
+            );
+
+            restartedIds.push(jobToRestart.id);
+          }
+        }
 
         return new Response(JSON.stringify({
           success: true,
-          jobs: jobs || [],
+          message: `Force restarted ${restartedIds.length} job(s)`,
+          restartedJobs: restartedIds,
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 

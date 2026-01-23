@@ -45,6 +45,7 @@ import {
   SkipForward,
   PartyPopper,
   ArrowRight,
+  RefreshCw,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
@@ -358,6 +359,19 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       await fetchJobs();
     } catch (error) {
       toast.error('Kunne ikke annullere upload');
+    }
+  };
+
+  const handleForceRestart = async () => {
+    try {
+      const { error } = await supabase.functions.invoke('upload-worker', {
+        body: { projectId: project.id, action: 'force-restart' },
+      });
+      if (error) throw error;
+      toast.success('Upload genstartet');
+      await fetchJobs();
+    } catch (error) {
+      toast.error('Kunne ikke genstarte upload');
     }
   };
 
@@ -1102,6 +1116,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 </>
               )}
             </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" onClick={handleForceRestart}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Genstart
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="font-medium mb-1">Force genstart</p>
+                  <p className="text-sm text-muted-foreground">
+                    Nulstiller rate limit cooldown og genstarter upload hvis den er gået i stå
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             <Button variant="destructive" onClick={handleCancel}>
               <CloudOff className="w-4 h-4 mr-2" />
               Stop
