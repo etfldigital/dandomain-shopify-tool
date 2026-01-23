@@ -425,6 +425,9 @@ async function processProductGroup(
     }
   }
 
+  // Sort variants by size (smallest to largest)
+  const sortedVariants = hasMultipleVariants ? sortVariantsBySize(variants) : variants;
+
   // Build product payload
   const productPayload: any = {
     product: {
@@ -434,14 +437,15 @@ async function processProductGroup(
       product_type: '',
       tags: [...new Set(data.tags || [])].join(', '),
       status: data.active ? 'active' : 'draft',
-      variants: variants,
+      variants: sortedVariants,
       images: allImages.slice(0, 10).map((url: string) => ({ src: url })), // Limit images
     }
   };
 
-  // Add variant options
+  // Add variant options (sorted by size)
   if (hasMultipleVariants) {
-    const uniqueOptions = [...new Set(variants.map(v => v.option1).filter(Boolean))];
+    const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
+    const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
     productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions }];
   }
 
@@ -1069,6 +1073,68 @@ async function uploadPages(
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+// Size order for sorting variants from smallest to largest
+const SIZE_ORDER: Record<string, number> = {
+  'XXXS': 1, '3XS': 1,
+  'XXS': 2, '2XS': 2,
+  'XS': 3,
+  'S': 4,
+  'M': 5,
+  'L': 6,
+  'XL': 7,
+  'XXL': 8, '2XL': 8,
+  'XXXL': 9, '3XL': 9,
+  'XXXXL': 10, '4XL': 10,
+  'XXXXXL': 11, '5XL': 11,
+  'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
+  'DEFAULT': 200,
+};
+
+/**
+ * Get sort priority for a size string.
+ * Lower number = smaller size = comes first.
+ */
+function getSizeSortPriority(size: string): number {
+  const upper = size.toUpperCase().trim();
+  
+  // Check direct match
+  if (SIZE_ORDER[upper] !== undefined) {
+    return SIZE_ORDER[upper];
+  }
+  
+  // Check if it's a numeric size (e.g., 36, 38, 40, 128)
+  const numMatch = upper.match(/^(\d+)$/);
+  if (numMatch) {
+    return 1000 + parseInt(numMatch[1], 10); // Numeric sizes sorted numerically
+  }
+  
+  // Check for range sizes (e.g., 35-38, 128/134)
+  const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
+  if (rangeMatch) {
+    return 1000 + parseInt(rangeMatch[1], 10); // Sort by first number
+  }
+  
+  // Check for half sizes (e.g., 7.5, 42,5)
+  const halfMatch = upper.match(/^(\d+)[.,]5$/);
+  if (halfMatch) {
+    return 1000 + parseInt(halfMatch[1], 10) + 0.5;
+  }
+  
+  // Unknown size - put at end
+  return 9999;
+}
+
+/**
+ * Sort variants by size from smallest to largest.
+ */
+function sortVariantsBySize<T extends { option1?: string }>(variants: T[]): T[] {
+  return [...variants].sort((a, b) => {
+    const priorityA = getSizeSortPriority(a.option1 || 'DEFAULT');
+    const priorityB = getSizeSortPriority(b.option1 || 'DEFAULT');
+    return priorityA - priorityB;
+  });
+}
 
 function extractVariantOption(baseSku: string, fullSku: string): string {
   if (fullSku === baseSku) return 'Default';

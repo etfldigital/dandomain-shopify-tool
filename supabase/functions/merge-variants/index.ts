@@ -208,6 +208,43 @@ serve(async (req) => {
       /^\d{1,2}[.,]5$/,  // e.g., 7.5, 42,5
     ];
 
+    // Size order for sorting variants from smallest to largest
+    const SIZE_ORDER: Record<string, number> = {
+      'XXXS': 1, '3XS': 1,
+      'XXS': 2, '2XS': 2,
+      'XS': 3,
+      'S': 4,
+      'M': 5,
+      'L': 6,
+      'XL': 7,
+      'XXL': 8, '2XL': 8,
+      'XXXL': 9, '3XL': 9,
+      'XXXXL': 10, '4XL': 10,
+      'XXXXXL': 11, '5XL': 11,
+      'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
+      'DEFAULT': 200,
+    };
+
+    function getSizeSortPriority(size: string): number {
+      const upper = size.toUpperCase().trim();
+      if (SIZE_ORDER[upper] !== undefined) return SIZE_ORDER[upper];
+      const numMatch = upper.match(/^(\d+)$/);
+      if (numMatch) return 1000 + parseInt(numMatch[1], 10);
+      const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
+      if (rangeMatch) return 1000 + parseInt(rangeMatch[1], 10);
+      const halfMatch = upper.match(/^(\d+)[.,]5$/);
+      if (halfMatch) return 1000 + parseInt(halfMatch[1], 10) + 0.5;
+      return 9999;
+    }
+
+    function sortVariantsBySize<T extends { option1?: string }>(variants: T[]): T[] {
+      return [...variants].sort((a, b) => {
+        const priorityA = getSizeSortPriority(a.option1 || 'DEFAULT');
+        const priorityB = getSizeSortPriority(b.option1 || 'DEFAULT');
+        return priorityA - priorityB;
+      });
+    }
+
     function isValidSizeVariant(option: string): boolean {
       const trimmed = option.trim();
       return SIZE_PATTERNS.some(pattern => pattern.test(trimmed));
@@ -291,9 +328,18 @@ serve(async (req) => {
 
     console.log(`[MERGE] Found ${newVariants.length} new variants to add`);
 
+    // Sort new variants by size (smallest to largest)
+    const sortedNewVariants = sortVariantsBySize(newVariants);
+
     // If dry run, return the preview without making changes
     if (dryRun) {
       console.log(`[MERGE] Dry run complete - returning preview`);
+      
+      // Sort existing variants for display
+      const sortedExistingVariants = sortVariantsBySize(
+        primaryProduct.variants.map(v => ({ ...v, option1: v.option1 || 'Default' }))
+      );
+      
       return new Response(JSON.stringify({
         success: true,
         dryRun: true,
@@ -302,7 +348,7 @@ serve(async (req) => {
             id: String(primaryProduct.id),
             title: primaryProduct.title,
             variantCount: primaryProduct.variants.length,
-            variants: primaryProduct.variants.map(v => ({
+            variants: sortedExistingVariants.map(v => ({
               sku: v.sku,
               option: v.option1 || 'Default',
               price: v.price,
@@ -318,15 +364,15 @@ serve(async (req) => {
               price: v.price,
             })),
           })),
-          newVariantsToAdd: newVariants.map(v => ({
+          newVariantsToAdd: sortedNewVariants.map(v => ({
             sku: v.sku,
             option: v.option1,
             price: v.price,
           })),
           productsToDelete: duplicateProducts.length,
           summary: {
-            totalVariantsAfterMerge: primaryProduct.variants.length + newVariants.length,
-            variantsToAdd: newVariants.length,
+            totalVariantsAfterMerge: primaryProduct.variants.length + sortedNewVariants.length,
+            variantsToAdd: sortedNewVariants.length,
             productsToDelete: duplicateProducts.length,
           },
         },
@@ -335,17 +381,18 @@ serve(async (req) => {
       });
     }
 
-    if (newVariants.length === 0) {
+    if (sortedNewVariants.length === 0) {
       // No new variants to add, just delete duplicates
       console.log(`[MERGE] No new variants found, proceeding to delete duplicates only`);
     } else {
       // Step 4: Add new variants to the primary product
-      // First, update the product's options to include all variant values
-      const allOptionValues = [
-        ...primaryProduct.variants.map(v => v.option1).filter(Boolean),
-        ...newVariants.map(v => v.option1).filter(Boolean),
+      // First, update the product's options to include all variant values (sorted)
+      const allVariantsForSorting = [
+        ...primaryProduct.variants.map(v => ({ option1: v.option1 || 'Default' })),
+        ...sortedNewVariants.map(v => ({ option1: v.option1 })),
       ];
-      const uniqueOptions = [...new Set(allOptionValues)];
+      const sortedAllVariants = sortVariantsBySize(allVariantsForSorting);
+      const sortedUniqueOptions = [...new Set(sortedAllVariants.map(v => v.option1).filter(Boolean))];
       
       // Update product options first
       const optionsResult = await shopifyFetch(
@@ -359,7 +406,7 @@ serve(async (req) => {
           body: JSON.stringify({
             product: {
               id: primaryProduct.id,
-              options: [{ name: 'Størrelse', values: uniqueOptions }],
+              options: [{ name: 'Størrelse', values: sortedUniqueOptions }],
             }
           }),
         }
@@ -381,9 +428,9 @@ serve(async (req) => {
       
       await sleep(500);
       
-      // Add each new variant
+      // Add each new variant (in sorted order from smallest to largest)
       let variantsAdded = 0;
-      for (const variant of newVariants) {
+      for (const variant of sortedNewVariants) {
         const variantResult = await shopifyFetch(
           `${shopifyUrl}/products/${primaryProduct.id}/variants.json`,
           {
@@ -472,7 +519,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       success: true,
       primaryProductId: primaryShopifyId,
-      variantsAdded: newVariants.length,
+      variantsAdded: sortedNewVariants.length,
       productsDeleted,
       itemsUpdated: duplicateGroup.itemIds.length,
     }), { 
