@@ -655,30 +655,31 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : undefined;
   };
 
+  // Check if we're waiting for next attempt
+  const nextAttemptAt = runningJob?.next_attempt_at ? new Date(runningJob.next_attempt_at).getTime() : null;
+  const isWaitingForRetry = Boolean(nextAttemptAt && nextAttemptAt > uiNow);
+  const secondsUntilRetry = isWaitingForRetry && nextAttemptAt ? Math.ceil((nextAttemptAt - uiNow) / 1000) : null;
+
   // Calculate ACTUAL current speed (from last completed batch) and smoothed average
   // last_batch_speed = actual throughput of the most recent batch (what really happened)
   // items_per_minute = rolling average for ETA calculations
   const actualBatchSpeed = runningJob?.last_batch_speed ?? null;
   const smoothedSpeed = runningJob?.items_per_minute ?? 0;
-  
+
   // For display, prefer actual batch speed when available and recent
   // If last heartbeat is more than 30s ago, the batch speed is stale
-  const isSpeedStale = runningJob?.last_heartbeat_at 
-    ? (uiNow - new Date(runningJob.last_heartbeat_at).getTime()) > 30_000 
+  const isSpeedStale = runningJob?.last_heartbeat_at
+    ? (uiNow - new Date(runningJob.last_heartbeat_at).getTime()) > 30_000
     : true;
-  
-  // Show actual speed when fresh, otherwise show 0 (stalled)
-  const currentSpeed = isSpeedStale ? 0 : (actualBatchSpeed ?? smoothedSpeed);
-  
+
+  // IMPORTANT: When we're explicitly waiting for a scheduled retry, do NOT show the last speed.
+  // Showing stale speed during a cooldown is misleading.
+  const currentSpeed = (isSpeedStale || isWaitingForRetry) ? 0 : (actualBatchSpeed ?? smoothedSpeed);
+
   // For ETA, use smoothed average (more stable)
   const etaSpeed = smoothedSpeed;
 
   const isRateLimited = Boolean(currentWorkerMessage && /rate limit|\b429\b/i.test(currentWorkerMessage));
-  
-  // Check if we're waiting for next attempt
-  const nextAttemptAt = runningJob?.next_attempt_at ? new Date(runningJob.next_attempt_at).getTime() : null;
-  const isWaitingForRetry = nextAttemptAt && nextAttemptAt > uiNow;
-  const secondsUntilRetry = isWaitingForRetry ? Math.ceil((nextAttemptAt - uiNow) / 1000) : null;
   
   // Calculate remaining items across ALL pending and running jobs
   const totalRemainingItems = jobs
@@ -816,7 +817,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   <span className={`w-2 h-2 rounded-full ${getHeartbeatStatus(secondsSinceHeartbeat).color} animate-pulse`} />
                   <span className="text-sm">{getHeartbeatStatus(secondsSinceHeartbeat).label}</span>
                 </span>
-                {currentSpeed > 0 ? (
+                {isWaitingForRetry ? (
+                  <span className="text-amber-600 font-medium flex items-center gap-1">
+                    ⏳ venter ({secondsUntilRetry}s)
+                  </span>
+                ) : currentSpeed > 0 ? (
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -834,10 +839,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                ) : isWaitingForRetry ? (
-                  <span className="text-amber-600 font-medium flex items-center gap-1">
-                    ⏳ venter ({secondsUntilRetry}s)
-                  </span>
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
                     ⚡ {isSpeedStale && runningJob ? 'stalled' : 'beregner…'}
