@@ -56,6 +56,7 @@ import { toast } from 'sonner';
 import { UploadErrorReport } from './UploadErrorReport';
 import { DuplicateAnalysisDialog } from './DuplicateAnalysisDialog';
 import { SkippedProductsDialog } from './SkippedProductsDialog';
+import { RejectedProductsDialog } from './RejectedProductsDialog';
 
 interface UploadStepProps {
   project: Project;
@@ -155,7 +156,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
   const [showDuplicateAnalysis, setShowDuplicateAnalysis] = useState(false);
   const [showSkippedProducts, setShowSkippedProducts] = useState(false);
-  
+  const [showRejectedProducts, setShowRejectedProducts] = useState(false);
   // NEW: Two-phase upload state
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepareResult, setPrepareResult] = useState<PrepareResult | null>(null);
@@ -1268,6 +1269,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         skippedCount={totalSkipped}
       />
 
+      {/* Rejected Products Dialog */}
+      <RejectedProductsDialog
+        open={showRejectedProducts}
+        onOpenChange={setShowRejectedProducts}
+        projectId={project.id}
+        rejectedCount={prepareResult?.rejected || 0}
+      />
+
       {/* Duplicate Analysis Dialog */}
       <DuplicateAnalysisDialog
         open={showDuplicateAnalysis}
@@ -1336,10 +1345,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         </span>
                       </div>
                       {prepareResult.rejected > 0 && (
-                        <div className="flex justify-between text-sm text-amber-600 pt-1 border-t border-border/50">
-                          <span>Springes over:</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPrepareConfirm(false);
+                            setShowRejectedProducts(true);
+                          }}
+                          className="flex justify-between text-sm text-destructive pt-1 border-t border-border/50 w-full hover:underline cursor-pointer"
+                        >
+                          <span>Afvist (klik for detaljer):</span>
                           <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span>
-                        </div>
+                        </button>
                       )}
                     </div>
                   </>
