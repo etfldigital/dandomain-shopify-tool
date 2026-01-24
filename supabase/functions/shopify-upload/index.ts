@@ -493,8 +493,22 @@ async function processProductGroup(
     ...(v.barcode ? { barcode: v.barcode } : {}),
   }));
 
-  // Collect images
+  // Collect images from the PRIMARY record (which has merged images from prepare-upload)
+  // IMPORTANT: Use primaryData.images or _mergedImages as the primary source
+  // The items array only contains the primary record after prepare-upload, 
+  // so we must use the merged images that were consolidated during grouping
   const allImages: string[] = [];
+  
+  // First: Use _mergedImages from prepare-upload (explicit merged images)
+  const mergedImages = primaryData._mergedImages || primaryData.images || [];
+  for (const img of mergedImages) {
+    const normalized = normalizeImageUrl(String(img), dandomainBaseUrl);
+    if (normalized && !allImages.includes(normalized)) {
+      allImages.push(normalized);
+    }
+  }
+  
+  // Fallback: Also check individual items in case prepare-upload wasn't run
   for (const item of items) {
     const images = item.data?.images || [];
     for (const img of images) {
@@ -504,6 +518,8 @@ async function processProductGroup(
       }
     }
   }
+  
+  console.log(`[PRODUCTS] "${transformedTitle}": Found ${allImages.length} images from merged data`);
 
   // Sort variants by size (smallest to largest) and set explicit positions
   const sortedVariants = sortVariantsBySize(variants).map((v, idx) => ({ ...v, position: idx + 1 }));
