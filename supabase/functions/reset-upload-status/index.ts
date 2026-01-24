@@ -119,51 +119,47 @@ serve(async (req) => {
 
     console.log(`Reset ${affectedCount} ${entityType} to pending for project ${projectId}`);
 
-    // IMPORTANT: Clear cached counters on the latest upload job so UI does not keep showing stale skipped counts
-    // (e.g. "148 eksisterer allerede") after a reset.
-    // We only touch the latest job record for the entity type, and only for product resets where skipped_count matters.
-    if (entityType === 'products' && (resetScope === 'all' || resetScope === 'uploaded' || resetScope === 'skipped')) {
-      try {
-        const { data: latestJob, error: latestJobError } = await supabase
+    // IMPORTANT: Clear cached counters on the latest upload job so UI starts fresh at 0.
+    // This applies to ALL entity types and ALL reset scopes to ensure consistent behavior.
+    try {
+      const { data: latestJob, error: latestJobError } = await supabase
+        .from('upload_jobs')
+        .select('id, status, skipped_count, processed_count, error_count')
+        .eq('project_id', projectId)
+        .eq('entity_type', entityType)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestJobError) {
+        console.warn('[RESET] Could not fetch latest upload job:', latestJobError);
+      } else if (latestJob) {
+        const { error: jobUpdateError } = await supabase
           .from('upload_jobs')
-          .select('id, status, skipped_count, processed_count, error_count')
-          .eq('project_id', projectId)
-          .eq('entity_type', 'products')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .update(
+            {
+              skipped_count: 0,
+              processed_count: 0,
+              error_count: 0,
+              error_details: null,
+              // Reset job to pending state if not actively running
+              ...(latestJob.status !== 'running' && latestJob.status !== 'paused'
+                ? { status: 'pending', current_batch: 0, next_attempt_at: null, last_heartbeat_at: null }
+                : {}),
+              updated_at: new Date().toISOString(),
+            },
+            { count: 'exact' }
+          )
+          .eq('id', latestJob.id);
 
-        if (latestJobError) {
-          console.warn('[RESET] Could not fetch latest upload job:', latestJobError);
-        } else if (latestJob) {
-          const { error: jobUpdateError } = await supabase
-            .from('upload_jobs')
-            .update(
-              {
-                skipped_count: 0,
-                // keep totals; clear derived counters for a clean UI state
-                processed_count: 0,
-                error_count: 0,
-                error_details: null,
-                // don't change status if a job is actively running/paused
-                ...(latestJob.status !== 'running' && latestJob.status !== 'paused'
-                  ? { status: 'pending', current_batch: 0, next_attempt_at: null, last_heartbeat_at: null }
-                  : {}),
-                updated_at: new Date().toISOString(),
-              },
-              { count: 'exact' }
-            )
-            .eq('id', latestJob.id);
-
-          if (jobUpdateError) {
-            console.warn('[RESET] Could not reset latest upload job counters:', jobUpdateError);
-          } else {
-            console.log(`[RESET] Cleared skipped_count/error_count on latest product upload job (${latestJob.id})`);
-          }
+        if (jobUpdateError) {
+          console.warn('[RESET] Could not reset latest upload job counters:', jobUpdateError);
+        } else {
+          console.log(`[RESET] Cleared all counters on latest ${entityType} upload job (${latestJob.id})`);
         }
-      } catch (e) {
-        console.warn('[RESET] Unexpected error while clearing job counters:', e);
       }
+    } catch (e) {
+      console.warn('[RESET] Unexpected error while clearing job counters:', e);
     }
 
     return new Response(
