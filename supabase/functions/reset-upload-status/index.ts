@@ -173,16 +173,17 @@ serve(async (req) => {
               processed_count: 0,
               error_count: 0,
               error_details: null,
-              // If a job is not active, normalize it back to a clean pending state
-              // (and clear timestamps so UI doesn't look like it "auto-started").
-              ...(latestJob.status !== 'running' && latestJob.status !== 'paused'
+              // IMPORTANT: Do NOT leave a job in 'pending' after a reset.
+              // A pending job can be picked up by background scheduling and look like it "auto-starts".
+              // If the latest job was pending, mark it cancelled and clear scheduling timestamps.
+              ...(latestJob.status === 'pending'
                 ? {
-                    status: 'pending',
+                    status: 'cancelled',
                     current_batch: 0,
                     next_attempt_at: null,
                     last_heartbeat_at: null,
                     started_at: null,
-                    completed_at: null,
+                    completed_at: new Date().toISOString(),
                   }
                 : {}),
               updated_at: new Date().toISOString(),
