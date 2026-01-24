@@ -525,6 +525,7 @@ export type Database = {
           shopify_store_domain: string | null
           status: Database["public"]["Enums"]["project_status"]
           updated_at: string
+          uploads_paused: boolean
           user_id: string
         }
         Insert: {
@@ -543,6 +544,7 @@ export type Database = {
           shopify_store_domain?: string | null
           status?: Database["public"]["Enums"]["project_status"]
           updated_at?: string
+          uploads_paused?: boolean
           user_id: string
         }
         Update: {
@@ -561,6 +563,7 @@ export type Database = {
           shopify_store_domain?: string | null
           status?: Database["public"]["Enums"]["project_status"]
           updated_at?: string
+          uploads_paused?: boolean
           user_id?: string
         }
         Relationships: []
