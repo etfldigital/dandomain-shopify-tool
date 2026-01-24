@@ -410,60 +410,101 @@ serve(async (req) => {
       
       // If not preview only, update the database with grouped data
       if (!previewOnly) {
-        // Mark rejected records as failed
-        for (const rej of result.rejected) {
-          await supabase
-            .from('canonical_products')
-            .update({ 
-              status: 'failed', 
-              error_message: rej.reason,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', rej.recordId);
+        const now = new Date().toISOString();
+        
+        // BATCH 1: Mark rejected records as failed (in chunks of 500)
+        const rejectedIds = result.rejected.map(r => r.recordId);
+        const rejectedReasonMap = new Map(result.rejected.map(r => [r.recordId, r.reason]));
+        
+        for (let i = 0; i < rejectedIds.length; i += 500) {
+          const chunk = rejectedIds.slice(i, i + 500);
+          // Unfortunately we need individual updates for different error messages
+          // But we'll batch them in parallel (Promise.all) for speed
+          await Promise.all(chunk.map(id => 
+            supabase
+              .from('canonical_products')
+              .update({ 
+                status: 'failed', 
+                error_message: rejectedReasonMap.get(id) || 'Afvist under gruppering',
+                updated_at: now,
+              })
+              .eq('id', id)
+          ));
+        }
+        console.log(`[PREPARE] Marked ${rejectedIds.length} records as failed`);
+        
+        // BATCH 2: Collect all secondary record IDs for bulk status update
+        const secondaryIds: string[] = [];
+        const primaryUpdates: Array<{ id: string; data: any }> = [];
+        const secondaryDataUpdates: Array<{ id: string; data: any }> = [];
+        
+        for (const group of result.groups) {
+          if (group.recordIds.length === 0) continue;
+          
+          const primaryId = group.recordIds[0];
+          const primaryRecord = allProducts.find(p => p.id === primaryId);
+          
+          // Primary record update data
+          primaryUpdates.push({
+            id: primaryId,
+            data: {
+              ...(primaryRecord?.data || {}),
+              _groupKey: group.key,
+              _groupTitle: group.title,
+              _variantCount: group.variants.length,
+              _isPrimary: true,
+              _mergedVariants: group.variants,
+            }
+          });
+          
+          // Secondary records
+          for (let i = 1; i < group.recordIds.length; i++) {
+            const secId = group.recordIds[i];
+            secondaryIds.push(secId);
+            const secRecord = allProducts.find(p => p.id === secId);
+            secondaryDataUpdates.push({
+              id: secId,
+              data: {
+                ...(secRecord?.data || {}),
+                _groupKey: group.key,
+                _isPrimary: false,
+                _primaryRecordId: primaryId,
+              }
+            });
+          }
         }
         
-        // Update product records with group info (for the upload function to use)
-        for (const group of result.groups) {
-          // Store grouping info in the data field
-          const groupInfo = {
-            _groupKey: group.key,
-            _groupTitle: group.title,
-            _variantCount: group.variants.length,
-            _isPrimary: true,
-          };
-          
-          // Mark first record as primary
-          if (group.recordIds.length > 0) {
-            const primaryId = group.recordIds[0];
-            await supabase
+        // BATCH 3: Update primary records in parallel chunks
+        for (let i = 0; i < primaryUpdates.length; i += 100) {
+          const chunk = primaryUpdates.slice(i, i + 100);
+          await Promise.all(chunk.map(u =>
+            supabase
               .from('canonical_products')
-              .update({
-                data: { 
-                  ...(allProducts.find(p => p.id === primaryId)?.data || {}),
-                  ...groupInfo,
-                  _mergedVariants: group.variants,
-                },
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', primaryId);
-            
-            // Mark other records as secondary (will be skipped during upload)
-            for (let i = 1; i < group.recordIds.length; i++) {
-              await supabase
-                .from('canonical_products')
-                .update({
-                  status: 'mapped', // Changed to mapped status to skip during upload
-                  data: {
-                    ...(allProducts.find(p => p.id === group.recordIds[i])?.data || {}),
-                    _groupKey: group.key,
-                    _isPrimary: false,
-                    _primaryRecordId: primaryId,
-                  },
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', group.recordIds[i]);
-            }
-          }
+              .update({ data: u.data, updated_at: now })
+              .eq('id', u.id)
+          ));
+        }
+        console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
+        
+        // BATCH 4: Bulk update secondary records' status to 'mapped'
+        for (let i = 0; i < secondaryIds.length; i += 500) {
+          const chunk = secondaryIds.slice(i, i + 500);
+          await supabase
+            .from('canonical_products')
+            .update({ status: 'mapped', updated_at: now })
+            .in('id', chunk);
+        }
+        console.log(`[PREPARE] Set ${secondaryIds.length} secondary records to mapped`);
+        
+        // BATCH 5: Update secondary records' data in parallel chunks
+        for (let i = 0; i < secondaryDataUpdates.length; i += 100) {
+          const chunk = secondaryDataUpdates.slice(i, i + 100);
+          await Promise.all(chunk.map(u =>
+            supabase
+              .from('canonical_products')
+              .update({ data: u.data })
+              .eq('id', u.id)
+          ));
         }
         
         console.log(`[PREPARE] Committed grouping to database`);
