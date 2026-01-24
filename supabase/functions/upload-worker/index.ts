@@ -214,13 +214,15 @@ serve(async (req) => {
           });
         }
 
-        console.log(`[WORKER] Processing ${job.entity_type} (${job.processed_count}/${job.total_count})`);
-
-        if (job.status === 'cancelled' || job.status === 'paused') {
-          return new Response(JSON.stringify({ success: true, message: `Job is ${job.status}` }), { 
+        // CRITICAL: Only process jobs that are explicitly running.
+        // A 'pending' job must never process by itself (prevents "auto-start" after reset).
+        if (job.status !== 'running') {
+          return new Response(JSON.stringify({ success: true, message: `Not processing because job status is ${job.status}` }), { 
             headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
           });
         }
+
+        console.log(`[WORKER] Processing ${job.entity_type} (${job.processed_count}/${job.total_count})`);
 
         // If scheduled retry is in future, wait
         if (job.next_attempt_at) {
