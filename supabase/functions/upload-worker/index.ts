@@ -36,6 +36,7 @@ interface WorkerRequest {
   action: 'start' | 'process' | 'pause' | 'resume' | 'cancel' | 'force-restart';
   entityTypes?: string[];
   isTestMode?: boolean;
+  skipPrepare?: boolean; // If true, skip prepare-upload (already done by UI)
 }
 
 serve(async (req) => {
@@ -48,7 +49,7 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    const { jobId, projectId, action, entityTypes, isTestMode }: WorkerRequest = await req.json();
+    const { jobId, projectId, action, entityTypes, isTestMode, skipPrepare }: WorkerRequest = await req.json();
 
     switch (action) {
       case 'start': {
@@ -67,6 +68,8 @@ serve(async (req) => {
         for (const entityType of entitiesToProcess) {
           const tableName = `canonical_${entityType}`;
           
+          // For products, count only primary records after prepare-upload
+          // (Secondary records are marked as 'mapped' by prepare-upload)
           let pendingQuery = supabase
             .from(tableName)
             .select('*', { count: 'exact', head: true })
@@ -109,6 +112,8 @@ serve(async (req) => {
                 processed_count: isTestMode ? 0 : alreadyProcessedCount,
                 batch_size: batchSize,
                 is_test_mode: isTestMode || false,
+                // Store skipPrepare flag in job metadata for products
+                metadata: entityType === 'products' ? { skipPrepare: skipPrepare || false } : null,
               })
               .select()
               .single();
@@ -223,8 +228,13 @@ serve(async (req) => {
           .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
           .eq('id', jobId);
 
+        // Check if prepare-upload was already run by UI (via skipPrepare flag in job metadata)
+        const jobMetadata = job.metadata || {};
+        const shouldSkipPrepare = jobMetadata.skipPrepare === true;
+
         // One-time product preparation (grouping/variant extraction) before first product batch
-        if (job.entity_type === 'products' && (job.current_batch || 0) === 0) {
+        // SKIP if UI already ran prepare-upload
+        if (job.entity_type === 'products' && (job.current_batch || 0) === 0 && !shouldSkipPrepare) {
           console.log('[WORKER] Running product prepare step before upload...');
 
           const prepRes = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
@@ -254,6 +264,8 @@ serve(async (req) => {
           console.log(
             `[WORKER] prepare-upload committed: groups=${prepJson?.stats?.groupsCreated ?? '?'}, variants=${prepJson?.stats?.variantsTotal ?? '?'}, rejected=${prepJson?.stats?.recordsRejected ?? '?'}`
           );
+        } else if (job.entity_type === 'products' && shouldSkipPrepare) {
+          console.log('[WORKER] Skipping prepare-upload (already done by UI)');
         }
 
         // Call shopify-upload

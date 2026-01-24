@@ -223,15 +223,15 @@ async function uploadProducts(
   timeBudget: number
 ): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
-  // Fetch pending products
+  // Fetch only PRIMARY pending products (those with _isPrimary=true after prepare-upload)
+  // This ensures we only create one Shopify product per group
   const { data: pendingProducts, error: fetchError } = await supabase
     .from('canonical_products')
     .select('*')
     .eq('project_id', projectId)
-    // Include both pending + mapped so we can build complete variant groups after prepare-upload
-    .in('status', ['pending', 'mapped'])
+    .eq('status', 'pending')
     .order('created_at', { ascending: true })
-    .limit(batchSize * 3); // Fetch extra for grouping
+    .limit(batchSize * 2); // Fetch a bit extra for processing efficiency
 
   if (fetchError) {
     throw new Error(`Failed to fetch products: ${fetchError.message}`);
@@ -241,8 +241,15 @@ async function uploadProducts(
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Group products by title for variant handling
-  const productGroups = groupProductsByTitle(pendingProducts);
+  // Filter to only primary products (those prepared by prepare-upload)
+  // If a product doesn't have _isPrimary set, treat it as primary (legacy behavior)
+  const primaryProducts = pendingProducts.filter((p: any) => {
+    const data = p.data || {};
+    return data._isPrimary !== false; // Allow true or undefined
+  });
+
+  // Group products by title for variant handling (using pre-computed group keys if available)
+  const productGroups = groupProductsByTitle(primaryProducts);
   
   let processed = 0;
   let errors = 0;
@@ -302,12 +309,12 @@ async function uploadProducts(
     }
   }
 
-  // Check for remaining items
+  // Check for remaining pending items (only pending status, not mapped)
   const { count: remainingCount } = await supabase
     .from('canonical_products')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
-    .in('status', ['pending', 'mapped']);
+    .eq('status', 'pending');
 
   return {
     success: true,
