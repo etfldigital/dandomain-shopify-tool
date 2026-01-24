@@ -437,16 +437,24 @@ serve(async (req) => {
           const primaryId = group.recordIds[0];
           const primaryRecord = allProducts.find(p => p.id === primaryId);
           
-          // Primary record update data
+          // Primary record update data - MERGE all group fields into primary
+          // This ensures images, body_html, tags, vendor from ALL variants are preserved
           primaryUpdates.push({
             id: primaryId,
             data: {
               ...(primaryRecord?.data || {}),
+              // Merged fields from group (best-non-empty wins)
+              body_html: group.bodyHtml || primaryRecord?.data?.body_html || '',
+              vendor: group.vendor || primaryRecord?.data?.vendor || '',
+              tags: group.tags.length > 0 ? group.tags : (primaryRecord?.data?.tags || []),
+              images: group.images.length > 0 ? group.images : (primaryRecord?.data?.images || []),
+              // Group metadata
               _groupKey: group.key,
               _groupTitle: group.title,
               _variantCount: group.variants.length,
               _isPrimary: true,
               _mergedVariants: group.variants,
+              _mergedImages: group.images, // Explicit backup for debugging
             }
           });
           
