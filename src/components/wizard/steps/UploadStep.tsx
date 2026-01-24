@@ -136,7 +136,7 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
 
 // How often we run the backend watchdog to auto-restart stalled jobs.
 // This is a safety net for cases where the worker's self-scheduling is interrupted.
-const WATCHDOG_INTERVAL_MS = 60_000;
+const WATCHDOG_INTERVAL_MS = 20_000; // Run every 20 seconds for faster recovery
 
 export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
@@ -1115,38 +1115,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         )}
       </div>
 
-      {/* Skipped Products Analysis Button */}
-      {jobs.some(j => j.entity_type === 'products' && j.skipped_count > 0) && (
-        <Card className="border-amber-500/30 bg-amber-500/10">
-          <CardContent className="py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="h-5 w-5 text-amber-500" />
-                <div>
-                  <p className="font-medium">
-                    {jobs.find(j => j.entity_type === 'products')?.skipped_count || 0} produkter blev sprunget over
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Disse produkter eksisterede allerede i Shopify eller blev grupperet med andre varianter
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <Button 
-                  variant="outline" 
-                  onClick={() => handleResetRequest('products', 'skipped', jobs.find(j => j.entity_type === 'products')?.skipped_count || 0)}
-                >
-                  <RotateCcw className="w-4 h-4 mr-2" />
-                  Nulstil skipped
-                </Button>
-                <Button variant="outline" onClick={() => setShowDuplicateAnalysis(true)}>
-                  Analysér
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Skipped products section removed */}
 
       {/* Error and Skipped Report Section */}
       <UploadErrorReport 
