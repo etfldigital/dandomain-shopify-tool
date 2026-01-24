@@ -55,6 +55,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { UploadErrorReport } from './UploadErrorReport';
 import { DuplicateAnalysisDialog } from './DuplicateAnalysisDialog';
+import { SkippedProductsDialog } from './SkippedProductsDialog';
 
 interface UploadStepProps {
   project: Project;
@@ -153,6 +154,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [isForceRestarting, setIsForceRestarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
   const [showDuplicateAnalysis, setShowDuplicateAnalysis] = useState(false);
+  const [showSkippedProducts, setShowSkippedProducts] = useState(false);
   
   // NEW: Two-phase upload state
   const [isPreparing, setIsPreparing] = useState(false);
@@ -1093,7 +1095,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 </span>
                 <div className="flex items-center gap-3">
                   {totalSkipped > 0 && (
-                    <span className="text-amber-600">{totalSkipped} eksisterende (skipped)</span>
+                    <button 
+                      onClick={() => setShowSkippedProducts(true)}
+                      className="text-amber-600 hover:text-amber-700 hover:underline cursor-pointer"
+                    >
+                      {totalSkipped} sprunget over
+                    </button>
                   )}
                   {totalErrors > 0 && (
                     <span className="text-destructive">{totalErrors} fejl</span>
@@ -1251,6 +1258,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         onRetryFailed={handleRetryFailed}
         isRetrying={retryingEntityType}
         retryingIds={retryingIds}
+      />
+
+      {/* Skipped Products Dialog */}
+      <SkippedProductsDialog
+        open={showSkippedProducts}
+        onOpenChange={setShowSkippedProducts}
+        projectId={project.id}
+        skippedCount={totalSkipped}
       />
 
       {/* Duplicate Analysis Dialog */}
