@@ -1288,26 +1288,26 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       </div>
                     </div>
                     
-                    {(prepareResult.variants > prepareResult.groups || prepareResult.rejected > 0) && (
-                      <div className="bg-muted/50 rounded-lg p-3 text-sm space-y-1.5">
-                        {prepareResult.variants > prepareResult.groups && (
-                          <div className="flex items-start gap-2">
-                            <span className="text-muted-foreground">•</span>
-                            <span>
-                              <span className="font-medium">{(prepareResult.variants - prepareResult.groups).toLocaleString('da-DK')}</span> størrelsesvarianter grupperes under disse produkter
-                            </span>
-                          </div>
-                        )}
-                        {prepareResult.rejected > 0 && (
-                          <div className="flex items-start gap-2 text-amber-600">
-                            <span>•</span>
-                            <span>
-                              <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span> rækker springes over (manglende data)
-                            </span>
-                          </div>
-                        )}
+                    <div className="bg-muted/50 rounded-lg p-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Varianter i alt:</span>
+                        <span className="font-medium text-foreground">{prepareResult.variants.toLocaleString('da-DK')}</span>
                       </div>
-                    )}
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Gns. varianter pr. produkt:</span>
+                        <span className="font-medium text-foreground">
+                          {prepareResult.groups > 0 
+                            ? (prepareResult.variants / prepareResult.groups).toFixed(1).replace('.', ',')
+                            : '–'}
+                        </span>
+                      </div>
+                      {prepareResult.rejected > 0 && (
+                        <div className="flex justify-between text-sm text-amber-600 pt-1 border-t border-border/50">
+                          <span>Springes over:</span>
+                          <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span>
+                        </div>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
