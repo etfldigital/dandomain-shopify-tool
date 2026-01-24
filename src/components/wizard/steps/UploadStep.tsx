@@ -276,7 +276,15 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }, 3000);
 
     // Safety net: regularly run watchdog to restart jobs if a batch gets stuck.
+    // ONLY runs when we have active jobs (running/paused) to prevent unwanted restarts.
     const runWatchdog = async () => {
+      // Double-check we still have running jobs before calling watchdog
+      const stillHasRunning = jobs.some(j => j.status === 'running');
+      if (!stillHasRunning) {
+        console.log('[UploadStep] No running jobs, skipping watchdog');
+        return;
+      }
+      
       try {
         const { error } = await supabase.functions.invoke('job-watchdog');
         if (error) throw error;
@@ -286,8 +294,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       }
     };
 
-    // Run once immediately (helps after tab refresh) and then on an interval.
-    runWatchdog();
+    // Run watchdog on interval only (not immediately - let user control initial start)
     const watchdogTimer = window.setInterval(runWatchdog, WATCHDOG_INTERVAL_MS);
     
     return () => {
