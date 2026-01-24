@@ -6,8 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Stall threshold: 2 minutes without heartbeat
-const STALL_THRESHOLD_MS = 2 * 60 * 1000;
+// Stall threshold: 30 seconds without heartbeat (reduced for faster recovery)
+const STALL_THRESHOLD_MS = 30 * 1000;
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
