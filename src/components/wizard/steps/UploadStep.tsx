@@ -46,6 +46,7 @@ import {
   PartyPopper,
   ArrowRight,
   RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +54,7 @@ import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { UploadErrorReport } from './UploadErrorReport';
+import { DuplicateAnalysisDialog } from './DuplicateAnalysisDialog';
 
 interface UploadStepProps {
   project: Project;
@@ -141,6 +143,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [isStarting, setIsStarting] = useState(false);
   const [isForceRestarting, setIsForceRestarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
+  const [showDuplicateAnalysis, setShowDuplicateAnalysis] = useState(false);
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
@@ -1130,6 +1133,30 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         )}
       </div>
 
+      {/* Skipped Products Analysis Button */}
+      {jobs.some(j => j.entity_type === 'products' && j.skipped_count > 0) && (
+        <Card className="border-amber-500/30 bg-amber-500/10">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                <div>
+                  <p className="font-medium">
+                    {jobs.find(j => j.entity_type === 'products')?.skipped_count || 0} produkter blev sprunget over
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Muligvis varianter der ikke blev grupperet korrekt
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" onClick={() => setShowDuplicateAnalysis(true)}>
+                Analysér
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Error and Skipped Report Section */}
       <UploadErrorReport 
         projectId={project.id}
@@ -1138,14 +1165,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           entity_type: j.entity_type,
           skipped_count: j.skipped_count,
           error_count: j.error_count,
-          // Hide transient worker-level operational messages from the error report.
-          // They are shown elsewhere as "venter" via next_attempt_at.
           error_details: (j.error_details || []).filter(e => e.externalId !== '__worker__'),
         }))}
         statusCounts={statusCounts}
         onRetryFailed={handleRetryFailed}
         isRetrying={retryingEntityType}
         retryingIds={retryingIds}
+      />
+
+      {/* Duplicate Analysis Dialog */}
+      <DuplicateAnalysisDialog
+        open={showDuplicateAnalysis}
+        onOpenChange={setShowDuplicateAnalysis}
+        projectId={project.id}
+        skippedCount={jobs.find(j => j.entity_type === 'products')?.skipped_count || 0}
       />
 
       {/* Reset Confirmation Dialog */}
