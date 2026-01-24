@@ -68,8 +68,9 @@ serve(async (req) => {
         for (const entityType of entitiesToProcess) {
           const tableName = `canonical_${entityType}`;
           
-          // For products, count only primary records after prepare-upload
-          // (Secondary records are marked as 'mapped' by prepare-upload)
+          // For products, we need special handling:
+          // Only count records where _isPrimary is true OR _isPrimary is not set (not yet grouped)
+          // Secondary records (variants) should NOT be counted as separate items
           let pendingQuery = supabase
             .from(tableName)
             .select('*', { count: 'exact', head: true })
@@ -82,22 +83,48 @@ serve(async (req) => {
           
           const { count: pendingCount } = await pendingQuery;
           
-          const { count: uploadedCount } = await supabase
-            .from(tableName)
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', projectId)
-            .eq('status', 'uploaded');
-
-          const { count: failedCount } = await supabase
-            .from(tableName)
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', projectId)
-            .eq('status', 'failed');
-
-          const totalCount = (pendingCount || 0) + (uploadedCount || 0) + (failedCount || 0);
-          const alreadyProcessedCount = (uploadedCount || 0) + (failedCount || 0);
+          // For products, get counts of PRIMARY records only (these are actual Shopify products)
+          let uploadedCount = 0;
+          let failedCount = 0;
           
-          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}`);
+          if (entityType === 'products') {
+            // Count uploaded primary products
+            const { count: primaryUploaded } = await supabase
+              .from(tableName)
+              .select('*', { count: 'exact', head: true })
+              .eq('project_id', projectId)
+              .eq('status', 'uploaded')
+              .or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+            uploadedCount = primaryUploaded || 0;
+            
+            // Count failed primary products
+            const { count: primaryFailed } = await supabase
+              .from(tableName)
+              .select('*', { count: 'exact', head: true })
+              .eq('project_id', projectId)
+              .eq('status', 'failed')
+              .or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+            failedCount = primaryFailed || 0;
+          } else {
+            const { count: allUploaded } = await supabase
+              .from(tableName)
+              .select('*', { count: 'exact', head: true })
+              .eq('project_id', projectId)
+              .eq('status', 'uploaded');
+            uploadedCount = allUploaded || 0;
+
+            const { count: allFailed } = await supabase
+              .from(tableName)
+              .select('*', { count: 'exact', head: true })
+              .eq('project_id', projectId)
+              .eq('status', 'failed');
+            failedCount = allFailed || 0;
+          }
+
+          const totalCount = (pendingCount || 0) + uploadedCount + failedCount;
+          const alreadyProcessedCount = uploadedCount + failedCount;
+          
+          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
           
           if (pendingCount && pendingCount > 0) {
             const batchSize = isTestMode ? 3 : (DEFAULT_BATCH_SIZE[entityType] || 10);
@@ -112,8 +139,6 @@ serve(async (req) => {
                 processed_count: isTestMode ? 0 : alreadyProcessedCount,
                 batch_size: batchSize,
                 is_test_mode: isTestMode || false,
-                // Store skipPrepare flag in job metadata for products
-                metadata: entityType === 'products' ? { skipPrepare: skipPrepare || false } : null,
               })
               .select()
               .single();
