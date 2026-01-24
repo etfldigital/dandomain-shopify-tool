@@ -138,12 +138,25 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
 // This is a safety net for cases where the worker's self-scheduling is interrupted.
 const WATCHDOG_INTERVAL_MS = 20_000; // Run every 20 seconds for faster recovery
 
+// Preparation phase state
+interface PrepareResult {
+  groups: number;
+  variants: number;
+  rejected: number;
+  totalRecords: number;
+}
+
 export function UploadStep({ project, onNext }: UploadStepProps) {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [isForceRestarting, setIsForceRestarting] = useState(false);
   const [uiNow, setUiNow] = useState<number>(() => Date.now());
   const [showDuplicateAnalysis, setShowDuplicateAnalysis] = useState(false);
+  
+  // NEW: Two-phase upload state
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [prepareResult, setPrepareResult] = useState<PrepareResult | null>(null);
+  const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
@@ -295,7 +308,59 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  const handleStartUpload = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
+  // NEW: Phase 1 - Prepare products (grouping & validation)
+  const handlePrepareProducts = async () => {
+    setIsPreparing(true);
+    setPrepareResult(null);
+    
+    try {
+      const response = await supabase.functions.invoke('prepare-upload', {
+        body: {
+          projectId: project.id,
+          entityType: 'products',
+          previewOnly: false, // Actually commit the grouping
+        },
+      });
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const result = response.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Forberedelse fejlede');
+      }
+
+      setPrepareResult({
+        groups: result.stats.groupsCreated,
+        variants: result.stats.variantsTotal,
+        rejected: result.stats.recordsRejected,
+        totalRecords: result.stats.totalRecords,
+      });
+      
+      // Refresh status counts after prepare
+      await fetchStatusCounts();
+      
+      // Show confirmation dialog with final counts
+      setShowPrepareConfirm(true);
+      
+    } catch (error) {
+      console.error('Prepare failed:', error);
+      toast.error(`Forberedelse fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setIsPreparing(false);
+    }
+  };
+
+  // NEW: Phase 2 - Actually start the upload after preparation is confirmed
+  const handleConfirmAndStartUpload = async () => {
+    setShowPrepareConfirm(false);
+    setPrepareResult(null);
+    await handleStartUploadInternal(false);
+  };
+
+  // Internal upload starter (used after prepare or for non-product entities)
+  const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
     setIsStarting(true);
     try {
       const body: {
@@ -303,10 +368,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         action: string;
         isTestMode: boolean;
         entityTypes?: string[];
+        skipPrepare?: boolean;
       } = {
         projectId: project.id,
         action: 'start',
         isTestMode,
+        skipPrepare: true, // Products already prepared
       };
       
       // If a single entity type is specified, only upload that type
@@ -337,6 +404,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       toast.error(`Kunne ikke starte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setIsStarting(false);
+    }
+  };
+  
+  // Public handler - decides whether to prepare first or start directly
+  const handleStartUpload = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
+    // For test mode or single entity (non-products), start directly
+    if (isTestMode || (singleEntityType && singleEntityType !== 'products')) {
+      await handleStartUploadInternal(isTestMode, singleEntityType);
+      return;
+    }
+    
+    // For full upload with products, run prepare phase first
+    if (!singleEntityType && statusCounts.products.pending > 0) {
+      await handlePrepareProducts();
+    } else {
+      // No products or products-only single entity
+      await handleStartUploadInternal(isTestMode, singleEntityType);
     }
   };
 
@@ -1020,7 +1104,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       {/* Action Buttons */}
       <div className="flex justify-end gap-3">
         {/* Show Test + Start buttons when not uploading and not fully completed */}
-        {!isUploading && !allCompleted && (
+        {!isUploading && !allCompleted && !isPreparing && (
           <>
             <TooltipProvider>
               <Tooltip>
@@ -1047,6 +1131,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               Start upload
             </Button>
           </>
+        )}
+
+        {/* Show preparing spinner */}
+        {isPreparing && (
+          <Button disabled className="min-w-[200px]">
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            Forbereder produkter...
+          </Button>
         )}
 
         {/* Show retry button when there are failed items and not currently uploading */}
@@ -1161,6 +1253,55 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             <AlertDialogCancel>Annuller</AlertDialogCancel>
             <AlertDialogAction onClick={handleResetConfirm}>
               Nulstil
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Prepare Confirmation Dialog - Two-Phase Upload */}
+      <AlertDialog open={showPrepareConfirm} onOpenChange={(open) => !open && setShowPrepareConfirm(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+              Produkter analyseret
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>Dine produktdata er blevet grupperet og valideret:</p>
+                {prepareResult && (
+                  <div className="bg-muted rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Originale rækker:</span>
+                      <span className="font-medium text-foreground">{prepareResult.totalRecords.toLocaleString('da-DK')}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Shopify-produkter:</span>
+                      <span className="font-medium text-green-600">{prepareResult.groups.toLocaleString('da-DK')}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Varianter i alt:</span>
+                      <span className="font-medium text-foreground">{prepareResult.variants.toLocaleString('da-DK')}</span>
+                    </div>
+                    {prepareResult.rejected > 0 && (
+                      <div className="flex justify-between text-amber-600">
+                        <span>Afvist (manglende data):</span>
+                        <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <p className="text-sm">
+                  Upload vil nu oprette {prepareResult?.groups.toLocaleString('da-DK') || '?'} produkter i Shopify med korrekte størrelsesvarianter.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowPrepareConfirm(false)}>Annuller</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmAndStartUpload} className="bg-green-600 hover:bg-green-700">
+              <Play className="w-4 h-4 mr-2" />
+              Start upload
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
