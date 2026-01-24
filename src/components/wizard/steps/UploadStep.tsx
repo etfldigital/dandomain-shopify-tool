@@ -533,6 +533,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (!resetDialog.entityType || !resetDialog.scope) return;
 
     try {
+      // If anything is currently uploading, stop it first.
+      // This ensures a reset never results in background uploads continuing “by themselves”.
+      const hasActiveJobsNow = jobs.some(j => j.status === 'running' || j.status === 'paused' || j.status === 'pending');
+      if (hasActiveJobsNow) {
+        await supabase.functions.invoke('upload-worker', {
+          body: { projectId: project.id, action: 'cancel' },
+        });
+        // Refresh jobs immediately so watchdog/polling doesn't keep treating them as active.
+        await fetchJobs();
+      }
+
       const response = await supabase.functions.invoke('reset-upload-status', {
         body: {
           projectId: project.id,
@@ -627,6 +638,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           projectId: project.id,
           action: 'start',
           isTestMode: false,
+          entityTypes: [entityType],
         },
       });
       
