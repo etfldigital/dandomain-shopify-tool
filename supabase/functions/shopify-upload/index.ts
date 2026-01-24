@@ -248,8 +248,17 @@ async function uploadProducts(
     return data._isPrimary !== false; // Allow true or undefined
   });
 
-  // Group products by title for variant handling (using pre-computed group keys if available)
-  const productGroups = groupProductsByTitle(primaryProducts);
+  // IMPORTANT: Each primary product is its OWN group with pre-merged variants
+  // Do NOT re-group by title - that causes duplicates!
+  // The _mergedVariants array on each primary record contains all its variants.
+  const productGroups: Map<string, any[]> = new Map();
+  
+  for (const product of primaryProducts) {
+    const data = product.data || {};
+    // Use a unique key per primary record (its ID) to prevent re-grouping
+    const uniqueKey = product.id;
+    productGroups.set(uniqueKey, [product]);
+  }
   
   let processed = 0;
   let errors = 0;
