@@ -449,6 +449,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       toast.success(`${response.data.resetCount} ${entityLabel.toLowerCase()} nulstillet til pending`);
       
       await fetchStatusCounts();
+      // Also refetch jobs so skipped_count/error_count in the UI reflects the reset immediately
+      await fetchJobs();
     } catch (error) {
       console.error('Reset error:', error);
       toast.error(`Fejl ved nulstilling: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
