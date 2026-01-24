@@ -521,6 +521,94 @@ async function processProductGroup(
   
   console.log(`[PRODUCTS] "${transformedTitle}": Found ${allImages.length} images from merged data`);
 
+  // If this canonical record already has a Shopify product id, don't try to create again.
+  // Instead, ensure images are present on the existing product (useful for repairing products
+  // that were created after an image-related 422 and therefore ended up without images).
+  const existingShopifyIdRaw = items.find((it) => it.shopify_id)?.shopify_id;
+  const existingShopifyId = existingShopifyIdRaw ? String(existingShopifyIdRaw) : '';
+  if (existingShopifyId) {
+    console.log(`[PRODUCTS] "${transformedTitle}" has existing shopify_id=${existingShopifyId}. Ensuring images...`);
+
+    const desiredImages = allImages.slice(0, 10);
+
+    // Fetch current images to avoid creating duplicates
+    const fetchExisting = async () => {
+      let res = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}.json?fields=id,images`, {
+        headers: { 'X-Shopify-Access-Token': token },
+      });
+      if ('rateLimited' in res) {
+        await sleep(res.retryAfterMs);
+        res = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}.json?fields=id,images`, {
+          headers: { 'X-Shopify-Access-Token': token },
+        });
+      }
+      return res;
+    };
+
+    const existingSrcs = new Set<string>();
+    try {
+      const existingResult = await fetchExisting();
+      if (!('rateLimited' in existingResult) && existingResult.response.ok) {
+        const parsed = JSON.parse(existingResult.body);
+        const imgs = parsed?.product?.images || [];
+        for (const img of imgs) {
+          const src = String(img?.src || '').trim();
+          if (src) existingSrcs.add(src);
+        }
+      } else if (!('rateLimited' in existingResult)) {
+        console.log(`[PRODUCTS] Warning: could not fetch existing images for ${existingShopifyId}: ${existingResult.response.status} ${existingResult.body.substring(0, 200)}`);
+      }
+    } catch (e) {
+      console.log(`[PRODUCTS] Warning: failed parsing existing product images for ${existingShopifyId}:`, e);
+    }
+
+    let added = 0;
+    let failed = 0;
+    for (const url of desiredImages) {
+      if (existingSrcs.has(url)) continue;
+
+      let imgRes = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}/images.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify({ image: { src: url } }),
+      });
+      if ('rateLimited' in imgRes) {
+        await sleep(imgRes.retryAfterMs);
+        imgRes = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}/images.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+          body: JSON.stringify({ image: { src: url } }),
+        });
+      }
+
+      if (!('rateLimited' in imgRes) && imgRes.response.ok) {
+        added++;
+      } else if (!('rateLimited' in imgRes)) {
+        failed++;
+        console.log(`[PRODUCTS] Image upload failed for "${transformedTitle}" (${existingShopifyId}): ${imgRes.response.status} ${imgRes.body.substring(0, 200)}`);
+      }
+    }
+
+    console.log(`[PRODUCTS] "${transformedTitle}": ensured images on existing product. Added=${added}, Failed=${failed}`);
+
+    sessionProductCache.set(titleLower, existingShopifyId);
+    for (const item of items) {
+      const updatedData = { ...item.data };
+      await supabase
+        .from('canonical_products')
+        .update({
+          status: 'uploaded',
+          shopify_id: existingShopifyId,
+          error_message: null,
+          data: updatedData,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', item.id);
+    }
+
+    return {};
+  }
+
   // Sort variants by size (smallest to largest) and set explicit positions
   const sortedVariants = sortVariantsBySize(variants).map((v, idx) => ({ ...v, position: idx + 1 }));
 
@@ -546,6 +634,9 @@ async function processProductGroup(
   console.log(`[PRODUCTS] Creating "${transformedTitle}" with ${variants.length} variant(s)`);
 
   // Create product
+  const initialImageCount = (productPayload?.product?.images || []).length;
+  let imageErrorBody: string | null = null;
+
   let result = await shopifyFetch(`${shopifyUrl}/products.json`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
@@ -558,6 +649,8 @@ async function processProductGroup(
 
   // Retry without images if image error
   if (!result.response.ok && result.response.status === 422 && result.body.includes('Image')) {
+    imageErrorBody = result.body;
+    console.log(`[PRODUCTS] Image error for "${transformedTitle}" (422): ${result.body.substring(0, 300)}`);
     console.log(`[PRODUCTS] Retrying "${transformedTitle}" without images`);
     productPayload.product.images = [];
     result = await shopifyFetch(`${shopifyUrl}/products.json`, {
@@ -606,6 +699,43 @@ async function processProductGroup(
   const shopifyHandle = responseData.product.handle;
   
   sessionProductCache.set(titleLower, shopifyId);
+
+  // If we had to drop images due to a 422 Image error, try to add them back one-by-one.
+  // This avoids losing ALL images because a single URL was invalid.
+  if (initialImageCount > 0 && (productPayload?.product?.images || []).length === 0 && allImages.length > 0) {
+    console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair. Reason=422 Image, images=${allImages.length}`);
+    if (imageErrorBody) {
+      console.log(`[PRODUCTS] "${transformedTitle}": image error body (trimmed): ${imageErrorBody.substring(0, 300)}`);
+    }
+
+    let added = 0;
+    let failed = 0;
+    for (const url of allImages.slice(0, 10)) {
+      let imgRes = await shopifyFetch(`${shopifyUrl}/products/${shopifyId}/images.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify({ image: { src: url } }),
+      });
+
+      if ('rateLimited' in imgRes) {
+        await sleep(imgRes.retryAfterMs);
+        imgRes = await shopifyFetch(`${shopifyUrl}/products/${shopifyId}/images.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+          body: JSON.stringify({ image: { src: url } }),
+        });
+      }
+
+      if (!('rateLimited' in imgRes) && imgRes.response.ok) {
+        added++;
+      } else if (!('rateLimited' in imgRes)) {
+        failed++;
+        console.log(`[PRODUCTS] Post-create image upload failed for "${transformedTitle}" (${shopifyId}): ${imgRes.response.status} ${imgRes.body.substring(0, 200)}`);
+      }
+    }
+
+    console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair done. Added=${added}, Failed=${failed}`);
+  }
 
   // Update all items
   for (const item of items) {
