@@ -93,6 +93,20 @@ serve(async (req) => {
     const restartedJobs: Array<{ id: string; entity_type: string; stalled_for_minutes: number }> = [];
 
     for (const job of stalledJobs) {
+      // ========== HARD STOP CHECK ==========
+      // Check if the project has uploads_paused=true. If so, skip this job entirely.
+      const { data: projectCheck } = await supabase
+        .from('projects')
+        .select('uploads_paused')
+        .eq('id', job.project_id)
+        .single();
+      
+      if (projectCheck?.uploads_paused === true) {
+        console.log(`[WATCHDOG] Skipping job ${job.id} - project has uploads_paused=true`);
+        continue;
+      }
+      // =====================================
+
       const lastHeartbeat = new Date(job.last_heartbeat_at).getTime();
       const stalledForMs = now - lastHeartbeat;
       const stalledForMinutes = Math.round(stalledForMs / 60000 * 10) / 10;

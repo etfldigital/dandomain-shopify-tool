@@ -25,6 +25,15 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // ========== HARD STOP: Set uploads_paused=true ==========
+    // This prevents ANY background worker or watchdog from continuing while we reset.
+    await supabase
+      .from('projects')
+      .update({ uploads_paused: true, updated_at: new Date().toISOString() })
+      .eq('id', projectId);
+    console.log(`[RESET] Set uploads_paused=true for project ${projectId}`);
+    // ========================================================
+
     // IMPORTANT: Stop any active upload job for this entity before resetting records.
     // Otherwise a background worker/watchdog may keep running and immediately re-upload items
     // the user just reset to pending.

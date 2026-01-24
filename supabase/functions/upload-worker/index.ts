@@ -55,6 +55,15 @@ serve(async (req) => {
       case 'start': {
         if (!projectId) throw new Error('projectId required');
 
+        // ========== CLEAR HARD STOP: Set uploads_paused=false ==========
+        // This allows workers to process. Only happens on explicit "start" action.
+        await supabase
+          .from('projects')
+          .update({ uploads_paused: false, updated_at: new Date().toISOString() })
+          .eq('id', projectId);
+        console.log(`[WORKER] Cleared uploads_paused flag for project ${projectId}`);
+        // ================================================================
+
         // Cancel existing jobs
         await supabase
           .from('upload_jobs')
@@ -192,6 +201,23 @@ serve(async (req) => {
           .single();
 
         if (jobError || !job) throw new Error('Job not found');
+
+        // ========== HARD STOP CHECK ==========
+        // If uploads_paused is true on the project, DO NOT PROCESS anything.
+        // This prevents background workers/watchdogs from continuing after user clicks Stop.
+        const { data: projectCheck } = await supabase
+          .from('projects')
+          .select('uploads_paused')
+          .eq('id', job.project_id)
+          .single();
+        
+        if (projectCheck?.uploads_paused === true) {
+          console.log(`[WORKER] HARD STOP: Project has uploads_paused=true, refusing to process`);
+          return new Response(JSON.stringify({ success: true, message: 'Hard stop active - uploads paused' }), { 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+        // =====================================
 
         // Ensure only newest job for this entity runs
         const { data: newestJobs } = await supabase
@@ -541,6 +567,17 @@ serve(async (req) => {
       }
 
       case 'cancel': {
+        // ========== SET HARD STOP ==========
+        // When user cancels, set uploads_paused=true so no background tasks can continue
+        if (projectId) {
+          await supabase
+            .from('projects')
+            .update({ uploads_paused: true, updated_at: new Date().toISOString() })
+            .eq('id', projectId);
+          console.log(`[WORKER] Set uploads_paused=true for project ${projectId} on cancel`);
+        }
+        // ===================================
+
         const filter = jobId ? { id: jobId } : { project_id: projectId };
         await supabase
           .from('upload_jobs')
