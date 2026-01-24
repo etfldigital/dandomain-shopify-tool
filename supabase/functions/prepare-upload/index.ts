@@ -503,6 +503,42 @@ serve(async (req) => {
         }
         
         console.log(`[PREPARE] Committed grouping to database`);
+        
+        // After commit, get TOTAL counts across all records (not just newly processed)
+        const { count: totalRecords } = await supabase
+          .from('canonical_products')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', projectId);
+        
+        const { count: primaryCount } = await supabase
+          .from('canonical_products')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', projectId)
+          .filter('data->>_isPrimary', 'eq', 'true');
+        
+        const { count: secondaryCount } = await supabase
+          .from('canonical_products')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', projectId)
+          .filter('data->>_isPrimary', 'eq', 'false');
+        
+        // Calculate totals: primary = shopify products, primary + secondary = total variants
+        const shopifyProducts = primaryCount || 0;
+        const totalVariants = (primaryCount || 0) + (secondaryCount || 0);
+        
+        return new Response(JSON.stringify({
+          success: true,
+          groups: result.groups,
+          rejected: result.rejected,
+          stats: {
+            totalRecords: totalRecords || 0,
+            groupsCreated: shopifyProducts,
+            variantsTotal: totalVariants,
+            recordsRejected: result.stats.recordsRejected,
+          },
+        }), { 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
       }
       
       return new Response(JSON.stringify(result), { 
