@@ -412,21 +412,19 @@ serve(async (req) => {
       if (!previewOnly) {
         const now = new Date().toISOString();
         
-        // BATCH 1: Mark rejected records as 'mapped' (silently skip, no error)
-        // These are not errors - they're just records that couldn't be grouped
-        const rejectedIds = result.rejected.map(r => r.recordId);
-        
-        for (let i = 0; i < rejectedIds.length; i += 500) {
-          const chunk = rejectedIds.slice(i, i + 500);
+        // BATCH 1: Mark rejected records as 'mapped' with rejection reason
+        // Store the reason in error_message so users can see WHY it was skipped
+        for (const rejected of result.rejected) {
           await supabase
             .from('canonical_products')
             .update({ 
-              status: 'mapped',  // Mark as mapped so they're skipped silently
+              status: 'mapped',
+              error_message: `Afvist: ${rejected.reason}`,
               updated_at: now,
             })
-            .in('id', chunk);
+            .eq('id', rejected.recordId);
         }
-        console.log(`[PREPARE] Marked ${rejectedIds.length} records as skipped (mapped)`);
+        console.log(`[PREPARE] Marked ${result.rejected.length} records as rejected with reasons`);
         
         // BATCH 2: Collect all secondary record IDs for bulk status update
         const secondaryIds: string[] = [];
