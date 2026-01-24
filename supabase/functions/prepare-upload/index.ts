@@ -426,7 +426,8 @@ serve(async (req) => {
         }
         console.log(`[PREPARE] Marked ${result.rejected.length} records as rejected with reasons`);
         
-        // BATCH 2: Collect all secondary record IDs for bulk status update
+        // BATCH 2: Collect all record updates
+        // IMPORTANT: ALL records must get _isPrimary set, including single-variant products
         const secondaryIds: string[] = [];
         const primaryUpdates: Array<{ id: string; data: any }> = [];
         const secondaryDataUpdates: Array<{ id: string; data: any }> = [];
@@ -439,6 +440,7 @@ serve(async (req) => {
           
           // Primary record update data - MERGE all group fields into primary
           // This ensures images, body_html, tags, vendor from ALL variants are preserved
+          // CRITICAL: This runs for ALL groups, including single-variant products
           primaryUpdates.push({
             id: primaryId,
             data: {
@@ -448,7 +450,7 @@ serve(async (req) => {
               vendor: group.vendor || primaryRecord?.data?.vendor || '',
               tags: group.tags.length > 0 ? group.tags : (primaryRecord?.data?.tags || []),
               images: group.images.length > 0 ? group.images : (primaryRecord?.data?.images || []),
-              // Group metadata
+              // Group metadata - SET FOR ALL PRODUCTS (single or multi-variant)
               _groupKey: group.key,
               _groupTitle: group.title,
               _variantCount: group.variants.length,
@@ -458,7 +460,7 @@ serve(async (req) => {
             }
           });
           
-          // Secondary records
+          // Secondary records (only for multi-variant groups)
           for (let i = 1; i < group.recordIds.length; i++) {
             const secId = group.recordIds[i];
             secondaryIds.push(secId);
@@ -474,6 +476,8 @@ serve(async (req) => {
             });
           }
         }
+        
+        console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
         
         // BATCH 3: Update primary records in parallel chunks
         for (let i = 0; i < primaryUpdates.length; i += 100) {
@@ -509,6 +513,37 @@ serve(async (req) => {
         }
         
         console.log(`[PREPARE] Committed grouping to database`);
+        
+        // FALLBACK: Find any remaining 'pending' records without _isPrimary and mark them
+        // This catches edge cases where records slip through the grouping logic
+        const { data: unmarkedRecords } = await supabase
+          .from('canonical_products')
+          .select('id, data')
+          .eq('project_id', projectId)
+          .eq('status', 'pending')
+          .is('data->>_isPrimary', null);
+        
+        if (unmarkedRecords && unmarkedRecords.length > 0) {
+          console.log(`[PREPARE] FALLBACK: Found ${unmarkedRecords.length} unmarked records, marking as single-variant primaries`);
+          for (let i = 0; i < unmarkedRecords.length; i += 100) {
+            const chunk = unmarkedRecords.slice(i, i + 100);
+            await Promise.all(chunk.map(r =>
+              supabase
+                .from('canonical_products')
+                .update({ 
+                  data: {
+                    ...(r.data || {}),
+                    _groupKey: (r.data?.title || 'unknown').toLowerCase(),
+                    _isPrimary: true,
+                    _variantCount: 1,
+                    _mergedVariants: [],
+                  },
+                  updated_at: now,
+                })
+                .eq('id', r.id)
+            ));
+          }
+        }
         
         // After commit, get TOTAL counts across all records (not just newly processed)
         const { count: totalRecords } = await supabase
