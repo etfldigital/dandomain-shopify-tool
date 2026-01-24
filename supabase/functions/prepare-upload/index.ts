@@ -412,26 +412,21 @@ serve(async (req) => {
       if (!previewOnly) {
         const now = new Date().toISOString();
         
-        // BATCH 1: Mark rejected records as failed (in chunks of 500)
+        // BATCH 1: Mark rejected records as 'mapped' (silently skip, no error)
+        // These are not errors - they're just records that couldn't be grouped
         const rejectedIds = result.rejected.map(r => r.recordId);
-        const rejectedReasonMap = new Map(result.rejected.map(r => [r.recordId, r.reason]));
         
         for (let i = 0; i < rejectedIds.length; i += 500) {
           const chunk = rejectedIds.slice(i, i + 500);
-          // Unfortunately we need individual updates for different error messages
-          // But we'll batch them in parallel (Promise.all) for speed
-          await Promise.all(chunk.map(id => 
-            supabase
-              .from('canonical_products')
-              .update({ 
-                status: 'failed', 
-                error_message: rejectedReasonMap.get(id) || 'Afvist under gruppering',
-                updated_at: now,
-              })
-              .eq('id', id)
-          ));
+          await supabase
+            .from('canonical_products')
+            .update({ 
+              status: 'mapped',  // Mark as mapped so they're skipped silently
+              updated_at: now,
+            })
+            .in('id', chunk);
         }
-        console.log(`[PREPARE] Marked ${rejectedIds.length} records as failed`);
+        console.log(`[PREPARE] Marked ${rejectedIds.length} records as skipped (mapped)`);
         
         // BATCH 2: Collect all secondary record IDs for bulk status update
         const secondaryIds: string[] = [];

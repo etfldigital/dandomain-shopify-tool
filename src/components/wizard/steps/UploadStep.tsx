@@ -892,25 +892,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   </div>
                   <div className="flex items-center gap-2">
                     {/* Speed shown only in header - removed duplicate here */}
-                    {skipped > 0 && (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="flex items-center gap-1 text-amber-600 text-sm cursor-help">
-                              <SkipForward className="w-3 h-3" />
-                              {skipped.toLocaleString('da-DK')} eksisterer allerede
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs">
-                            <p className="font-medium mb-1">Skipped: Findes allerede i Shopify</p>
-                            <p className="text-sm text-muted-foreground">
-                              Disse {label.toLowerCase()} blev ikke oprettet igen, fordi de allerede eksisterer i Shopify 
-                              (matchet på email, telefon eller andet unikt felt).
-                            </p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    )}
+                    {/* Skipped count removed - no longer shown */}
                     {errors > 0 && (
                       <span className="flex items-center gap-1 text-destructive text-sm">
                         <AlertCircle className="w-3 h-3" />
@@ -978,11 +960,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         value: counts.uploaded, 
                         className: "bg-primary",
                         label: `${counts.uploaded} uploadet` 
-                      },
-                      { 
-                        value: skipped, 
-                        className: "bg-amber-500",
-                        label: `${skipped} skipped` 
                       },
                       { 
                         value: counts.failed, 
