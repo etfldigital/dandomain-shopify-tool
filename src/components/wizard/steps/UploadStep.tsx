@@ -144,6 +144,7 @@ interface PrepareResult {
   variants: number;
   rejected: number;
   totalRecords: number;
+  cachedAt: number; // Timestamp to avoid re-running prepare
 }
 
 export function UploadStep({ project, onNext }: UploadStepProps) {
@@ -309,9 +310,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
 
   // NEW: Phase 1 - Prepare products (grouping & validation)
+  // Uses cached result if available and recent (< 5 minutes old)
   const handlePrepareProducts = async () => {
+    // If we have a recent cached result, just show the dialog
+    const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+    if (prepareResult && prepareResult.cachedAt && Date.now() - prepareResult.cachedAt < CACHE_TTL_MS) {
+      setShowPrepareConfirm(true);
+      return;
+    }
+    
     setIsPreparing(true);
-    setPrepareResult(null);
     
     try {
       const response = await supabase.functions.invoke('prepare-upload', {
@@ -336,6 +344,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         variants: result.stats.variantsTotal,
         rejected: result.stats.recordsRejected,
         totalRecords: result.stats.totalRecords,
+        cachedAt: Date.now(),
       });
       
       // Refresh status counts after prepare
@@ -1260,46 +1269,53 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
       {/* Prepare Confirmation Dialog - Two-Phase Upload */}
       <AlertDialog open={showPrepareConfirm} onOpenChange={(open) => !open && setShowPrepareConfirm(false)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-green-600" />
-              Produkter analyseret
+              Klar til upload
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
-              <div className="space-y-3">
-                <p>Dine produktdata er blevet grupperet og valideret:</p>
+              <div className="space-y-4">
                 {prepareResult && (
-                  <div className="bg-muted rounded-lg p-4 space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Originale rækker:</span>
-                      <span className="font-medium text-foreground">{prepareResult.totalRecords.toLocaleString('da-DK')}</span>
+                  <>
+                    <div className="text-center py-4">
+                      <div className="text-4xl font-bold text-primary mb-1">
+                        {prepareResult.groups.toLocaleString('da-DK')}
+                      </div>
+                      <div className="text-muted-foreground">
+                        produkter oprettes i Shopify
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Shopify-produkter:</span>
-                      <span className="font-medium text-green-600">{prepareResult.groups.toLocaleString('da-DK')}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Varianter i alt:</span>
-                      <span className="font-medium text-foreground">{prepareResult.variants.toLocaleString('da-DK')}</span>
-                    </div>
-                    {prepareResult.rejected > 0 && (
-                      <div className="flex justify-between text-amber-600">
-                        <span>Afvist (manglende data):</span>
-                        <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span>
+                    
+                    {(prepareResult.variants > prepareResult.groups || prepareResult.rejected > 0) && (
+                      <div className="bg-muted/50 rounded-lg p-3 text-sm space-y-1.5">
+                        {prepareResult.variants > prepareResult.groups && (
+                          <div className="flex items-start gap-2">
+                            <span className="text-muted-foreground">•</span>
+                            <span>
+                              <span className="font-medium">{(prepareResult.variants - prepareResult.groups).toLocaleString('da-DK')}</span> størrelsesvarianter grupperes under disse produkter
+                            </span>
+                          </div>
+                        )}
+                        {prepareResult.rejected > 0 && (
+                          <div className="flex items-start gap-2 text-amber-600">
+                            <span>•</span>
+                            <span>
+                              <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span> rækker springes over (manglende data)
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
-                  </div>
+                  </>
                 )}
-                <p className="text-sm">
-                  Upload vil nu oprette {prepareResult?.groups.toLocaleString('da-DK') || '?'} produkter i Shopify med korrekte størrelsesvarianter.
-                </p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className="gap-2 sm:gap-0">
             <AlertDialogCancel onClick={() => setShowPrepareConfirm(false)}>Annuller</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmAndStartUpload} className="bg-green-600 hover:bg-green-700">
+            <AlertDialogAction onClick={handleConfirmAndStartUpload} className="bg-primary hover:bg-primary/90">
               <Play className="w-4 h-4 mr-2" />
               Start upload
             </AlertDialogAction>
