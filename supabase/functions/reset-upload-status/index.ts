@@ -25,6 +25,37 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // IMPORTANT: Stop any active upload job for this entity before resetting records.
+    // Otherwise a background worker/watchdog may keep running and immediately re-upload items
+    // the user just reset to pending.
+    try {
+      const { data: activeJobs, error: activeJobsError } = await supabase
+        .from('upload_jobs')
+        .select('id, status')
+        .eq('project_id', projectId)
+        .eq('entity_type', entityType)
+        .in('status', ['pending', 'running', 'paused']);
+
+      if (activeJobsError) {
+        console.warn('[RESET] Could not fetch active upload jobs to cancel:', activeJobsError);
+      } else if (activeJobs && activeJobs.length > 0) {
+        const ids = activeJobs.map(j => j.id);
+        console.log(`[RESET] Cancelling ${ids.length} active upload job(s) for ${entityType} before resetting records`);
+        await supabase
+          .from('upload_jobs')
+          .update({
+            status: 'cancelled',
+            completed_at: new Date().toISOString(),
+            next_attempt_at: null,
+            last_heartbeat_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .in('id', ids);
+      }
+    } catch (e) {
+      console.warn('[RESET] Failed while cancelling active jobs (continuing reset anyway):', e);
+    }
+
     // Build the filter based on resetScope
     // 'skipped' is a special scope that targets uploaded items with a "Sprunget over" error_message
     let statusFilter: string[] = [];
@@ -142,9 +173,17 @@ serve(async (req) => {
               processed_count: 0,
               error_count: 0,
               error_details: null,
-              // Reset job to pending state if not actively running
+              // If a job is not active, normalize it back to a clean pending state
+              // (and clear timestamps so UI doesn't look like it "auto-started").
               ...(latestJob.status !== 'running' && latestJob.status !== 'paused'
-                ? { status: 'pending', current_batch: 0, next_attempt_at: null, last_heartbeat_at: null }
+                ? {
+                    status: 'pending',
+                    current_batch: 0,
+                    next_attempt_at: null,
+                    last_heartbeat_at: null,
+                    started_at: null,
+                    completed_at: null,
+                  }
                 : {}),
               updated_at: new Date().toISOString(),
             },
