@@ -161,7 +161,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [resetDialog, setResetDialog] = useState<{
     open: boolean;
     entityType: EntityType | null;
-    scope: 'all' | 'failed' | 'uploaded' | null;
+    scope: 'all' | 'failed' | 'uploaded' | 'skipped' | null;
     count: number;
   }>({ open: false, entityType: null, scope: null, count: 0 });
 
@@ -406,7 +406,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     await handleStartUpload(false);
   };
 
-  const handleResetRequest = (entityType: EntityType, scope: 'all' | 'failed' | 'uploaded') => {
+  const handleResetRequest = (entityType: EntityType, scope: 'all' | 'failed' | 'uploaded' | 'skipped', countOverride?: number) => {
     const counts = statusCounts[entityType];
     let count = 0;
     
@@ -416,6 +416,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       count = counts.failed;
     } else if (scope === 'uploaded') {
       count = counts.uploaded;
+    } else if (scope === 'skipped') {
+      // For skipped, we need the count from the job, not statusCounts
+      count = countOverride ?? 0;
     }
 
     if (count === 0) {
@@ -1145,13 +1148,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     {jobs.find(j => j.entity_type === 'products')?.skipped_count || 0} produkter blev sprunget over
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Muligvis varianter der ikke blev grupperet korrekt
+                    Disse produkter eksisterede allerede i Shopify eller blev grupperet med andre varianter
                   </p>
                 </div>
               </div>
-              <Button variant="outline" onClick={() => setShowDuplicateAnalysis(true)}>
-                Analysér
-              </Button>
+              <div className="flex gap-2">
+                <Button 
+                  variant="outline" 
+                  onClick={() => handleResetRequest('products', 'skipped', jobs.find(j => j.entity_type === 'products')?.skipped_count || 0)}
+                >
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Nulstil skipped
+                </Button>
+                <Button variant="outline" onClick={() => setShowDuplicateAnalysis(true)}>
+                  Analysér
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1190,7 +1202,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               Er du sikker på, at du vil nulstille {resetDialog.count.toLocaleString('da-DK')} {
                 ENTITY_CONFIG.find(e => e.type === resetDialog.entityType)?.label.toLowerCase() || 'elementer'
               } til pending status?
-              {resetDialog.scope === 'uploaded' && (
+              {(resetDialog.scope === 'uploaded' || resetDialog.scope === 'skipped') && (
                 <span className="block mt-2 text-amber-600">
                   Bemærk: Dette vil fjerne Shopify ID'erne, så de vil blive uploadet igen som nye elementer.
                 </span>

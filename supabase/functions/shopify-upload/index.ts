@@ -392,7 +392,12 @@ async function processProductGroup(
     const ids = items.map((it) => it.id);
     await supabase
       .from('canonical_products')
-      .update({ status: 'uploaded', shopify_id: existingId, updated_at: new Date().toISOString() })
+      .update({ 
+        status: 'uploaded', 
+        shopify_id: existingId, 
+        error_message: 'Sprunget over: Variant grupperet med andet produkt',
+        updated_at: new Date().toISOString() 
+      })
       .in('id', ids);
     
     return { skipped: true };
@@ -541,7 +546,11 @@ async function processProductGroup(
     const ids = items.map((it) => it.id);
     await supabase
       .from('canonical_products')
-      .update({ status: 'uploaded', updated_at: new Date().toISOString() })
+      .update({ 
+        status: 'uploaded', 
+        error_message: 'Sprunget over: Eksisterer allerede i Shopify',
+        updated_at: new Date().toISOString() 
+      })
       .in('id', ids);
     
     return { skipped: true };

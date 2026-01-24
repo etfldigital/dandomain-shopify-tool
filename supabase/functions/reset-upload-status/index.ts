@@ -26,16 +26,23 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Build the filter based on resetScope
+    // 'skipped' is a special scope that targets uploaded items with a "Sprunget over" error_message
     let statusFilter: string[] = [];
+    let requiresSkippedFilter = false;
+    
     if (resetScope === 'all') {
       statusFilter = ['pending', 'mapped', 'uploaded', 'failed'];
     } else if (resetScope === 'failed') {
       statusFilter = ['failed'];
     } else if (resetScope === 'uploaded') {
       statusFilter = ['uploaded'];
+    } else if (resetScope === 'skipped') {
+      // Skipped items have status 'uploaded' but with a skip error message
+      statusFilter = ['uploaded'];
+      requiresSkippedFilter = true;
     } else {
       return new Response(
-        JSON.stringify({ error: 'Invalid resetScope. Must be: all, failed, or uploaded' }),
+        JSON.stringify({ error: 'Invalid resetScope. Must be: all, failed, uploaded, or skipped' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -82,6 +89,12 @@ serve(async (req) => {
       .update(updateData, { count: 'exact' })
       .eq('project_id', projectId)
       .in('status', statusFilter);
+
+    // If targeting skipped items specifically, filter by error message pattern
+    if (requiresSkippedFilter) {
+      updateQuery = updateQuery.like('error_message', 'Sprunget over%');
+      console.log(`Filtering for skipped items (error_message LIKE 'Sprunget over%')`);
+    }
 
     // If specific recordIds are provided, filter by them (preferred because they are short UUIDs)
     if (recordIds && Array.isArray(recordIds) && recordIds.length > 0) {
