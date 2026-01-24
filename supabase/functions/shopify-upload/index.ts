@@ -228,7 +228,8 @@ async function uploadProducts(
     .from('canonical_products')
     .select('*')
     .eq('project_id', projectId)
-    .eq('status', 'pending')
+    // Include both pending + mapped so we can build complete variant groups after prepare-upload
+    .in('status', ['pending', 'mapped'])
     .order('created_at', { ascending: true })
     .limit(batchSize * 3); // Fetch extra for grouping
 
@@ -306,7 +307,7 @@ async function uploadProducts(
     .from('canonical_products')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
-    .eq('status', 'pending');
+    .in('status', ['pending', 'mapped']);
 
   return {
     success: true,
@@ -327,8 +328,17 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
   
   for (const product of products) {
     const data = product.data || {};
-    const title = String(data.title || '').trim();
+    const title = String(data._groupTitle || data.title || '').trim();
     const vendor = String(data.vendor || '').trim();
+
+    // Prefer precomputed grouping key from prepare-upload
+    const preKey = String(data._groupKey || '').trim();
+    if (preKey) {
+      const key = preKey.toLowerCase();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(product);
+      continue;
+    }
     
     // Transform title: remove vendor prefix
     let transformedTitle = title;
@@ -336,6 +346,9 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
       transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
     }
     if (!transformedTitle) transformedTitle = title;
+
+    // Normalize whitespace to improve grouping reliability
+    transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
     
     const groupKey = transformedTitle.toLowerCase();
     if (!groups.has(groupKey)) {
@@ -357,7 +370,7 @@ async function processProductGroup(
 ): Promise<{ skipped?: boolean; error?: string; rateLimited?: boolean; retryAfterMs?: number }> {
   
   const data = items[0].data || {};
-  const title = String(data.title || '').trim();
+  const title = String(data._groupTitle || data.title || '').trim();
   const vendor = String(data.vendor || '').trim();
   
   // Transform title
@@ -366,6 +379,8 @@ async function processProductGroup(
     transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
   }
   if (!transformedTitle) transformedTitle = title;
+
+  transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
   
   const titleLower = transformedTitle.toLowerCase();
   
@@ -384,34 +399,78 @@ async function processProductGroup(
   }
 
   // Build variants
-  const hasMultipleVariants = items.length > 1;
-  const variants = items.map((item) => {
-    const itemData = item.data || {};
-    const sku = String(itemData.sku || '');
-    const baseSku = extractBaseSku(sku);
-    const variantOption = hasMultipleVariants ? extractVariantOption(baseSku, sku) : null;
-    
-    const variant: any = {
-      sku: sku,
-      price: String(itemData.price || '0'),
-      compare_at_price: itemData.compare_at_price ? String(itemData.compare_at_price) : null,
-      inventory_management: 'shopify',
-      inventory_quantity: parseInt(String(itemData.stock_quantity || 0), 10),
-      weight: itemData.weight ? parseFloat(String(itemData.weight)) : 0,
-      weight_unit: 'kg',
-      requires_shipping: true,
-    };
-    
-    if (hasMultipleVariants) {
-      variant.option1 = variantOption;
+  const primaryData = items.find((it) => (it.data || {})._isPrimary === true)?.data || data;
+  const mergedVariants = Array.isArray(primaryData._mergedVariants) ? primaryData._mergedVariants : null;
+
+  type VariantCandidate = {
+    option1: string;
+    sku: string;
+    price: string;
+    compare_at_price: string | null;
+    inventory_quantity: number;
+    weight: number;
+    barcode?: string;
+  };
+
+  const variantByOption: Map<string, VariantCandidate> = new Map();
+
+  if (mergedVariants && mergedVariants.length > 0) {
+    for (const mv of mergedVariants) {
+      const sku = String(mv?.sku || '').trim();
+      const option1 = normalizeSizeOption(String(mv?.size || ''));
+
+      // Dedupe by option value (keep first)
+      if (variantByOption.has(option1)) continue;
+
+      const v: VariantCandidate = {
+        option1,
+        sku,
+        price: String(mv?.price ?? '0'),
+        compare_at_price: mv?.compareAtPrice ? String(mv.compareAtPrice) : null,
+        inventory_quantity: parseInt(String(mv?.stockQuantity ?? 0), 10),
+        weight: mv?.weight ? parseFloat(String(mv.weight)) : 0,
+      };
+      if (mv?.barcode) v.barcode = String(mv.barcode);
+      variantByOption.set(option1, v);
     }
-    
-    if (itemData.barcode) {
-      variant.barcode = String(itemData.barcode);
+  } else {
+    // Fallback: derive variants from raw items (pre-prepare upload)
+    for (const item of items) {
+      const itemData = item.data || {};
+      const sku = String(itemData.sku || '').trim();
+      const explicit = String(itemData.variant_option || '').trim();
+
+      const option1 = explicit && isValidSizeVariant(explicit)
+        ? normalizeSizeOption(explicit)
+        : normalizeSizeOption(extractSizeFromSku(sku) || '');
+
+      if (variantByOption.has(option1)) continue;
+
+      const v: VariantCandidate = {
+        option1,
+        sku,
+        price: String(itemData.price || '0'),
+        compare_at_price: itemData.compare_at_price ? String(itemData.compare_at_price) : null,
+        inventory_quantity: parseInt(String(itemData.stock_quantity || 0), 10),
+        weight: itemData.weight ? parseFloat(String(itemData.weight)) : 0,
+      };
+      if (itemData.barcode) v.barcode = String(itemData.barcode);
+      variantByOption.set(option1, v);
     }
-    
-    return variant;
-  });
+  }
+
+  const variants: any[] = Array.from(variantByOption.values()).map((v) => ({
+    sku: v.sku,
+    price: v.price,
+    compare_at_price: v.compare_at_price,
+    inventory_management: 'shopify',
+    inventory_quantity: v.inventory_quantity,
+    weight: v.weight,
+    weight_unit: 'kg',
+    requires_shipping: true,
+    option1: v.option1, // ALWAYS set to avoid Shopify "Default Title"
+    ...(v.barcode ? { barcode: v.barcode } : {}),
+  }));
 
   // Collect images
   const allImages: string[] = [];
@@ -425,8 +484,8 @@ async function processProductGroup(
     }
   }
 
-  // Sort variants by size (smallest to largest)
-  const sortedVariants = hasMultipleVariants ? sortVariantsBySize(variants) : variants;
+  // Sort variants by size (smallest to largest) and set explicit positions
+  const sortedVariants = sortVariantsBySize(variants).map((v, idx) => ({ ...v, position: idx + 1 }));
 
   // Build product payload
   const productPayload: any = {
@@ -442,12 +501,10 @@ async function processProductGroup(
     }
   };
 
-  // Add variant options (sorted by size)
-  if (hasMultipleVariants) {
-    const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
-    const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
-    productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions }];
-  }
+  // Always set option values so Shopify never creates "Default" variants
+  const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
+  const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
+  productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions.length > 0 ? uniqueOptions : ['ONE-SIZE'] }];
 
   console.log(`[PRODUCTS] Creating "${transformedTitle}" with ${variants.length} variant(s)`);
 
@@ -478,8 +535,7 @@ async function processProductGroup(
   }
   
   // Handle "already exists" error
-  if (!result.response.ok && result.response.status === 422 && 
-      (result.body.includes('already exists') || result.body.includes('Default'))) {
+  if (!result.response.ok && result.response.status === 422 && result.body.includes('already exists')) {
     console.log(`[PRODUCTS] "${transformedTitle}" already exists, marking as skipped`);
     
     const ids = items.map((it) => it.id);
@@ -1074,6 +1130,86 @@ async function uploadPages(
 // HELPER FUNCTIONS
 // ============================================================================
 
+// ==========================================================================
+// SIZE PARSING & VALIDATION (to avoid creating "Default" variants)
+// ==========================================================================
+
+const SIZE_PATTERNS = [
+  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
+  /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
+  /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
+  /^\d{2}[-\/]\d{2}$/,
+  /^one[-\s]?size$/i,
+  /^\d{1,2}[.,]5$/,
+];
+
+const VALID_NUMERIC_SIZE_RANGES = [
+  { min: 0, max: 20 },
+  { min: 32, max: 60 },
+  { min: 86, max: 194 },
+];
+
+const COLOR_PATTERNS = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL|MULCH|MELANGE|STRIPE)$/i;
+
+function isValidNumericSize(num: number): boolean {
+  return VALID_NUMERIC_SIZE_RANGES.some((r) => num >= r.min && num <= r.max);
+}
+
+function isValidSizeVariant(option: string): boolean {
+  const trimmed = option.trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'default' || lower === 'default title') return false;
+  if (SIZE_PATTERNS.some((p) => p.test(trimmed))) return true;
+  const numMatch = trimmed.match(/^(\d+)$/);
+  if (numMatch) return isValidNumericSize(parseInt(numMatch[1], 10));
+  return false;
+}
+
+function extractSizeFromSku(sku: string): string | null {
+  const clean = String(sku || '').trim();
+  if (!clean) return null;
+  const parts = clean.split('-');
+
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i].trim().toUpperCase();
+    if (!part) continue;
+    if (COLOR_PATTERNS.test(part)) continue;
+
+    // Skip middle product codes (3+ digits)
+    if (i < parts.length - 1 && /^\d{3,}$/.test(part)) continue;
+
+    // For last part: only accept 3+ digits if in valid size range
+    if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
+      const num = parseInt(part, 10);
+      if (!isValidNumericSize(num)) continue;
+    }
+
+    if (isValidSizeVariant(part)) return part;
+  }
+
+  // Special: last two parts as range, e.g. 35-38
+  if (parts.length >= 2) {
+    const lastTwo = parts.slice(-2).join('-');
+    if (/^\d{2}-\d{2}$/.test(lastTwo)) {
+      const nums = lastTwo.split('-').map((n) => parseInt(n, 10));
+      if (nums.every((n) => isValidNumericSize(n))) return lastTwo;
+    }
+  }
+
+  return null;
+}
+
+function normalizeSizeOption(sizeRaw: string): string {
+  const s = String(sizeRaw || '').trim();
+  if (!s) return 'ONE-SIZE';
+  if (!isValidSizeVariant(s)) return 'ONE-SIZE';
+  const upper = s.toUpperCase();
+  if (upper === 'ONESIZE') return 'ONE-SIZE';
+  if (upper === 'ONE SIZE') return 'ONE-SIZE';
+  return upper;
+}
+
 // Size order for sorting variants from smallest to largest
 const SIZE_ORDER: Record<string, number> = {
   'XXXS': 1, '3XS': 1,
@@ -1088,7 +1224,6 @@ const SIZE_ORDER: Record<string, number> = {
   'XXXXL': 10, '4XL': 10,
   'XXXXXL': 11, '5XL': 11,
   'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
-  'DEFAULT': 200,
 };
 
 /**
@@ -1130,16 +1265,10 @@ function getSizeSortPriority(size: string): number {
  */
 function sortVariantsBySize<T extends { option1?: string }>(variants: T[]): T[] {
   return [...variants].sort((a, b) => {
-    const priorityA = getSizeSortPriority(a.option1 || 'DEFAULT');
-    const priorityB = getSizeSortPriority(b.option1 || 'DEFAULT');
+    const priorityA = getSizeSortPriority(a.option1 || 'ONE-SIZE');
+    const priorityB = getSizeSortPriority(b.option1 || 'ONE-SIZE');
     return priorityA - priorityB;
   });
-}
-
-function extractVariantOption(baseSku: string, fullSku: string): string {
-  if (fullSku === baseSku) return 'Default';
-  const suffix = fullSku.substring(baseSku.length);
-  return suffix.replace(/^[-_]/, '').toUpperCase() || 'Default';
 }
 
 function extractBaseSku(sku: string): string {

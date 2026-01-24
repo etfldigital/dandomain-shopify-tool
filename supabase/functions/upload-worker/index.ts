@@ -223,6 +223,39 @@ serve(async (req) => {
           .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
           .eq('id', jobId);
 
+        // One-time product preparation (grouping/variant extraction) before first product batch
+        if (job.entity_type === 'products' && (job.current_batch || 0) === 0) {
+          console.log('[WORKER] Running product prepare step before upload...');
+
+          const prepRes = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+            body: JSON.stringify({
+              projectId: job.project_id,
+              entityType: 'products',
+              previewOnly: false,
+            }),
+          });
+
+          const prepText = await prepRes.text();
+          if (!prepText || !prepText.trim()) {
+            throw new Error(`prepare-upload returned empty response (status ${prepRes.status})`);
+          }
+          let prepJson: any;
+          try {
+            prepJson = JSON.parse(prepText);
+          } catch {
+            throw new Error(`prepare-upload invalid JSON: ${prepText.substring(0, 120)}`);
+          }
+          if (!prepRes.ok || prepJson?.success === false) {
+            throw new Error(prepJson?.error || `prepare-upload failed (status ${prepRes.status})`);
+          }
+
+          console.log(
+            `[WORKER] prepare-upload committed: groups=${prepJson?.stats?.groupsCreated ?? '?'}, variants=${prepJson?.stats?.variantsTotal ?? '?'}, rejected=${prepJson?.stats?.recordsRejected ?? '?'}`
+          );
+        }
+
         // Call shopify-upload
         const startTime = Date.now();
         let result: any;
