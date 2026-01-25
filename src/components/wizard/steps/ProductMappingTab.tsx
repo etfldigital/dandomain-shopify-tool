@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2, Settings, Link2, Eye, RefreshCw } from 'lucide-react';
+import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, ChevronLeft, ChevronRight, Shuffle, ImageIcon, FileText, Wand2, Settings, Link2, Eye, RefreshCw, Search } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductData } from '@/types/database';
 import { toast } from 'sonner';
@@ -209,6 +209,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [untitledCount, setUntitledCount] = useState(0);
+  
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<ProductRef[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   
   // Dynamic metafields from Shopify
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
@@ -509,6 +514,55 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const handleRandom = () => {
     const randomIndex = Math.floor(Math.random() * productIds.length);
     setCurrentIndex(randomIndex);
+    setSearchQuery('');
+    setSearchResults([]);
+  };
+
+  // Search function to find products by SKU or title
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    
+    setIsSearching(true);
+    try {
+      const searchTerm = searchQuery.trim().toLowerCase();
+      
+      // Search by SKU (exact or partial match) and title
+      const { data: results } = await supabase
+        .from('canonical_products')
+        .select('id, external_id, data')
+        .eq('project_id', projectId)
+        .or(`external_id.ilike.%${searchTerm}%,data->>sku.ilike.%${searchTerm}%,data->>title.ilike.%${searchTerm}%`)
+        .limit(20);
+      
+      if (results && results.length > 0) {
+        setSearchResults(results.map(r => ({ id: r.id, external_id: r.external_id })));
+        toast.success(`Fandt ${results.length} resultat(er)`);
+      } else {
+        setSearchResults([]);
+        toast.info('Ingen produkter fundet');
+      }
+    } catch (error) {
+      console.error('Search error:', error);
+      toast.error('Fejl ved søgning');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const selectSearchResult = (productId: string) => {
+    // Find in current list or load directly
+    const index = productIds.findIndex(p => p.id === productId);
+    if (index >= 0) {
+      setCurrentIndex(index);
+    } else {
+      // Not in current batch, load directly
+      loadProduct(productId);
+    }
+    setSearchResults([]);
+    setSearchQuery('');
   };
 
   const addFieldMapping = async () => {
@@ -862,37 +916,84 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         <TabsContent value="preview" className="mt-6">
           {product ? (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              {/* Search and Navigation Bar */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <h3 className="text-lg font-medium">Shopify Preview</h3>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePrevious}
-                    disabled={currentIndex === 0}
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </Button>
-                  <span className="text-sm text-muted-foreground min-w-[80px] text-center">
-                    {currentIndex + 1} / {productIds.length}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleNext}
-                    disabled={currentIndex === productIds.length - 1}
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleRandom}
-                  >
-                    <Shuffle className="w-4 h-4" />
-                  </Button>
+                
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+                  {/* Search Input */}
+                  <div className="relative flex-1 sm:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Søg på SKU eller titel..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                      className="pl-9 pr-16"
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleSearch}
+                      disabled={isSearching}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 h-7"
+                    >
+                      {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Søg'}
+                    </Button>
+                  </div>
+                  
+                  {/* Navigation */}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handlePrevious}
+                      disabled={currentIndex === 0}
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </Button>
+                    <span className="text-sm text-muted-foreground min-w-[80px] text-center">
+                      {currentIndex + 1} / {productIds.length}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleNext}
+                      disabled={currentIndex === productIds.length - 1}
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleRandom}
+                    >
+                      <Shuffle className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </div>
               </div>
+
+              {/* Search Results Dropdown */}
+              {searchResults.length > 0 && (
+                <Card className="border-primary/50">
+                  <CardContent className="p-2">
+                    <p className="text-xs text-muted-foreground mb-2 px-2">Søgeresultater ({searchResults.length})</p>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {searchResults.map(result => (
+                        <button
+                          key={result.id}
+                          onClick={() => selectSearchResult(result.id)}
+                          className="w-full text-left px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm flex items-center justify-between group"
+                        >
+                          <span className="font-mono text-xs">{result.external_id}</span>
+                          <Eye className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <span className="font-medium">XML Data</span>
