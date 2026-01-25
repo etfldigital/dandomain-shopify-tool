@@ -620,34 +620,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
   return (
     <div className="space-y-6">
-      {/* Stats Overview */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold">{totalCount + untitledCount}</div>
-            <div className="text-sm text-muted-foreground">Produkter i alt</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold text-success">{totalCount}</div>
-            <div className="text-sm text-muted-foreground">Klar til upload</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold text-warning">{untitledCount}</div>
-            <div className="text-sm text-muted-foreground">"Untitled" produkter</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold">{fieldMappings.length}</div>
-            <div className="text-sm text-muted-foreground">Ekstra mappings</div>
-          </CardContent>
-        </Card>
-      </div>
-
       {/* Inner Tabs for Transformation, Mapping, Preview */}
       <Tabs defaultValue="transform" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
