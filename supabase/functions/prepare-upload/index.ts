@@ -512,9 +512,11 @@ serve(async (req) => {
             }
           });
           
-          // Secondary records (only for multi-variant groups)
-          for (let i = 1; i < group.recordIds.length; i++) {
-            const secId = group.recordIds[i];
+          // Secondary records: EVERYTHING except the chosen primaryId.
+          // IMPORTANT: Do NOT assume recordIds[0] is primary.
+          // If we mark the chosen primary as secondary, the upload step will only see 1 variant.
+          for (const secId of group.recordIds) {
+            if (secId === primaryId) continue;
             secondaryIds.push(secId);
             const secRecord = allProducts.find(p => p.id === secId);
             secondaryDataUpdates.push({
