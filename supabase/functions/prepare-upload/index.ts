@@ -435,7 +435,19 @@ serve(async (req) => {
         for (const group of result.groups) {
           if (group.recordIds.length === 0) continue;
           
-          const primaryId = group.recordIds[0];
+          // Choose primary record: prefer the FIRST variant with valid size data
+          // This ensures the record that actually has variant info gets _mergedVariants
+          let primaryId: string;
+          const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
+          if (firstSizedVariant) {
+            primaryId = firstSizedVariant.recordId;
+          } else if (group.variants.length > 0) {
+            // Fallback to first variant record
+            primaryId = group.variants[0].recordId;
+          } else {
+            // No variants at all - use first record in group
+            primaryId = group.recordIds[0];
+          }
           const primaryRecord = allProducts.find(p => p.id === primaryId);
           
           // Primary record update data - MERGE all group fields into primary
