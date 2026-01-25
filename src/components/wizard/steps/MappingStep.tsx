@@ -62,35 +62,48 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       setCategories(categoryData as CanonicalCategory[]);
     }
 
-    // Load entity counts and product stats in parallel
-    const [customersCount, ordersCount, productsData] = await Promise.all([
+    // Load entity counts - use count queries to avoid 1000 row limit
+    const [customersCount, ordersCount, totalProductsCount] = await Promise.all([
       supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_products').select('data').eq('project_id', project.id),
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
     ]);
 
-    // Calculate product statistics
-    const allProducts = productsData.data || [];
-    const totalLines = allProducts.length;
-    
-    // Count primary products and total variants
+    const totalLines = totalProductsCount.count || 0;
+
+    // Fetch products with pagination to get all variant data
     let uniqueProducts = 0;
     let totalVariants = 0;
+    let offset = 0;
+    const pageSize = 1000;
     
-    allProducts.forEach((product: any) => {
-      const data = product.data;
-      const isPrimary = data?._isPrimary === true;
-      const variantCount = data?._variantCount || 1;
+    while (true) {
+      const { data: productsPage } = await supabase
+        .from('canonical_products')
+        .select('data')
+        .eq('project_id', project.id)
+        .range(offset, offset + pageSize - 1);
       
-      if (isPrimary) {
-        uniqueProducts++;
-        totalVariants += variantCount;
-      } else if (!data?._isPrimary && data?._isPrimary !== false) {
-        // Products without grouping flags are standalone
-        uniqueProducts++;
-        totalVariants += 1;
-      }
-    });
+      if (!productsPage || productsPage.length === 0) break;
+      
+      productsPage.forEach((product: any) => {
+        const data = product.data;
+        const isPrimary = data?._isPrimary === true;
+        const variantCount = data?._variantCount || 1;
+        
+        if (isPrimary) {
+          uniqueProducts++;
+          totalVariants += variantCount;
+        } else if (data?._isPrimary === undefined) {
+          // Products without grouping flags are standalone
+          uniqueProducts++;
+          totalVariants += 1;
+        }
+      });
+      
+      if (productsPage.length < pageSize) break;
+      offset += pageSize;
+    }
 
     const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
 
