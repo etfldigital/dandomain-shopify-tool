@@ -221,12 +221,19 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
       variantSize = extractSizeFromSku(sku);
     }
     
-    // If no valid size found, this could be a single-variant product or invalid
-    // For now, we'll allow it as a single product (no variant grouping)
+    // If no valid size found, this could be:
+    // 1. A single-variant product (no size variants exist)
+    // 2. A "base" SKU record that contains product metadata but isn't a variant itself
+    // 3. Invalid data
+    // We'll determine this after grouping
     
     // Create group key
     const normalizedTitle = normalizeTitle(title, vendor);
     const groupKey = normalizedTitle.toLowerCase();
+    
+    // Check if this might be a "base" SKU (parent record without size suffix)
+    // These typically have a shorter SKU that is a prefix of the sized variants
+    const isLikelyBaseSku = !variantSize && sku && sku.length > 0;
     
     // Get or create group
     if (!groups.has(groupKey)) {
@@ -286,9 +293,14 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
         });
       }
     } else {
-      // No valid size - add as single variant without option
-      // Only if this is the first item in group
+      // No valid size - this could be:
+      // 1. A single-variant product (first item, no other sized variants exist yet)
+      // 2. A "base" SKU record - the parent product that contains metadata but isn't a variant
+      // 3. An invalid record that should be rejected
+      
       if (group.variants.length === 0) {
+        // First item in group with no size - tentatively add as single variant
+        // We might remove this later if sized variants are added
         group.variants.push({
           recordId: product.id,
           externalId: product.external_id,
@@ -300,20 +312,48 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
           weight: data.weight ? parseFloat(String(data.weight)) : 0,
           barcode: data.barcode || null,
         });
-      } else if (group.variants.every(v => v.size)) {
-        // Group already has sized variants, but this one has no size - warn
-        group.warnings.push(`Produkt uden størrelse (SKU: ${sku}) kan ikke tilføjes til gruppe med størrelsesvarianter`);
-        rejected.push({
-          recordId: product.id,
-          externalId: product.external_id,
-          reason: 'Ingen gyldig størrelse fundet, og produktgruppen har allerede størrelsesvarianter',
-        });
-        continue;
+      } else if (group.variants.some(v => v.size)) {
+        // Group already has sized variants, this one has no size
+        // Check if this is a "base" SKU (parent record) - SKU that is a prefix of sized variant SKUs
+        const isBaseSku = group.variants.some(v => v.size && v.sku.startsWith(sku + '-'));
+        
+        if (isBaseSku) {
+          // This is a base/parent SKU - use its data for the product but don't create as variant
+          // Just merge the data and track the record, don't add to variants
+          group.warnings.push(`Base-SKU ${sku} bruges til produkt-metadata (ikke som variant)`);
+          // Data already merged above via mergeText - just track the record
+        } else {
+          // Not a base SKU, but still no valid size - skip it silently with warning
+          group.warnings.push(`Produkt uden størrelse (SKU: ${sku}) springes over - gruppe har størrelsesvarianter`);
+          // Don't reject - just don't add as variant, but still track the record for metadata
+        }
       }
     }
     
     group.recordIds.push(product.id);
     group.externalIds.push(product.external_id);
+  }
+  
+  // Post-process: Handle groups where base SKU came BEFORE sized variants
+  // If a group has both a no-size variant AND sized variants, remove the no-size one
+  // (it was tentatively added as first item, but now we know there are real size variants)
+  for (const group of groups.values()) {
+    const sizedVariants = group.variants.filter(v => v.size && v.size.trim() !== '');
+    const unsizedVariants = group.variants.filter(v => !v.size || v.size.trim() === '');
+    
+    if (sizedVariants.length > 0 && unsizedVariants.length > 0) {
+      // We have both - check if unsized is a base SKU (prefix of sized)
+      for (const unsized of unsizedVariants) {
+        const isBaseSku = sizedVariants.some(v => v.sku.startsWith(unsized.sku + '-'));
+        if (isBaseSku) {
+          group.warnings.push(`Base-SKU ${unsized.sku} fjernet fra varianter (bruges kun til metadata)`);
+        } else {
+          group.warnings.push(`Variant uden størrelse (${unsized.sku}) fjernet - gruppe har størrelsesvarianter`);
+        }
+      }
+      // Keep only sized variants
+      group.variants = sizedVariants;
+    }
   }
   
   // Sort variants within each group
