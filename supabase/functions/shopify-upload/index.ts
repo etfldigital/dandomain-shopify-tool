@@ -472,6 +472,16 @@ async function processProductGroup(
   // Build variants
   const primaryData = items.find((it) => (it.data || {})._isPrimary === true)?.data || data;
   const mergedVariants = Array.isArray(primaryData._mergedVariants) ? primaryData._mergedVariants : null;
+  const expectedVariantCount = primaryData._variantCount || 1;
+
+  // SANITY CHECK: Log warning if variant count doesn't match
+  if (mergedVariants && mergedVariants.length > 0) {
+    if (expectedVariantCount > 1 && mergedVariants.length !== expectedVariantCount) {
+      console.error(`[PRODUCTS] VARIANT MISMATCH: "${transformedTitle}" expects ${expectedVariantCount} variants but has ${mergedVariants.length} in _mergedVariants`);
+    }
+  } else if (expectedVariantCount > 1) {
+    console.error(`[PRODUCTS] MISSING VARIANTS: "${transformedTitle}" expects ${expectedVariantCount} variants but _mergedVariants is empty or missing`);
+  }
 
   type VariantCandidate = {
     option1: string;
