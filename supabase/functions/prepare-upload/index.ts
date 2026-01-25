@@ -420,13 +420,13 @@ serve(async (req) => {
 
       if (entityType === 'products') {
       // Fetch products for (re)grouping.
-      // IMPORTANT: We must include BOTH:
-      //  - pending records (current primaries and any ungrouped products)
-      //  - mapped secondary records from a previous prepare-upload run
-      //    (those have data._isPrimary=false AND data._primaryRecordId set)
-      // Otherwise, a second prepare-upload (e.g. run again by upload-worker)
-      // will only see the pending primaries and will overwrite _mergedVariants
-      // to a single variant, causing Shopify products to be created with 1 variant.
+      // CRITICAL: We must include ALL non-uploaded records:
+      //  - pending records (new products not yet processed)
+      //  - mapped records (both primary AND secondary from previous runs)
+      // This ensures that:
+      // 1. Previously marked primaries are RE-EVALUATED with full group data
+      // 2. All variants are correctly unified under a SINGLE primary
+      // 3. Running prepare-upload multiple times is idempotent
       let allProducts: ProductRecord[] = [];
       let page = 0;
       const pageSize = 1000;
@@ -436,10 +436,7 @@ serve(async (req) => {
           .from('canonical_products')
           .select('id, external_id, data, status')
           .eq('project_id', projectId)
-          .or(
-            // pending OR (mapped AND secondary-with-primary)
-            "status.eq.pending,and(status.eq.mapped,data->>_isPrimary.eq.false,data->>_primaryRecordId.not.is.null)"
-          )
+          .in('status', ['pending', 'mapped']) // Include ALL non-uploaded records
           .range(page * pageSize, (page + 1) * pageSize - 1);
         
         if (error) throw error;
