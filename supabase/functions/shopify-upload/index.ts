@@ -1476,14 +1476,39 @@ function extractBaseSku(sku: string): string {
 
 function normalizeImageUrl(url: string, baseUrl: string): string {
   if (!url) return '';
-  const trimmed = url.trim();
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
-  if (baseUrl) {
-    const cleanBase = baseUrl.replace(/\/$/, '');
-    const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-    return `${cleanBase}${cleanPath}`;
+  let trimmed = url.trim();
+  
+  // Build full URL if relative
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    if (baseUrl) {
+      const cleanBase = baseUrl.replace(/\/$/, '');
+      const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+      trimmed = `${cleanBase}${cleanPath}`;
+    } else {
+      return ''; // Cannot use relative URL without base
+    }
   }
-  return trimmed;
+  
+  // Ensure https
+  if (trimmed.startsWith('http://')) {
+    trimmed = trimmed.replace('http://', 'https://');
+  }
+  
+  // URI-encode the path portion to handle special characters (æ, ø, å, spaces, etc.)
+  // Shopify rejects URLs with unencoded special characters
+  try {
+    const urlObj = new URL(trimmed);
+    // encodeURI handles the full path but preserves /, :, etc.
+    // We need to re-encode the pathname specifically
+    urlObj.pathname = urlObj.pathname
+      .split('/')
+      .map(segment => encodeURIComponent(decodeURIComponent(segment)))
+      .join('/');
+    return urlObj.toString();
+  } catch {
+    // Fallback: simple encodeURI on the whole thing
+    return encodeURI(trimmed);
+  }
 }
 
 function normalizePhone(phone: string | undefined): string | undefined {
