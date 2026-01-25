@@ -461,6 +461,29 @@ serve(async (req) => {
       if (!previewOnly) {
         const now = new Date().toISOString();
         
+        // BATCH 0: RESET all existing _isPrimary flags for non-uploaded records
+        // This ensures we have a clean slate before marking the new primaries
+        // Without this, running prepare-upload multiple times leaves old primaries in place
+        console.log(`[PREPARE] Resetting ${allProducts.length} records' _isPrimary flags...`);
+        for (let i = 0; i < allProducts.length; i += 100) {
+          const chunk = allProducts.slice(i, i + 100);
+          await Promise.all(chunk.map(p => {
+            const currentData = p.data || {};
+            // Only reset if _isPrimary is set (avoid unnecessary writes)
+            if (currentData._isPrimary !== undefined) {
+              return supabase
+                .from('canonical_products')
+                .update({ 
+                  data: { ...currentData, _isPrimary: undefined, _variantCount: undefined, _mergedVariants: undefined, _groupKey: undefined, _primaryRecordId: undefined },
+                  updated_at: now 
+                })
+                .eq('id', p.id);
+            }
+            return Promise.resolve();
+          }));
+        }
+        console.log(`[PREPARE] Reset complete. Now applying new grouping...`);
+        
         // BATCH 1: Mark rejected records as 'mapped' with rejection reason
         // Store the reason in error_message so users can see WHY it was skipped
         for (const rejected of result.rejected) {
