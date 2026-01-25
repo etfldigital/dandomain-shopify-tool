@@ -212,6 +212,53 @@ serve(async (req) => {
 // Cache products we've already uploaded in this session (title -> shopify_id)
 const sessionProductCache: Map<string, string> = new Map();
 
+// Cache for category external_id -> shopify_tag mapping
+let categoryTagCache: Map<string, string> = new Map();
+
+/**
+ * Load category tags from database for a project.
+ * Maps category external_id to shopify_tag for fast lookup.
+ */
+async function loadCategoryTags(supabase: any, projectId: string): Promise<Map<string, string>> {
+  const cache = new Map<string, string>();
+  
+  const { data: categories, error } = await supabase
+    .from('canonical_categories')
+    .select('external_id, shopify_tag')
+    .eq('project_id', projectId);
+  
+  if (error) {
+    console.error('[PRODUCTS] Failed to load category tags:', error.message);
+    return cache;
+  }
+  
+  for (const cat of (categories || [])) {
+    if (cat.external_id && cat.shopify_tag) {
+      cache.set(String(cat.external_id), String(cat.shopify_tag));
+    }
+  }
+  
+  console.log(`[PRODUCTS] Loaded ${cache.size} category tags for tag mapping`);
+  return cache;
+}
+
+/**
+ * Get Shopify tags for a product based on its category_external_ids.
+ * Returns an array of shopify_tag values from matching categories.
+ */
+function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
+  const tags: string[] = [];
+  
+  for (const catId of categoryExternalIds) {
+    const shopifyTag = categoryCache.get(String(catId));
+    if (shopifyTag && !tags.includes(shopifyTag)) {
+      tags.push(shopifyTag);
+    }
+  }
+  
+  return tags;
+}
+
 async function uploadProducts(
   supabase: any,
   projectId: string,
@@ -222,6 +269,9 @@ async function uploadProducts(
   startTime: number,
   timeBudget: number
 ): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
+  
+  // Load category tags for this project (for mapping category_external_ids to Shopify tags)
+  categoryTagCache = await loadCategoryTags(supabase, projectId);
   
   // Fetch only PRIMARY pending products (those with _isPrimary=true after prepare-upload)
   // This ensures we only create one Shopify product per group
@@ -612,6 +662,26 @@ async function processProductGroup(
   // Sort variants by size (smallest to largest) and set explicit positions
   const sortedVariants = sortVariantsBySize(variants).map((v, idx) => ({ ...v, position: idx + 1 }));
 
+  // Collect all tags: product tags + category-based tags
+  const productTags: string[] = [...(data.tags || [])];
+  
+  // Add category tags based on category_external_ids
+  const categoryExternalIds = Array.isArray(data.category_external_ids) 
+    ? data.category_external_ids.map(String) 
+    : [];
+  
+  if (categoryExternalIds.length > 0) {
+    const categoryTags = getCategoryTagsForProduct(categoryExternalIds, categoryTagCache);
+    for (const catTag of categoryTags) {
+      if (!productTags.includes(catTag)) {
+        productTags.push(catTag);
+      }
+    }
+    if (categoryTags.length > 0) {
+      console.log(`[PRODUCTS] "${transformedTitle}": Added ${categoryTags.length} category tags: ${categoryTags.join(', ')}`);
+    }
+  }
+
   // Build product payload
   const productPayload: any = {
     product: {
@@ -619,7 +689,7 @@ async function processProductGroup(
       body_html: data.body_html || '',
       vendor: vendor,
       product_type: '',
-      tags: [...new Set(data.tags || [])].join(', '),
+      tags: [...new Set(productTags)].join(', '),
       status: data.active ? 'active' : 'draft',
       variants: sortedVariants,
       images: allImages.slice(0, 10).map((url: string) => ({ src: url })), // Limit images
