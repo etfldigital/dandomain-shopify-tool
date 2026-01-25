@@ -482,6 +482,9 @@ serve(async (req) => {
               delete cleanData._groupTitle;
               delete cleanData._primaryRecordId;
               
+              // IMPORTANT: Also update the local reference so subsequent code uses clean data
+              p.data = cleanData;
+              
               return supabase
                 .from('canonical_products')
                 .update({ 
