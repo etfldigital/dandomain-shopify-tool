@@ -518,7 +518,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     setSearchResults([]);
   };
 
-  // Search function to find products by SKU or title
+  // Search function to find products by SKU or title - only returns PRIMARY products
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
@@ -529,17 +529,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     try {
       const searchTerm = searchQuery.trim().toLowerCase();
       
-      // Search by SKU (exact or partial match) and title
+      // Search by SKU (exact or partial match) and title - only return primary products
       const { data: results } = await supabase
         .from('canonical_products')
         .select('id, external_id, data')
         .eq('project_id', projectId)
+        .eq('data->>_isPrimary', 'true')
         .or(`external_id.ilike.%${searchTerm}%,data->>sku.ilike.%${searchTerm}%,data->>title.ilike.%${searchTerm}%`)
         .limit(20);
       
       if (results && results.length > 0) {
         setSearchResults(results.map(r => ({ id: r.id, external_id: r.external_id })));
-        toast.success(`Fandt ${results.length} resultat(er)`);
+        toast.success(`Fandt ${results.length} produkt(er)`);
       } else {
         setSearchResults([]);
         toast.info('Ingen produkter fundet');
