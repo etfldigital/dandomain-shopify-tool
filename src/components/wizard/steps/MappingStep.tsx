@@ -187,26 +187,6 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </p>
       </div>
 
-      {/* Product Statistics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Card className="p-4">
-          <p className="text-sm text-muted-foreground">Linjer i filen</p>
-          <p className="text-2xl font-semibold">{stats.totalLines.toLocaleString('da-DK')}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-sm text-muted-foreground">Unikke produkter</p>
-          <p className="text-2xl font-semibold">{stats.uniqueProducts.toLocaleString('da-DK')}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-sm text-muted-foreground">Varianter i alt</p>
-          <p className="text-2xl font-semibold">{stats.totalVariants.toLocaleString('da-DK')}</p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
-          <p className="text-2xl font-semibold">{stats.avgVariants.toFixed(1)}</p>
-        </Card>
-      </div>
-
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="products" className="gap-2">
@@ -231,7 +211,26 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="products" className="mt-6">
+        <TabsContent value="products" className="mt-6 space-y-6">
+          {/* Product Statistics */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Card className="p-4">
+              <p className="text-sm text-muted-foreground">Linjer i filen</p>
+              <p className="text-2xl font-semibold">{stats.totalLines.toLocaleString('da-DK')}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-sm text-muted-foreground">Unikke produkter</p>
+              <p className="text-2xl font-semibold">{stats.uniqueProducts.toLocaleString('da-DK')}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-sm text-muted-foreground">Varianter i alt</p>
+              <p className="text-2xl font-semibold">{stats.totalVariants.toLocaleString('da-DK')}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
+              <p className="text-2xl font-semibold">{stats.avgVariants.toFixed(1)}</p>
+            </Card>
+          </div>
           <ProductMappingTab projectId={project.id} />
         </TabsContent>
 
