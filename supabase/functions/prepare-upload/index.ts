@@ -464,17 +464,28 @@ serve(async (req) => {
         // BATCH 0: RESET all existing _isPrimary flags for non-uploaded records
         // This ensures we have a clean slate before marking the new primaries
         // Without this, running prepare-upload multiple times leaves old primaries in place
-        console.log(`[PREPARE] Resetting ${allProducts.length} records' _isPrimary flags...`);
+        console.log(`[PREPARE] Resetting ${allProducts.length} records' grouping flags...`);
         for (let i = 0; i < allProducts.length; i += 100) {
           const chunk = allProducts.slice(i, i + 100);
           await Promise.all(chunk.map(p => {
             const currentData = p.data || {};
             // Only reset if _isPrimary is set (avoid unnecessary writes)
             if (currentData._isPrimary !== undefined) {
+              // CRITICAL: We must explicitly delete these keys from the object
+              // Setting to undefined does NOT work because JSON.stringify ignores undefined
+              const cleanData = { ...currentData };
+              delete cleanData._isPrimary;
+              delete cleanData._variantCount;
+              delete cleanData._mergedVariants;
+              delete cleanData._mergedImages;
+              delete cleanData._groupKey;
+              delete cleanData._groupTitle;
+              delete cleanData._primaryRecordId;
+              
               return supabase
                 .from('canonical_products')
                 .update({ 
-                  data: { ...currentData, _isPrimary: undefined, _variantCount: undefined, _mergedVariants: undefined, _groupKey: undefined, _primaryRecordId: undefined },
+                  data: cleanData,
                   updated_at: now 
                 })
                 .eq('id', p.id);
