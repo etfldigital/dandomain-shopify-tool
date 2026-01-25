@@ -32,8 +32,13 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState('products');
+  const [stats, setStats] = useState({
+    totalLines: 0,
+    uniqueProducts: 0,
+    totalVariants: 0,
+    avgVariants: 0,
+  });
   const [entityCounts, setEntityCounts] = useState({
-    products: 0,
     categories: 0,
     customers: 0,
     orders: 0,
@@ -57,15 +62,46 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       setCategories(categoryData as CanonicalCategory[]);
     }
 
-    // Load entity counts
-    const [productsCount, customersCount, ordersCount] = await Promise.all([
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+    // Load entity counts and product stats in parallel
+    const [customersCount, ordersCount, productsData] = await Promise.all([
       supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_products').select('data').eq('project_id', project.id),
     ]);
 
+    // Calculate product statistics
+    const allProducts = productsData.data || [];
+    const totalLines = allProducts.length;
+    
+    // Count primary products and total variants
+    let uniqueProducts = 0;
+    let totalVariants = 0;
+    
+    allProducts.forEach((product: any) => {
+      const data = product.data;
+      const isPrimary = data?._isPrimary === true;
+      const variantCount = data?._variantCount || 1;
+      
+      if (isPrimary) {
+        uniqueProducts++;
+        totalVariants += variantCount;
+      } else if (!data?._isPrimary && data?._isPrimary !== false) {
+        // Products without grouping flags are standalone
+        uniqueProducts++;
+        totalVariants += 1;
+      }
+    });
+
+    const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
+
+    setStats({
+      totalLines,
+      uniqueProducts,
+      totalVariants,
+      avgVariants,
+    });
+
     setEntityCounts({
-      products: productsCount.count || 0,
       categories: categoryData?.length || 0,
       customers: customersCount.count || 0,
       orders: ordersCount.count || 0,
@@ -138,12 +174,32 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </p>
       </div>
 
+      {/* Product Statistics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">Linjer i filen</p>
+          <p className="text-2xl font-semibold">{stats.totalLines.toLocaleString('da-DK')}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">Unikke produkter</p>
+          <p className="text-2xl font-semibold">{stats.uniqueProducts.toLocaleString('da-DK')}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">Varianter i alt</p>
+          <p className="text-2xl font-semibold">{stats.totalVariants.toLocaleString('da-DK')}</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
+          <p className="text-2xl font-semibold">{stats.avgVariants.toFixed(1)}</p>
+        </Card>
+      </div>
+
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="products" className="gap-2">
             <Package className="w-4 h-4" />
             <span className="hidden sm:inline">Produkter</span>
-            <Badge variant="secondary" className="ml-1">{entityCounts.products}</Badge>
+            <Badge variant="secondary" className="ml-1">{stats.uniqueProducts}</Badge>
           </TabsTrigger>
           <TabsTrigger value="categories" className="gap-2">
             <Folder className="w-4 h-4" />
