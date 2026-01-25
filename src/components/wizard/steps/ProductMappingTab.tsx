@@ -116,6 +116,15 @@ interface ProductRef {
   external_id: string;
 }
 
+interface VariantData {
+  size: string;
+  sku: string;
+  price: number;
+  compareAtPrice: number | null;
+  stockQuantity: number;
+  barcode: string | null;
+}
+
 interface ProductPreviewData {
   original: {
     title: string;
@@ -157,6 +166,9 @@ interface ProductPreviewData {
   };
   categoryNames: string[];
   mappedFields: { field: string; value: any; source: string }[];
+  // Variants
+  variants: VariantData[];
+  hasVariants: boolean;
 }
 
 const defaultMappingRules: MappingRules = {
@@ -337,6 +349,28 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
 
+      // Parse variants from _mergedVariants if available
+      const mergedVariants = data._mergedVariants as any[] || [];
+      const hasVariants = data._isPrimary === true && mergedVariants.length > 0;
+      
+      const variants: VariantData[] = hasVariants 
+        ? mergedVariants.map((v: any) => ({
+            size: v.size || 'ONE-SIZE',
+            sku: v.sku || '',
+            price: v.price || data.price || 0,
+            compareAtPrice: v.compareAtPrice || null,
+            stockQuantity: v.stockQuantity || 0,
+            barcode: v.barcode || null,
+          }))
+        : [{
+            size: 'ONE-SIZE',
+            sku: data.sku || '',
+            price: data.price || 0,
+            compareAtPrice: data.compare_at_price || null,
+            stockQuantity: data.stock_quantity || 0,
+            barcode: data.barcode || null,
+          }];
+
       setProduct({
         original: {
           title: data.title || '',
@@ -378,6 +412,8 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         },
         categoryNames,
         mappedFields: [],
+        variants,
+        hasVariants,
       });
     }
   };
@@ -917,11 +953,144 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     </CardContent>
                   </Card>
 
-                  {/* Price & Variant Details */}
+                  {/* Variants Section - Shopify Style */}
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm font-medium">Varianter</CardTitle>
+                        {product.hasVariants && product.variants.length > 1 && (
+                          <Badge variant="secondary" className="text-xs">
+                            {product.variants.length} varianter
+                          </Badge>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="pt-0 space-y-4">
+                      {product.hasVariants && product.variants.length > 1 ? (
+                        <>
+                          {/* Option name with values as chips */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">Størrelse</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {product.variants.map((variant, i) => (
+                                <Badge 
+                                  key={i} 
+                                  variant="outline" 
+                                  className="text-xs px-2 py-1 font-medium"
+                                >
+                                  {variant.size}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+
+                          <Separator />
+
+                          {/* Variant table */}
+                          <div className="border rounded-lg overflow-hidden">
+                            <Table>
+                              <TableHeader>
+                                <TableRow className="bg-muted/50">
+                                  <TableHead className="text-xs h-9">Størrelse</TableHead>
+                                  <TableHead className="text-xs h-9">SKU</TableHead>
+                                  <TableHead className="text-xs h-9">Pris</TableHead>
+                                  <TableHead className="text-xs h-9">Lager</TableHead>
+                                  <TableHead className="text-xs h-9">Stregkode</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {product.variants.map((variant, i) => (
+                                  <TableRow key={i}>
+                                    <TableCell className="py-2">
+                                      <Badge variant="outline" className="text-xs font-medium">
+                                        {variant.size}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell className="py-2 font-mono text-xs text-muted-foreground">
+                                      {variant.sku}
+                                    </TableCell>
+                                    <TableCell className="py-2 text-xs">
+                                      {variant.price.toFixed(2)} kr.
+                                      {variant.compareAtPrice && (
+                                        <span className="ml-1 line-through text-muted-foreground">
+                                          {variant.compareAtPrice.toFixed(2)}
+                                        </span>
+                                      )}
+                                    </TableCell>
+                                    <TableCell className="py-2 text-xs">
+                                      <span className={variant.stockQuantity > 0 ? 'text-success' : 'text-muted-foreground'}>
+                                        {variant.stockQuantity}
+                                      </span>
+                                    </TableCell>
+                                    <TableCell className="py-2 font-mono text-[10px] text-muted-foreground">
+                                      {variant.barcode || '–'}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Single variant / no variants - show SKU directly on product */}
+                          <div className="text-sm text-muted-foreground mb-3">
+                            Dette produkt har ingen størrelser eller varianter
+                          </div>
+                          
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            {/* SKU */}
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
+                              <Input 
+                                value={product.transformed.sku} 
+                                readOnly 
+                                className="bg-background h-8 font-mono text-xs"
+                              />
+                            </div>
+
+                            {/* Price */}
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Pris</label>
+                              <Input 
+                                value={`${product.transformed.price.toFixed(2)} kr.`} 
+                                readOnly 
+                                className="bg-background h-8 font-mono text-xs"
+                              />
+                            </div>
+
+                            {/* Lagerbeholdning */}
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Lager</label>
+                              <Input 
+                                value={product.transformed.stock_quantity.toString()} 
+                                readOnly 
+                                className="bg-background h-8 font-mono text-xs"
+                              />
+                            </div>
+
+                            {/* Stregkode */}
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
+                              <Input 
+                                value={product.transformed.barcode || '–'} 
+                                readOnly 
+                                className="bg-background h-8 font-mono text-xs"
+                              />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Price Summary Card */}
                   <Card>
                     <CardContent className="pt-4 space-y-4">
                       <div>
-                        <label className="text-sm font-medium text-foreground mb-2 block">Pris</label>
+                        <label className="text-sm font-medium text-foreground mb-2 block">Prissætning</label>
                         <div className="flex items-center gap-4">
                           <div>
                             <Input 
@@ -929,12 +1098,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                               readOnly 
                               className="w-32 bg-background"
                             />
-                            {product.mappedFields.some(m => m.field === 'variants[0].price') && (
-                              <div className="mt-1 text-xs text-success flex items-center gap-1">
-                                <Check className="w-3 h-3" />
-                                Fra {product.mappedFields.find(m => m.field === 'variants[0].price')?.source}
-                              </div>
-                            )}
                           </div>
                           <span className="text-muted-foreground">kr.</span>
                           {product.transformed.compare_at_price && (
@@ -948,205 +1111,110 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
                       <Separator />
 
-                      {/* Variant details grid */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        {/* SKU */}
-                        <div>
-                          <label className="text-xs text-muted-foreground mb-1 block">SKU</label>
-                          <Input 
-                            value={product.transformed.sku} 
-                            readOnly 
-                            className="bg-background h-8 font-mono text-xs"
-                          />
-                          {product.mappedFields.some(m => m.field === 'variants[0].sku') && (
-                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                              <Check className="w-2.5 h-2.5" />
-                              {product.mappedFields.find(m => m.field === 'variants[0].sku')?.source}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Lagerbeholdning */}
-                        <div>
-                          <label className="text-xs text-muted-foreground mb-1 block">Lager</label>
-                          <Input 
-                            value={product.transformed.stock_quantity.toString()} 
-                            readOnly 
-                            className="bg-background h-8 font-mono text-xs"
-                          />
-                          {product.mappedFields.some(m => m.field === 'variants[0].inventory_quantity') && (
-                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                              <Check className="w-2.5 h-2.5" />
-                              {product.mappedFields.find(m => m.field === 'variants[0].inventory_quantity')?.source}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Stregkode */}
-                        <div>
-                          <label className="text-xs text-muted-foreground mb-1 block">Stregkode</label>
-                          <Input 
-                            value={product.transformed.barcode || '(ingen)'} 
-                            readOnly 
-                            className="bg-background h-8 font-mono text-xs"
-                          />
-                          {product.mappedFields.some(m => m.field === 'variants[0].barcode') && (
-                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                              <Check className="w-2.5 h-2.5" />
-                              {product.mappedFields.find(m => m.field === 'variants[0].barcode')?.source}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Kostpris */}
-                        <div>
-                          <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
-                          <Input 
-                            value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
-                            readOnly 
-                            className="bg-background h-8 font-mono text-xs"
-                          />
-                          {product.mappedFields.some(m => m.field === 'variants[0].cost') && (
-                            <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                              <Check className="w-2.5 h-2.5" />
-                              {product.mappedFields.find(m => m.field === 'variants[0].cost')?.source}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Metafields section */}
-                      {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9) && (
-                        <>
-                          <Separator />
-                          <div>
-                            <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
-                              Metafelter
-                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
-                                Shopify
-                              </Badge>
-                            </label>
-                            <div className="grid grid-cols-2 gap-3">
-                              {/* Materiale */}
-                              {product.original.field_1 && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Materiale</label>
-                                  <Input 
-                                    value={product.original.field_1} 
-                                    readOnly 
-                                    className="bg-background h-8 text-xs"
-                                  />
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    FIELD_1
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* Farve */}
-                              {product.original.field_2 && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Farve</label>
-                                  <Input 
-                                    value={product.original.field_2} 
-                                    readOnly 
-                                    className="bg-background h-8 text-xs"
-                                  />
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    FIELD_2
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* Pasform */}
-                              {product.original.field_3 && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Pasform</label>
-                                  <Input 
-                                    value={product.original.field_3} 
-                                    readOnly 
-                                    className="bg-background h-8 text-xs"
-                                  />
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    FIELD_3
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* Vaskeanvisning */}
-                              {product.original.field_9 && (
-                                <div>
-                                  <label className="text-xs text-muted-foreground mb-1 block">Vaskeanvisning</label>
-                                  <Input 
-                                    value={product.original.field_9} 
-                                    readOnly 
-                                    className="bg-background h-8 text-xs"
-                                  />
-                                  <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                    <Check className="w-2.5 h-2.5" />
-                                    FIELD_9
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      )}
-
-                      {/* SEO Section - Always visible */}
-                      <Separator />
+                      {/* Kostpris */}
                       <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Kostpris</label>
+                        <Input 
+                          value={product.transformed.cost_price ? `${product.transformed.cost_price.toFixed(2)} kr.` : '(ingen)'} 
+                          readOnly 
+                          className="bg-background h-8 font-mono text-xs w-32"
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Metafields Card */}
+                  {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9) && (
+                    <Card>
+                      <CardContent className="pt-4">
                         <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
-                          SEO
+                          Metafelter
                           <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
                             Shopify
                           </Badge>
                         </label>
-                        <div className="space-y-3">
-                          {/* Meta Title */}
-                          <div>
-                            <label className="text-xs text-muted-foreground mb-1 block">Meta Titel</label>
-                            {(product.transformed.meta_title || product.original.meta_title) ? (
-                              <>
-                                <Input 
-                                  value={product.transformed.meta_title || product.original.meta_title} 
-                                  readOnly 
-                                  className="bg-background h-8 text-xs"
-                                />
-                                <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                  <Check className="w-2.5 h-2.5" />
-                                  META_TITLE
-                                </div>
-                              </>
-                            ) : (
-                              <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic">
-                                Ikke udfyldt
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Meta Description */}
-                          <div>
-                            <label className="text-xs text-muted-foreground mb-1 block">Meta Beskrivelse</label>
-                            {(product.transformed.meta_description || product.original.meta_description) ? (
-                              <>
-                                <div className="p-2 border rounded-md bg-background text-xs text-muted-foreground min-h-[60px]">
-                                  {(product.transformed.meta_description || product.original.meta_description || '').substring(0, 160)}
-                                  {(product.transformed.meta_description || product.original.meta_description || '').length > 160 && '...'}
-                                </div>
-                                <div className="mt-0.5 text-[10px] text-success flex items-center gap-0.5">
-                                  <Check className="w-2.5 h-2.5" />
-                                  META_DESCRIPTION
-                                </div>
-                              </>
-                            ) : (
-                              <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic min-h-[60px] flex items-center">
-                                Ikke udfyldt
-                              </div>
-                            )}
-                          </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {product.original.field_1 && (
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Materiale</label>
+                              <Input 
+                                value={product.original.field_1} 
+                                readOnly 
+                                className="bg-background h-8 text-xs"
+                              />
+                            </div>
+                          )}
+                          {product.original.field_2 && (
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Farve</label>
+                              <Input 
+                                value={product.original.field_2} 
+                                readOnly 
+                                className="bg-background h-8 text-xs"
+                              />
+                            </div>
+                          )}
+                          {product.original.field_3 && (
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Pasform</label>
+                              <Input 
+                                value={product.original.field_3} 
+                                readOnly 
+                                className="bg-background h-8 text-xs"
+                              />
+                            </div>
+                          )}
+                          {product.original.field_9 && (
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">Vaskeanvisning</label>
+                              <Input 
+                                value={product.original.field_9} 
+                                readOnly 
+                                className="bg-background h-8 text-xs"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* SEO Card */}
+                  <Card>
+                    <CardContent className="pt-4">
+                      <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
+                        SEO
+                        <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                          Shopify
+                        </Badge>
+                      </label>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">Meta Titel</label>
+                          {(product.transformed.meta_title || product.original.meta_title) ? (
+                            <Input 
+                              value={product.transformed.meta_title || product.original.meta_title} 
+                              readOnly 
+                              className="bg-background h-8 text-xs"
+                            />
+                          ) : (
+                            <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic">
+                              Ikke udfyldt
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">Meta Beskrivelse</label>
+                          {(product.transformed.meta_description || product.original.meta_description) ? (
+                            <div className="p-2 border rounded-md bg-background text-xs text-muted-foreground min-h-[60px]">
+                              {(product.transformed.meta_description || product.original.meta_description || '').substring(0, 160)}
+                              {(product.transformed.meta_description || product.original.meta_description || '').length > 160 && '...'}
+                            </div>
+                          ) : (
+                            <div className="p-2 border border-dashed rounded-md bg-muted/30 text-xs text-muted-foreground italic min-h-[60px] flex items-center">
+                              Ikke udfyldt
+                            </div>
+                          )}
                         </div>
                       </div>
                     </CardContent>
