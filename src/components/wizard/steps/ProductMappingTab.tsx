@@ -125,6 +125,24 @@ interface VariantData {
   barcode: string | null;
 }
 
+// Helper function to safely parse price values that might be strings (e.g., "639.60 kr.")
+const parsePrice = (value: any): number => {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    // Remove currency suffix and whitespace, replace comma with dot for Danish format
+    const cleaned = value.replace(/[^\d.,\-]/g, '').replace(',', '.').trim();
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
+
+// Helper function to safely format price for display
+const formatPrice = (value: any): string => {
+  const num = parsePrice(value);
+  return num.toFixed(2);
+};
+
 interface ProductPreviewData {
   original: {
     title: string;
@@ -357,17 +375,17 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         ? mergedVariants.map((v: any) => ({
             size: v.size || 'ONE-SIZE',
             sku: v.sku || '',
-            price: v.price || data.price || 0,
-            compareAtPrice: v.compareAtPrice || null,
-            stockQuantity: v.stockQuantity || 0,
+            price: parsePrice(v.price) || parsePrice(data.price) || 0,
+            compareAtPrice: v.compareAtPrice ? parsePrice(v.compareAtPrice) : null,
+            stockQuantity: typeof v.stockQuantity === 'number' ? v.stockQuantity : parseInt(v.stockQuantity) || 0,
             barcode: v.barcode || null,
           }))
         : [{
             size: 'ONE-SIZE',
             sku: data.sku || '',
-            price: data.price || 0,
-            compareAtPrice: data.compare_at_price || null,
-            stockQuantity: data.stock_quantity || 0,
+            price: parsePrice(data.price) || 0,
+            compareAtPrice: data.compare_at_price ? parsePrice(data.compare_at_price) : null,
+            stockQuantity: typeof data.stock_quantity === 'number' ? data.stock_quantity : parseInt(data.stock_quantity) || 0,
             barcode: data.barcode || null,
           }];
 
@@ -376,9 +394,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           title: data.title || '',
           body_html: data.body_html || '',
           sku: data.sku || '',
-          price: data.price || 0,
-          cost_price: data.cost_price || null,
-          compare_at_price: data.compare_at_price || null,
+          price: parsePrice(data.price) || 0,
+          cost_price: data.cost_price ? parsePrice(data.cost_price) : null,
+          compare_at_price: data.compare_at_price ? parsePrice(data.compare_at_price) : null,
           stock_quantity: data.stock_quantity || 0,
           weight: data.weight || null,
           images: data.images || [],
@@ -400,11 +418,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           vendor: vendor,
           sku: data.sku || '',
           barcode: data.barcode || '',
-          price: data.price || 0,
-          compare_at_price: data.compare_at_price || null,
-          cost_price: data.cost_price || null,
+          price: parsePrice(data.price) || 0,
+          compare_at_price: data.compare_at_price ? parsePrice(data.compare_at_price) : null,
+          cost_price: data.cost_price ? parsePrice(data.cost_price) : null,
           weight: data.weight || null,
-          stock_quantity: data.stock_quantity || 0,
+          stock_quantity: typeof data.stock_quantity === 'number' ? data.stock_quantity : parseInt(data.stock_quantity) || 0,
           body_html: data.body_html || '',
           // SEO fields - default to original or fallback to title
           meta_title: data.meta_title || null,
