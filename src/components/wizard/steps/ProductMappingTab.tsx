@@ -114,6 +114,7 @@ const AUTO_MAP_SUGGESTIONS: { source: string; target: string }[] = [
 interface ProductRef {
   id: string;
   external_id: string;
+  title?: string;
 }
 
 interface VariantData {
@@ -539,7 +540,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         .limit(20);
       
       if (results && results.length > 0) {
-        setSearchResults(results.map(r => ({ id: r.id, external_id: r.external_id })));
+        setSearchResults(results.map(r => ({ 
+          id: r.id, 
+          external_id: r.external_id,
+          title: (r.data as any)?.title || r.external_id 
+        })));
         toast.success(`Fandt ${results.length} produkt(er)`);
       } else {
         setSearchResults([]);
@@ -987,8 +992,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           onClick={() => selectSearchResult(result.id)}
                           className="w-full text-left px-3 py-2 rounded-md hover:bg-muted transition-colors text-sm flex items-center justify-between group"
                         >
-                          <span className="font-mono text-xs">{result.external_id}</span>
-                          <Eye className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <div className="flex flex-col items-start gap-0.5 min-w-0 flex-1">
+                            <span className="text-sm font-medium truncate w-full">{result.title}</span>
+                            <span className="font-mono text-[10px] text-muted-foreground">{result.external_id}</span>
+                          </div>
+                          <Eye className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2" />
                         </button>
                       ))}
                     </div>
