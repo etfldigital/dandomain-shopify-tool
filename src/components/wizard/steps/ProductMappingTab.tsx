@@ -359,21 +359,36 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
 
-      // Transform title based on rules
+      // Transform title based on rules - case-insensitive vendor stripping
       let transformedTitle = data.title || '';
       const vendor = data.vendor || '';
       
-      if (mappingRules.stripVendorFromTitle && vendor && transformedTitle.includes(vendor)) {
-        const separator = mappingRules.vendorSeparator || ' - ';
-        if (transformedTitle.startsWith(vendor + separator)) {
-          transformedTitle = transformedTitle.substring(vendor.length + separator.length).trim();
-        } else {
-          const separators = [' - ', ' – ', ' — ', ': ', ' | '];
-          for (const sep of separators) {
-            if (transformedTitle.startsWith(vendor + sep)) {
-              transformedTitle = transformedTitle.substring(vendor.length + sep.length).trim();
-              break;
+      if (mappingRules.stripVendorFromTitle && vendor) {
+        const trimmedVendor = vendor.trim().toLowerCase();
+        const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+        let stripped = false;
+        
+        // Try to find separator and compare prefix case-insensitively
+        for (const sep of separators) {
+          const sepIndex = transformedTitle.indexOf(sep);
+          if (sepIndex > 0 && sepIndex < 60) {
+            const prefix = transformedTitle.slice(0, sepIndex).trim();
+            if (prefix.toLowerCase() === trimmedVendor) {
+              const rest = transformedTitle.slice(sepIndex + sep.length).trim();
+              if (rest) {
+                transformedTitle = rest;
+                stripped = true;
+                break;
+              }
             }
+          }
+        }
+        
+        // Fallback: simple startsWith with case-insensitive check
+        if (!stripped && transformedTitle.toLowerCase().startsWith(trimmedVendor)) {
+          const rest = transformedTitle.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
+          if (rest) {
+            transformedTitle = rest;
           }
         }
       }
