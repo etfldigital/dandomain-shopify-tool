@@ -40,6 +40,28 @@ const VALID_NUMERIC_SIZE_RANGES = [
 
 const COLOR_PATTERNS = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL|MULCH|MELANGE|STRIPE)$/i;
 
+// Product codes that should NOT be treated as sizes
+const PRODUCT_CODE_PATTERNS = [
+  /^601$/,  // Known product code
+  /^12$/,   // Known product code
+  /^7\d{4}$/, // 5-digit codes starting with 7
+];
+
+function isLikelyProductCode(segment: string, position: number, totalParts: number): boolean {
+  // Check if it matches known product code patterns
+  if (PRODUCT_CODE_PATTERNS.some(pattern => pattern.test(segment))) {
+    return true;
+  }
+  
+  // Early segments (first 2-3 positions) with 2+ digit numbers are likely product codes
+  // unless they're the ONLY segment or the LAST segment
+  if (position < Math.min(2, totalParts - 1) && /^\d{2,}$/.test(segment)) {
+    return true;
+  }
+  
+  return false;
+}
+
 function isValidNumericSize(num: number): boolean {
   return VALID_NUMERIC_SIZE_RANGES.some(range => num >= range.min && num <= range.max);
 }
@@ -64,20 +86,7 @@ function extractSizeFromSku(sku: string): string | null {
   if (!sku) return null;
   const parts = sku.split('-');
   
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const part = parts[i].trim().toUpperCase();
-    if (!part || part.length === 0) continue;
-    if (COLOR_PATTERNS.test(part)) continue;
-    if (i < parts.length - 1 && /^\d{3,}$/.test(part)) continue;
-    if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
-      const num = parseInt(part, 10);
-      if (!isValidNumericSize(num)) continue;
-    }
-    if (isValidSizeVariant(part)) {
-      return part;
-    }
-  }
-  
+  // PRIORITY 1: Check for size ranges at the end (e.g., "37-39", "40-42")
   if (parts.length >= 2) {
     const lastTwo = parts.slice(-2).join('-');
     if (/^\d{2}-\d{2}$/.test(lastTwo)) {
@@ -85,6 +94,32 @@ function extractSizeFromSku(sku: string): string | null {
       if (nums.every(n => isValidNumericSize(n))) {
         return lastTwo;
       }
+    }
+  }
+  
+  // PRIORITY 2: Look for valid size patterns, skipping product codes
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i].trim().toUpperCase();
+    if (!part || part.length === 0) continue;
+    
+    // Skip color patterns
+    if (COLOR_PATTERNS.test(part)) continue;
+    
+    // Skip likely product codes
+    if (isLikelyProductCode(part, i, parts.length)) continue;
+    
+    // Skip 3+ digit numbers that aren't in the last position
+    if (i < parts.length - 1 && /^\d{3,}$/.test(part)) continue;
+    
+    // For last position, validate 3+ digit numbers
+    if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
+      const num = parseInt(part, 10);
+      if (!isValidNumericSize(num)) continue;
+    }
+    
+    // Check if this is a valid size variant
+    if (isValidSizeVariant(part)) {
+      return part;
     }
   }
   
