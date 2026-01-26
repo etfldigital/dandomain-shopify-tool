@@ -261,25 +261,30 @@ interface PrepareResult {
   };
 }
 
+// Helper to normalize brand names for comparison (remove +, &, extra spaces)
+function normalizeBrand(s: string): string {
+  return s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function normalizeTitle(title: string, vendor: string): string {
   const normalized = title.trim();
-  const trimmedVendor = vendor.trim().toLowerCase();
+  const normalizedVendor = normalizeBrand(vendor);
   const separators = [' - ', ' – ', ' — ', ': ', ' | '];
 
   // 1) Preferred: Find separator and compare prefix with fuzzy matching
-  if (trimmedVendor) {
+  if (normalizedVendor) {
     for (const sep of separators) {
       const sepIndex = normalized.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = normalized.slice(0, sepIndex).trim();
-        const prefixLower = prefix.toLowerCase();
+        const normalizedPrefix = normalizeBrand(prefix);
         
         // Exact match OR vendor starts with the prefix (fuzzy)
         // e.g. "moshi moshi" matches "Moshi Moshi Mind"
-        // e.g. "Rotate" matches "ROTATE Birger Christensen"
-        if (prefixLower === trimmedVendor || 
-            trimmedVendor.startsWith(prefixLower + ' ') ||
-            trimmedVendor.startsWith(prefixLower)) {
+        // e.g. "gai + lisva" matches "gai lisva"
+        if (normalizedPrefix === normalizedVendor || 
+            normalizedVendor.startsWith(normalizedPrefix + ' ') ||
+            normalizedVendor.startsWith(normalizedPrefix)) {
           const rest = normalized.slice(sepIndex + sep.length).trim();
           if (rest) return rest;
         }
@@ -287,7 +292,7 @@ function normalizeTitle(title: string, vendor: string): string {
     }
     
     // Fallback: simple startsWith with case-insensitive check
-    if (normalized.toLowerCase().startsWith(trimmedVendor)) {
+    if (normalizeBrand(normalized).startsWith(normalizedVendor)) {
       const rest = normalized.substring(vendor.length).replace(/^[\s\-–—:|]+/, '').trim();
       if (rest) return rest;
     }

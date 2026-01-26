@@ -363,8 +363,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       let transformedTitle = data.title || '';
       const vendor = data.vendor || '';
       
+      // Helper to normalize brand names for comparison (remove +, &, extra spaces)
+      const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
+      
       if (mappingRules.stripVendorFromTitle && vendor) {
-        const trimmedVendor = vendor.trim().toLowerCase();
+        const normalizedVendor = normalizeBrand(vendor);
         const separators = [' - ', ' – ', ' — ', ': ', ' | '];
         let stripped = false;
         
@@ -373,14 +376,14 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           const sepIndex = transformedTitle.indexOf(sep);
           if (sepIndex > 0 && sepIndex < 60) {
             const prefix = transformedTitle.slice(0, sepIndex).trim();
-            const prefixLower = prefix.toLowerCase();
+            const normalizedPrefix = normalizeBrand(prefix);
             
             // Exact match OR vendor starts with the prefix (fuzzy)
             // e.g. "moshi moshi" matches "Moshi Moshi Mind"
-            // e.g. "Rotate" matches "ROTATE Birger Christensen"
-            if (prefixLower === trimmedVendor || 
-                trimmedVendor.startsWith(prefixLower + ' ') ||
-                trimmedVendor.startsWith(prefixLower)) {
+            // e.g. "gai + lisva" matches "gai lisva"
+            if (normalizedPrefix === normalizedVendor || 
+                normalizedVendor.startsWith(normalizedPrefix + ' ') ||
+                normalizedVendor.startsWith(normalizedPrefix)) {
               const rest = transformedTitle.slice(sepIndex + sep.length).trim();
               if (rest) {
                 transformedTitle = rest;
@@ -392,7 +395,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
         
         // Fallback: simple startsWith with case-insensitive check
-        if (!stripped && transformedTitle.toLowerCase().startsWith(trimmedVendor)) {
+        if (!stripped && normalizeBrand(transformedTitle).startsWith(normalizedVendor)) {
           const rest = transformedTitle.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
           if (rest) {
             transformedTitle = rest;
