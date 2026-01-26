@@ -71,6 +71,10 @@ function isValidSizeVariant(option: string): boolean {
   if (!trimmed || trimmed.toLowerCase() === 'default' || trimmed.toLowerCase() === 'default title') {
     return false;
   }
+  // Never treat known product codes as sizes (even if they look like valid numeric sizes)
+  if (PRODUCT_CODE_PATTERNS.some(pattern => pattern.test(trimmed))) {
+    return false;
+  }
   if (SIZE_PATTERNS.some(pattern => pattern.test(trimmed))) {
     return true;
   }
@@ -266,14 +270,21 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
     
     // Determine variant size
     let variantSize: string | null = null;
+
+    // Always try SKU extraction first so ranges like "37-39" / "40-42" win over any noisy variant_option
+    const skuSize = sku ? extractSizeFromSku(sku) : null;
+    const skuIsRange = !!(skuSize && /^\d+[-\/]\d+$/.test(skuSize));
     
     // First check if there's an explicit variant field
-    if (data.variant_option && isValidSizeVariant(data.variant_option)) {
-      variantSize = data.variant_option.toUpperCase();
+    if (skuIsRange) {
+      variantSize = skuSize;
+    }
+    else if (data.variant_option && isValidSizeVariant(String(data.variant_option))) {
+      variantSize = String(data.variant_option).trim().toUpperCase();
     }
     // Then try to extract from SKU
-    else if (sku) {
-      variantSize = extractSizeFromSku(sku);
+    else if (skuSize) {
+      variantSize = skuSize;
     }
     
     // If no valid size found, this could be:
@@ -491,7 +502,8 @@ serve(async (req) => {
           .from('canonical_products')
           .select('id, external_id, data, status')
           .eq('project_id', projectId)
-          .in('status', ['pending', 'mapped']) // Include ALL non-uploaded records
+          // Include uploaded too so we can fix historic grouping/preview issues without changing upload state
+          .in('status', ['pending', 'mapped', 'uploaded'])
           .range(page * pageSize, (page + 1) * pageSize - 1);
         
         if (error) throw error;
@@ -556,6 +568,9 @@ serve(async (req) => {
         // BATCH 1: Mark rejected records as 'mapped' with rejection reason
         // Store the reason in error_message so users can see WHY it was skipped
         for (const rejected of result.rejected) {
+          const rejectedRecord = allProducts.find(p => p.id === rejected.recordId);
+          // Never downgrade already uploaded records
+          if (rejectedRecord?.status === 'uploaded') continue;
           await supabase
             .from('canonical_products')
             .update({ 
@@ -579,15 +594,24 @@ serve(async (req) => {
           // Choose primary record: prefer the FIRST variant with valid size data
           // This ensures the record that actually has variant info gets _mergedVariants
           let primaryId: string;
-          const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
-          if (firstSizedVariant) {
-            primaryId = firstSizedVariant.recordId;
-          } else if (group.variants.length > 0) {
-            // Fallback to first variant record
-            primaryId = group.variants[0].recordId;
+          // If anything in the group is already uploaded, keep an uploaded record as primary
+          const uploadedInGroup = group.recordIds
+            .map(id => allProducts.find(p => p.id === id))
+            .find(p => p?.status === 'uploaded');
+
+          if (uploadedInGroup) {
+            primaryId = uploadedInGroup.id;
           } else {
-            // No variants at all - use first record in group
-            primaryId = group.recordIds[0];
+            const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
+            if (firstSizedVariant) {
+              primaryId = firstSizedVariant.recordId;
+            } else if (group.variants.length > 0) {
+              // Fallback to first variant record
+              primaryId = group.variants[0].recordId;
+            } else {
+              // No variants at all - use first record in group
+              primaryId = group.recordIds[0];
+            }
           }
           const primaryRecord = allProducts.find(p => p.id === primaryId);
           
@@ -647,14 +671,19 @@ serve(async (req) => {
         console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
         
         // BATCH 4: Bulk update secondary records' status to 'mapped'
-        for (let i = 0; i < secondaryIds.length; i += 500) {
-          const chunk = secondaryIds.slice(i, i + 500);
+        const secondaryIdsToMap = secondaryIds.filter(id => {
+          const rec = allProducts.find(p => p.id === id);
+          return rec?.status !== 'uploaded';
+        });
+
+        for (let i = 0; i < secondaryIdsToMap.length; i += 500) {
+          const chunk = secondaryIdsToMap.slice(i, i + 500);
           await supabase
             .from('canonical_products')
             .update({ status: 'mapped', updated_at: now })
             .in('id', chunk);
         }
-        console.log(`[PREPARE] Set ${secondaryIds.length} secondary records to mapped`);
+        console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
         
         // BATCH 5: Update secondary records' data in parallel chunks
         for (let i = 0; i < secondaryDataUpdates.length; i += 100) {
