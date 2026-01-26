@@ -25,6 +25,8 @@ const corsHeaders = {
 
 const SIZE_PATTERNS = [
   /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
+  // Combined letter sizes like XS/S, S/M, M/L, L/XL etc.
+  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[\/](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
   /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
   /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
   /^\d{2}[-\/]\d{2}$/,
@@ -88,6 +90,14 @@ function isValidSizeVariant(option: string): boolean {
 
 function extractSizeFromSku(sku: string): string | null {
   if (!sku) return null;
+  
+  // PRIORITY 0: Check for combined letter sizes at the very END of SKU
+  // e.g., "40977-camo-L/XL" -> "L/XL", "12345-XS/S" -> "XS/S"
+  // This must come BEFORE splitting on "-" because we don't want to break "L/XL" apart
+  const combinedSizeMatch = sku.match(/-((?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\/(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl))$/i);
+  if (combinedSizeMatch) {
+    return combinedSizeMatch[1].toUpperCase();
+  }
   
   const parts = sku.split('-');
   
