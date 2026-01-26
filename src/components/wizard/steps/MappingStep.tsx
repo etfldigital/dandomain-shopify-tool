@@ -37,6 +37,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     uniqueProducts: 0,
     totalVariants: 0,
     avgVariants: 0,
+    ungroupedCount: 0, // Records not yet processed by prepare-upload
   });
   const [entityCounts, setEntityCounts] = useState({
     categories: 0,
@@ -92,11 +93,15 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     // - Multi-variant products: "Hoved-SKU" (primary) is the PARENT, not a variant
     //   Only the secondaries are actual variants
     // - Single-variant products: The primary IS the only variant
-    // - Ungrouped: Will become single-variant products (1 variant each)
-    const totalVariants = secondaries + singleVariantPrimaries + ungrouped;
+    // - Ungrouped: Not yet processed - we don't know how they'll group
     
-    // Unique products = primaries + ungrouped (each will become a Shopify product)
-    const uniqueProducts = primaries + ungrouped;
+    // Only count variants from processed records (primaries + secondaries)
+    // Ungrouped records need prepare-upload to run first
+    const totalVariants = secondaries + singleVariantPrimaries;
+    
+    // Unique products = ONLY primaries (these become Shopify products)
+    // Ungrouped records are NOT counted because prepare-upload will group them
+    const uniqueProducts = primaries;
 
     const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
 
@@ -105,6 +110,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       uniqueProducts,
       totalVariants,
       avgVariants,
+      ungroupedCount: ungrouped,
     });
 
     setEntityCounts({
@@ -205,6 +211,16 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </TabsList>
 
         <TabsContent value="products" className="mt-6 space-y-6">
+          {/* Warning if ungrouped records exist */}
+          {stats.ungroupedCount > 0 && (
+            <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
+              <p className="text-sm text-warning-foreground">
+                <strong>{stats.ungroupedCount.toLocaleString('da-DK')}</strong> produkter er ikke grupperet endnu. 
+                Kør "Forbered upload" i Upload-trinnet for at se det endelige forecast.
+              </p>
+            </div>
+          )}
+          
           {/* Product Statistics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Card className="p-4">
@@ -212,12 +228,18 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
               <p className="text-2xl font-semibold">{stats.totalLines.toLocaleString('da-DK')}</p>
             </Card>
             <Card className="p-4">
-              <p className="text-sm text-muted-foreground">Unikke produkter</p>
+              <p className="text-sm text-muted-foreground">Shopify produkter</p>
               <p className="text-2xl font-semibold">{stats.uniqueProducts.toLocaleString('da-DK')}</p>
+              {stats.ungroupedCount > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">+ ugrupperede</p>
+              )}
             </Card>
             <Card className="p-4">
               <p className="text-sm text-muted-foreground">Varianter i alt</p>
               <p className="text-2xl font-semibold">{stats.totalVariants.toLocaleString('da-DK')}</p>
+              {stats.ungroupedCount > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">+ ugrupperede</p>
+              )}
             </Card>
             <Card className="p-4">
               <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
