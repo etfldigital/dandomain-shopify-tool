@@ -176,11 +176,28 @@ const SIZE_ORDER: Record<string, number> = {
   'XXXL': 9, '3XL': 9,
   'XXXXL': 10, '4XL': 10,
   'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
+  // Combined letter sizes (sorted by first size in the combo)
+  'XXS/XS': 2.5,
+  'XS/S': 3.5,
+  'S/M': 4.5,
+  'M/L': 5.5,
+  'L/XL': 6.5,
+  'XL/XXL': 7.5,
+  'XXL/XXXL': 8.5,
 };
 
 function getSizeSortPriority(size: string): number {
   const upper = size.toUpperCase().trim();
   if (SIZE_ORDER[upper] !== undefined) return SIZE_ORDER[upper];
+  
+  // Check for combined letter sizes not in the map (e.g., custom combos)
+  const comboMatch = upper.match(/^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)\/(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)$/);
+  if (comboMatch) {
+    const firstSize = comboMatch[1];
+    const baseOrder = SIZE_ORDER[firstSize] || 5;
+    return baseOrder + 0.5; // Place between first and second size
+  }
+  
   const numMatch = upper.match(/^(\d+)$/);
   if (numMatch) return 1000 + parseInt(numMatch[1], 10);
   const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
