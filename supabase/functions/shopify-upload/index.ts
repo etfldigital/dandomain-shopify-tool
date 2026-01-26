@@ -440,9 +440,12 @@ async function processProductGroup(
   const vendor = String(data.vendor || '').trim();
   
   // Transform title - fuzzy case-insensitive vendor stripping
+  // Helper to normalize brand names for comparison (remove +, &, extra spaces)
+  const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
+  
   let transformedTitle = title;
   if (vendor) {
-    const trimmedVendor = vendor.trim().toLowerCase();
+    const normalizedVendor = normalizeBrand(vendor);
     const separators = [' - ', ' – ', ' — ', ': ', ' | '];
     let stripped = false;
     
@@ -451,14 +454,14 @@ async function processProductGroup(
       const sepIndex = title.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = title.slice(0, sepIndex).trim();
-        const prefixLower = prefix.toLowerCase();
+        const normalizedPrefix = normalizeBrand(prefix);
         
         // Exact match OR vendor starts with the prefix (fuzzy)
         // e.g. "moshi moshi" matches "Moshi Moshi Mind"
-        // e.g. "Rotate" matches "ROTATE Birger Christensen"
-        if (prefixLower === trimmedVendor || 
-            trimmedVendor.startsWith(prefixLower + ' ') ||
-            trimmedVendor.startsWith(prefixLower)) {
+        // e.g. "gai + lisva" matches "gai lisva"
+        if (normalizedPrefix === normalizedVendor || 
+            normalizedVendor.startsWith(normalizedPrefix + ' ') ||
+            normalizedVendor.startsWith(normalizedPrefix)) {
           const rest = title.slice(sepIndex + sep.length).trim();
           if (rest) {
             transformedTitle = rest;
@@ -470,7 +473,7 @@ async function processProductGroup(
     }
     
     // Fallback: simple startsWith with case-insensitive check
-    if (!stripped && title.toLowerCase().startsWith(trimmedVendor)) {
+    if (!stripped && normalizeBrand(title).startsWith(normalizedVendor)) {
       const rest = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
       if (rest) {
         transformedTitle = rest;
