@@ -439,12 +439,37 @@ async function processProductGroup(
   const title = String(data._groupTitle || data.title || '').trim();
   const vendor = String(data.vendor || '').trim();
   
-  // Transform title
+  // Transform title - case-insensitive vendor stripping
   let transformedTitle = title;
-  if (vendor && title.toLowerCase().startsWith(vendor.toLowerCase())) {
-    transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
+  if (vendor) {
+    const trimmedVendor = vendor.trim().toLowerCase();
+    const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+    let stripped = false;
+    
+    // Try to find separator and compare prefix case-insensitively
+    for (const sep of separators) {
+      const sepIndex = title.indexOf(sep);
+      if (sepIndex > 0 && sepIndex < 60) {
+        const prefix = title.slice(0, sepIndex).trim();
+        if (prefix.toLowerCase() === trimmedVendor) {
+          const rest = title.slice(sepIndex + sep.length).trim();
+          if (rest) {
+            transformedTitle = rest;
+            stripped = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Fallback: simple startsWith with case-insensitive check
+    if (!stripped && title.toLowerCase().startsWith(trimmedVendor)) {
+      const rest = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
+      if (rest) {
+        transformedTitle = rest;
+      }
+    }
   }
-  if (!transformedTitle) transformedTitle = title;
 
   transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
   

@@ -262,25 +262,38 @@ interface PrepareResult {
 }
 
 function normalizeTitle(title: string, vendor: string): string {
-  let normalized = title.trim();
+  const normalized = title.trim();
+  const trimmedVendor = vendor.trim().toLowerCase();
+  const separators = [' - ', ' – ', ' — ', ': ', ' | '];
 
-  // 1) Preferred: strip explicit vendor prefix
-  if (vendor && normalized.toLowerCase().startsWith(vendor.toLowerCase())) {
-    normalized = normalized.substring(vendor.length).replace(/^[\s\-–—:|]+/, '').trim();
-    return normalized || title;
+  // 1) Preferred: Find separator and compare prefix case-insensitively
+  if (trimmedVendor) {
+    for (const sep of separators) {
+      const sepIndex = normalized.indexOf(sep);
+      if (sepIndex > 0 && sepIndex < 60) {
+        const prefix = normalized.slice(0, sepIndex).trim();
+        if (prefix.toLowerCase() === trimmedVendor) {
+          const rest = normalized.slice(sepIndex + sep.length).trim();
+          if (rest) return rest;
+        }
+      }
+    }
+    
+    // Fallback: simple startsWith with case-insensitive check
+    if (normalized.toLowerCase().startsWith(trimmedVendor)) {
+      const rest = normalized.substring(vendor.length).replace(/^[\s\-–—:|]+/, '').trim();
+      if (rest) return rest;
+    }
   }
 
-  // 2) Fallback: some records have missing vendor in data, but the title is still
-  // formatted like "Brand - Product name". If vendor is empty, try to strip the
-  // first segment before a common separator.
+  // 2) If vendor is empty, try to strip the first segment before a common separator
   // This prevents splitting groups when only some variants have vendor populated.
-  const separators = [' - ', ' – ', ' — ', ': ', ' | '];
   for (const sep of separators) {
     const idx = normalized.indexOf(sep);
     if (idx > 0 && idx < 50) {
       const prefix = normalized.slice(0, idx).trim();
       const rest = normalized.slice(idx + sep.length).trim();
-      // Only strip if the prefix looks like a brand-ish token (avoid stripping long product titles)
+      // Only strip if the prefix looks like a brand-ish token
       if (prefix.length >= 2 && prefix.length <= 40 && rest.length >= 3) {
         return rest;
       }
