@@ -629,15 +629,37 @@ serve(async (req) => {
           if (uploadedInGroup) {
             primaryId = uploadedInGroup.id;
           } else {
-            const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
-            if (firstSizedVariant) {
-              primaryId = firstSizedVariant.recordId;
-            } else if (group.variants.length > 0) {
-              // Fallback to first variant record
-              primaryId = group.variants[0].recordId;
+            // Prefer a base-SKU record as primary when the group contains sized variants.
+            // Example:
+            //  - Base SKU: F00013150-grey
+            //  - Variants: F00013150-grey-S/M/L/XL
+            // The base SKU should be used for the primary PRODUCT record (metadata),
+            // but should NEVER be created as a Shopify variant when sized variants exist.
+            const baseSkuCandidate = group.recordIds
+              .map(id => allProducts.find(p => p.id === id))
+              .find(rec => {
+                const sku = String(rec?.data?.sku || '').trim();
+                if (!sku) return false;
+                // Must be unsized itself
+                const sizeFromSku = extractSizeFromSku(sku);
+                if (sizeFromSku) return false;
+                // Must be a prefix of at least one sized variant SKU
+                return group.variants.some(v => String(v.sku || '').startsWith(sku + '-'));
+              });
+
+            if (baseSkuCandidate) {
+              primaryId = baseSkuCandidate.id;
             } else {
-              // No variants at all - use first record in group
-              primaryId = group.recordIds[0];
+              const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
+              if (firstSizedVariant) {
+                primaryId = firstSizedVariant.recordId;
+              } else if (group.variants.length > 0) {
+                // Fallback to first variant record
+                primaryId = group.variants[0].recordId;
+              } else {
+                // No variants at all - use first record in group
+                primaryId = group.recordIds[0];
+              }
             }
           }
           const primaryRecord = allProducts.find(p => p.id === primaryId);
