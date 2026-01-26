@@ -197,12 +197,6 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
               </p>
             </div>
           )}
-
-          <div className="flex items-center justify-end">
-            <Button variant="outline" size="sm" onClick={() => refreshForecast(true)}>
-              Opdater forecast
-            </Button>
-          </div>
           
           {/* Product Statistics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -222,6 +216,12 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
               <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
               <p className="text-2xl font-semibold">{stats.avgVariants.toFixed(1)}</p>
             </Card>
+          </div>
+
+          <div className="flex justify-center">
+            <Button onClick={() => refreshForecast(true)}>
+              Opdater forecast
+            </Button>
           </div>
           <ProductMappingTab projectId={project.id} />
         </TabsContent>
