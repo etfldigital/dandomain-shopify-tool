@@ -19,6 +19,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingTab } from './ProductMappingTab';
 import { CustomerPreviewTab } from './CustomerPreviewTab';
 import { OrderPreviewTab } from './OrderPreviewTab';
+import { useProductForecast } from '@/hooks/useProductForecast';
 
 interface MappingStepProps {
   project: Project;
@@ -32,6 +33,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState('products');
+  const { forecast, isLoading: forecastLoading, error: forecastError, refresh: refreshForecast } = useProductForecast(project.id);
   const [stats, setStats] = useState({
     totalLines: 0,
     uniqueProducts: 0,
@@ -49,6 +51,19 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     loadData();
   }, [project.id]);
 
+  useEffect(() => {
+    if (!forecast) return;
+    // Forecast is computed via preview-only prepare-upload and cached,
+    // so these numbers are stable and match what will be created in Shopify.
+    setStats({
+      totalLines: forecast.totalLines,
+      uniqueProducts: forecast.shopifyProducts,
+      totalVariants: forecast.totalVariants,
+      avgVariants: forecast.avgVariants,
+      ungroupedCount: 0,
+    });
+  }, [forecast]);
+
   const loadData = async () => {
     setLoading(true);
     
@@ -64,54 +79,10 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     }
 
     // Load entity counts - use count queries to avoid 1000 row limit
-    const [customersCount, ordersCount, totalProductsCount, primaryCount, secondaryCount, singleVariantPrimaryCount] = await Promise.all([
+    const [customersCount, ordersCount] = await Promise.all([
       supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      // Count primary records (will become Shopify products)
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('data->>_isPrimary', 'true'),
-      // Count secondary records (variants merged into primaries)
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('data->>_isPrimary', 'false'),
-      // Count single-variant primaries (where the primary IS the only variant)
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('data->>_isPrimary', 'true')
-        .eq('data->>_variantCount', '1'),
     ]);
-
-    const totalLines = totalProductsCount.count || 0;
-    const primaries = primaryCount.count || 0;
-    const secondaries = secondaryCount.count || 0;
-    const singleVariantPrimaries = singleVariantPrimaryCount.count || 0;
-    const ungrouped = totalLines - primaries - secondaries;
-
-    // Variant calculation based on DanDomain structure:
-    // - Multi-variant products: "Hoved-SKU" (primary) is the PARENT, not a variant
-    //   Only the secondaries are actual variants
-    // - Single-variant products: The primary IS the only variant
-    // - Ungrouped: Not yet processed - we don't know how they'll group
-    
-    // Only count variants from processed records (primaries + secondaries)
-    // Ungrouped records need prepare-upload to run first
-    const totalVariants = secondaries + singleVariantPrimaries;
-    
-    // Unique products = ONLY primaries (these become Shopify products)
-    // Ungrouped records are NOT counted because prepare-upload will group them
-    const uniqueProducts = primaries;
-
-    const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
-
-    setStats({
-      totalLines,
-      uniqueProducts,
-      totalVariants,
-      avgVariants,
-      ungroupedCount: ungrouped,
-    });
 
     setEntityCounts({
       categories: categoryData?.length || 0,
@@ -177,6 +148,14 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     );
   }
 
+  if (forecastLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="text-center mb-8">
@@ -211,15 +190,19 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
         </TabsList>
 
         <TabsContent value="products" className="mt-6 space-y-6">
-          {/* Warning if ungrouped records exist */}
-          {stats.ungroupedCount > 0 && (
-            <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
-              <p className="text-sm text-warning-foreground">
-                <strong>{stats.ungroupedCount.toLocaleString('da-DK')}</strong> produkter er ikke grupperet endnu. 
-                Kør "Forbered upload" i Upload-trinnet for at se det endelige forecast.
+          {forecastError && (
+            <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-4">
+              <p className="text-sm text-destructive">
+                Kunne ikke beregne forecast: {forecastError}
               </p>
             </div>
           )}
+
+          <div className="flex items-center justify-end">
+            <Button variant="outline" size="sm" onClick={() => refreshForecast(true)}>
+              Opdater forecast
+            </Button>
+          </div>
           
           {/* Product Statistics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -230,16 +213,10 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
             <Card className="p-4">
               <p className="text-sm text-muted-foreground">Shopify produkter</p>
               <p className="text-2xl font-semibold">{stats.uniqueProducts.toLocaleString('da-DK')}</p>
-              {stats.ungroupedCount > 0 && (
-                <p className="text-xs text-muted-foreground mt-1">+ ugrupperede</p>
-              )}
             </Card>
             <Card className="p-4">
               <p className="text-sm text-muted-foreground">Varianter i alt</p>
               <p className="text-2xl font-semibold">{stats.totalVariants.toLocaleString('da-DK')}</p>
-              {stats.ungroupedCount > 0 && (
-                <p className="text-xs text-muted-foreground mt-1">+ ugrupperede</p>
-              )}
             </Card>
             <Card className="p-4">
               <p className="text-sm text-muted-foreground">Gns. varianter pr. produkt</p>
