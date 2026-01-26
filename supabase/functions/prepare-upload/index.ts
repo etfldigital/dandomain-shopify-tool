@@ -263,9 +263,30 @@ interface PrepareResult {
 
 function normalizeTitle(title: string, vendor: string): string {
   let normalized = title.trim();
+
+  // 1) Preferred: strip explicit vendor prefix
   if (vendor && normalized.toLowerCase().startsWith(vendor.toLowerCase())) {
-    normalized = normalized.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
+    normalized = normalized.substring(vendor.length).replace(/^[\s\-–—:|]+/, '').trim();
+    return normalized || title;
   }
+
+  // 2) Fallback: some records have missing vendor in data, but the title is still
+  // formatted like "Brand - Product name". If vendor is empty, try to strip the
+  // first segment before a common separator.
+  // This prevents splitting groups when only some variants have vendor populated.
+  const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+  for (const sep of separators) {
+    const idx = normalized.indexOf(sep);
+    if (idx > 0 && idx < 50) {
+      const prefix = normalized.slice(0, idx).trim();
+      const rest = normalized.slice(idx + sep.length).trim();
+      // Only strip if the prefix looks like a brand-ish token (avoid stripping long product titles)
+      if (prefix.length >= 2 && prefix.length <= 40 && rest.length >= 3) {
+        return rest;
+      }
+    }
+  }
+
   return normalized || title;
 }
 
@@ -554,43 +575,12 @@ serve(async (req) => {
       // If not preview only, update the database with grouped data
       if (!previewOnly) {
         const now = new Date().toISOString();
-        
-        // BATCH 0: RESET all existing _isPrimary flags for non-uploaded records
-        // This ensures we have a clean slate before marking the new primaries
-        // Without this, running prepare-upload multiple times leaves old primaries in place
-        console.log(`[PREPARE] Resetting ${allProducts.length} records' grouping flags...`);
-        for (let i = 0; i < allProducts.length; i += 100) {
-          const chunk = allProducts.slice(i, i + 100);
-          await Promise.all(chunk.map(p => {
-            const currentData = p.data || {};
-            // Only reset if _isPrimary is set (avoid unnecessary writes)
-            if (currentData._isPrimary !== undefined) {
-              // CRITICAL: We must explicitly delete these keys from the object
-              // Setting to undefined does NOT work because JSON.stringify ignores undefined
-              const cleanData = { ...currentData };
-              delete cleanData._isPrimary;
-              delete cleanData._variantCount;
-              delete cleanData._mergedVariants;
-              delete cleanData._mergedImages;
-              delete cleanData._groupKey;
-              delete cleanData._groupTitle;
-              delete cleanData._primaryRecordId;
-              
-              // IMPORTANT: Also update the local reference so subsequent code uses clean data
-              p.data = cleanData;
-              
-              return supabase
-                .from('canonical_products')
-                .update({ 
-                  data: cleanData,
-                  updated_at: now 
-                })
-                .eq('id', p.id);
-            }
-            return Promise.resolve();
-          }));
-        }
-        console.log(`[PREPARE] Reset complete. Now applying new grouping...`);
+
+        // PERFORMANCE NOTE:
+        // We intentionally skip the previous “reset all grouping flags” pass.
+        // That pass required ~N extra DB updates (N=allProducts) and can hit CPU limits on large datasets.
+        // Instead we overwrite grouping fields directly for every record we touch (primaries + secondaries).
+        console.log(`[PREPARE] Applying new grouping (no reset pass)...`);
         
         // BATCH 1: Mark rejected records as 'mapped' with rejection reason
         // Store the reason in error_message so users can see WHY it was skipped
@@ -629,37 +619,15 @@ serve(async (req) => {
           if (uploadedInGroup) {
             primaryId = uploadedInGroup.id;
           } else {
-            // Prefer a base-SKU record as primary when the group contains sized variants.
-            // Example:
-            //  - Base SKU: F00013150-grey
-            //  - Variants: F00013150-grey-S/M/L/XL
-            // The base SKU should be used for the primary PRODUCT record (metadata),
-            // but should NEVER be created as a Shopify variant when sized variants exist.
-            const baseSkuCandidate = group.recordIds
-              .map(id => allProducts.find(p => p.id === id))
-              .find(rec => {
-                const sku = String(rec?.data?.sku || '').trim();
-                if (!sku) return false;
-                // Must be unsized itself
-                const sizeFromSku = extractSizeFromSku(sku);
-                if (sizeFromSku) return false;
-                // Must be a prefix of at least one sized variant SKU
-                return group.variants.some(v => String(v.sku || '').startsWith(sku + '-'));
-              });
-
-            if (baseSkuCandidate) {
-              primaryId = baseSkuCandidate.id;
+            const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
+            if (firstSizedVariant) {
+              primaryId = firstSizedVariant.recordId;
+            } else if (group.variants.length > 0) {
+              // Fallback to first variant record
+              primaryId = group.variants[0].recordId;
             } else {
-              const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
-              if (firstSizedVariant) {
-                primaryId = firstSizedVariant.recordId;
-              } else if (group.variants.length > 0) {
-                // Fallback to first variant record
-                primaryId = group.variants[0].recordId;
-              } else {
-                // No variants at all - use first record in group
-                primaryId = group.recordIds[0];
-              }
+              // No variants at all - use first record in group
+              primaryId = group.recordIds[0];
             }
           }
           const primaryRecord = allProducts.find(p => p.id === primaryId);
@@ -698,8 +666,13 @@ serve(async (req) => {
               data: {
                 ...(secRecord?.data || {}),
                 _groupKey: group.key,
+                _groupTitle: group.title,
                 _isPrimary: false,
                 _primaryRecordId: primaryId,
+                // Ensure stale primary-only fields don't linger on secondaries
+                _variantCount: null,
+                _mergedVariants: null,
+                _mergedImages: null,
               }
             });
           }

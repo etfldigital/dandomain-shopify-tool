@@ -248,6 +248,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       .from('canonical_products')
       .select('*', { count: 'exact', head: true })
       .eq('project_id', projectId)
+      // Only preview PRIMARY products (grouped products)
+      // Otherwise the carousel can land on a secondary record like "...-XL" and show "ingen varianter".
+      .eq('data->>_isPrimary', 'true')
       .neq('data->>title', 'Untitled');
     
     setTotalCount(count || 0);
@@ -257,6 +260,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       .from('canonical_products')
       .select('*', { count: 'exact', head: true })
       .eq('project_id', projectId)
+      .eq('data->>_isPrimary', 'true')
       .eq('data->>title', 'Untitled');
     
     setUntitledCount(untitled || 0);
@@ -266,6 +270,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       .from('canonical_products')
       .select('id, external_id')
       .eq('project_id', projectId)
+      .eq('data->>_isPrimary', 'true')
       .neq('data->>title', 'Untitled')
       .limit(100);
 
