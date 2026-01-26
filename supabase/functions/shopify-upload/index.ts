@@ -944,7 +944,7 @@ async function uploadCategories(
       const existingId = existingCollections.get(titleLower)!;
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_id: existingId, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: existingId, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
       continue;
@@ -988,7 +988,7 @@ async function uploadCategories(
     
     await supabase
       .from('canonical_categories')
-      .update({ status: 'uploaded', shopify_id: shopifyId, updated_at: new Date().toISOString() })
+      .update({ status: 'uploaded', shopify_collection_id: shopifyId, updated_at: new Date().toISOString() })
       .eq('id', item.id);
     
     existingCollections.set(titleLower, shopifyId);
