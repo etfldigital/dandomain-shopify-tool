@@ -84,9 +84,21 @@ function isValidSizeVariant(option: string): boolean {
 
 function extractSizeFromSku(sku: string): string | null {
   if (!sku) return null;
+  
+  // PRIORITY 1: Check for size ranges anywhere in SKU (e.g., "37-39", "40-42 ny")
+  // This catches patterns like "40-42" even if followed by text
+  const sizeRangeMatch = sku.match(/(\d{2})-(\d{2})/);
+  if (sizeRangeMatch) {
+    const [_, start, end] = sizeRangeMatch;
+    const nums = [parseInt(start, 10), parseInt(end, 10)];
+    if (nums.every(n => isValidNumericSize(n))) {
+      return `${start}-${end}`;
+    }
+  }
+  
   const parts = sku.split('-');
   
-  // PRIORITY 1: Check for size ranges at the end (e.g., "37-39", "40-42")
+  // PRIORITY 2: Check for size ranges at the end of parts
   if (parts.length >= 2) {
     const lastTwo = parts.slice(-2).join('-');
     if (/^\d{2}-\d{2}$/.test(lastTwo)) {
@@ -97,7 +109,7 @@ function extractSizeFromSku(sku: string): string | null {
     }
   }
   
-  // PRIORITY 2: Look for valid size patterns, skipping product codes
+  // PRIORITY 3: Look for valid size patterns, skipping product codes
   for (let i = parts.length - 1; i >= 0; i--) {
     const part = parts[i].trim().toUpperCase();
     if (!part || part.length === 0) continue;
