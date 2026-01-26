@@ -63,7 +63,7 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     }
 
     // Load entity counts - use count queries to avoid 1000 row limit
-    const [customersCount, ordersCount, totalProductsCount, primaryCount, secondaryCount] = await Promise.all([
+    const [customersCount, ordersCount, totalProductsCount, primaryCount, secondaryCount, singleVariantPrimaryCount] = await Promise.all([
       supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
@@ -75,19 +75,28 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
       supabase.from('canonical_products').select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('data->>_isPrimary', 'false'),
+      // Count single-variant primaries (where the primary IS the only variant)
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('data->>_isPrimary', 'true')
+        .eq('data->>_variantCount', '1'),
     ]);
 
     const totalLines = totalProductsCount.count || 0;
     const primaries = primaryCount.count || 0;
     const secondaries = secondaryCount.count || 0;
+    const singleVariantPrimaries = singleVariantPrimaryCount.count || 0;
     const ungrouped = totalLines - primaries - secondaries;
 
-    // Each row in the database represents exactly one variant
-    // - Primary records: will become Shopify products (with their grouped variants)
-    // - Secondary records: are variants merged into primaries
-    // - Ungrouped records: will become single-variant products after prepare-upload
-    const totalVariants = totalLines; // Each DB row = 1 variant
-    const uniqueProducts = primaries + ungrouped; // Primaries + ungrouped become Shopify products
+    // Variant calculation based on DanDomain structure:
+    // - Multi-variant products: "Hoved-SKU" (primary) is the PARENT, not a variant
+    //   Only the secondaries are actual variants
+    // - Single-variant products: The primary IS the only variant
+    // - Ungrouped: Will become single-variant products (1 variant each)
+    const totalVariants = secondaries + singleVariantPrimaries + ungrouped;
+    
+    // Unique products = primaries + ungrouped (each will become a Shopify product)
+    const uniqueProducts = primaries + ungrouped;
 
     const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
 
