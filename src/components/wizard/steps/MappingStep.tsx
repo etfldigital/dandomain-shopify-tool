@@ -63,47 +63,31 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
     }
 
     // Load entity counts - use count queries to avoid 1000 row limit
-    const [customersCount, ordersCount, totalProductsCount] = await Promise.all([
+    const [customersCount, ordersCount, totalProductsCount, primaryCount, secondaryCount] = await Promise.all([
       supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
       supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      // Count primary records (will become Shopify products)
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('data->>_isPrimary', 'true'),
+      // Count secondary records (variants merged into primaries)
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('data->>_isPrimary', 'false'),
     ]);
 
     const totalLines = totalProductsCount.count || 0;
+    const primaries = primaryCount.count || 0;
+    const secondaries = secondaryCount.count || 0;
+    const ungrouped = totalLines - primaries - secondaries;
 
-    // Fetch products with pagination to get all variant data
-    let uniqueProducts = 0;
-    let totalVariants = 0;
-    let offset = 0;
-    const pageSize = 1000;
-    
-    while (true) {
-      const { data: productsPage } = await supabase
-        .from('canonical_products')
-        .select('data')
-        .eq('project_id', project.id)
-        .range(offset, offset + pageSize - 1);
-      
-      if (!productsPage || productsPage.length === 0) break;
-      
-      productsPage.forEach((product: any) => {
-        const data = product.data;
-        const isPrimary = data?._isPrimary === true;
-        const variantCount = data?._variantCount || 1;
-        
-        if (isPrimary) {
-          uniqueProducts++;
-          totalVariants += variantCount;
-        } else if (data?._isPrimary === undefined) {
-          // Products without grouping flags are standalone
-          uniqueProducts++;
-          totalVariants += 1;
-        }
-      });
-      
-      if (productsPage.length < pageSize) break;
-      offset += pageSize;
-    }
+    // Each row in the database represents exactly one variant
+    // - Primary records: will become Shopify products (with their grouped variants)
+    // - Secondary records: are variants merged into primaries
+    // - Ungrouped records: will become single-variant products after prepare-upload
+    const totalVariants = totalLines; // Each DB row = 1 variant
+    const uniqueProducts = primaries + ungrouped; // Primaries + ungrouped become Shopify products
 
     const avgVariants = uniqueProducts > 0 ? totalVariants / uniqueProducts : 0;
 
