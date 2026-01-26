@@ -439,19 +439,26 @@ async function processProductGroup(
   const title = String(data._groupTitle || data.title || '').trim();
   const vendor = String(data.vendor || '').trim();
   
-  // Transform title - case-insensitive vendor stripping
+  // Transform title - fuzzy case-insensitive vendor stripping
   let transformedTitle = title;
   if (vendor) {
     const trimmedVendor = vendor.trim().toLowerCase();
     const separators = [' - ', ' – ', ' — ', ': ', ' | '];
     let stripped = false;
     
-    // Try to find separator and compare prefix case-insensitively
+    // Try to find separator and compare prefix with fuzzy matching
     for (const sep of separators) {
       const sepIndex = title.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = title.slice(0, sepIndex).trim();
-        if (prefix.toLowerCase() === trimmedVendor) {
+        const prefixLower = prefix.toLowerCase();
+        
+        // Exact match OR vendor starts with the prefix (fuzzy)
+        // e.g. "moshi moshi" matches "Moshi Moshi Mind"
+        // e.g. "Rotate" matches "ROTATE Birger Christensen"
+        if (prefixLower === trimmedVendor || 
+            trimmedVendor.startsWith(prefixLower + ' ') ||
+            trimmedVendor.startsWith(prefixLower)) {
           const rest = title.slice(sepIndex + sep.length).trim();
           if (rest) {
             transformedTitle = rest;

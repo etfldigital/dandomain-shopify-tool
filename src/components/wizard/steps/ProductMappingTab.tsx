@@ -359,7 +359,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
 
-      // Transform title based on rules - case-insensitive vendor stripping
+      // Transform title based on rules - fuzzy case-insensitive vendor stripping
       let transformedTitle = data.title || '';
       const vendor = data.vendor || '';
       
@@ -368,12 +368,19 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         const separators = [' - ', ' – ', ' — ', ': ', ' | '];
         let stripped = false;
         
-        // Try to find separator and compare prefix case-insensitively
+        // Try to find separator and compare prefix with fuzzy matching
         for (const sep of separators) {
           const sepIndex = transformedTitle.indexOf(sep);
           if (sepIndex > 0 && sepIndex < 60) {
             const prefix = transformedTitle.slice(0, sepIndex).trim();
-            if (prefix.toLowerCase() === trimmedVendor) {
+            const prefixLower = prefix.toLowerCase();
+            
+            // Exact match OR vendor starts with the prefix (fuzzy)
+            // e.g. "moshi moshi" matches "Moshi Moshi Mind"
+            // e.g. "Rotate" matches "ROTATE Birger Christensen"
+            if (prefixLower === trimmedVendor || 
+                trimmedVendor.startsWith(prefixLower + ' ') ||
+                trimmedVendor.startsWith(prefixLower)) {
               const rest = transformedTitle.slice(sepIndex + sep.length).trim();
               if (rest) {
                 transformedTitle = rest;

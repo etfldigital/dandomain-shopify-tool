@@ -266,13 +266,20 @@ function normalizeTitle(title: string, vendor: string): string {
   const trimmedVendor = vendor.trim().toLowerCase();
   const separators = [' - ', ' – ', ' — ', ': ', ' | '];
 
-  // 1) Preferred: Find separator and compare prefix case-insensitively
+  // 1) Preferred: Find separator and compare prefix with fuzzy matching
   if (trimmedVendor) {
     for (const sep of separators) {
       const sepIndex = normalized.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = normalized.slice(0, sepIndex).trim();
-        if (prefix.toLowerCase() === trimmedVendor) {
+        const prefixLower = prefix.toLowerCase();
+        
+        // Exact match OR vendor starts with the prefix (fuzzy)
+        // e.g. "moshi moshi" matches "Moshi Moshi Mind"
+        // e.g. "Rotate" matches "ROTATE Birger Christensen"
+        if (prefixLower === trimmedVendor || 
+            trimmedVendor.startsWith(prefixLower + ' ') ||
+            trimmedVendor.startsWith(prefixLower)) {
           const rest = normalized.slice(sepIndex + sep.length).trim();
           if (rest) return rest;
         }
