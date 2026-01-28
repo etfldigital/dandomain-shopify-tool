@@ -47,12 +47,22 @@ function getCurrentBucketUsage(): number {
 
 /**
  * Check if we should add a small delay before the next request
+ * For orders, we always add a base delay to stay under 2 req/sec
  */
-function getPreRequestDelay(): number {
+function getPreRequestDelay(entityType?: string): number {
   const usage = getCurrentBucketUsage();
-  if (usage >= 38) return 1500; // Very full - wait a bit
-  if (usage >= 35) return 500;  // Getting full - small wait
-  return 0; // Bucket has room
+  
+  // Orders: Always throttle to ~1.5 req/sec to avoid 429 loops
+  // This is PROACTIVE throttling - prevents 429 instead of reacting to it
+  if (entityType === 'orders') {
+    if (usage >= 35) return 1000; // Bucket filling up - slow down more
+    return 600; // Base delay: ~1.5 req/sec keeps us safely under limit
+  }
+  
+  // Other entities: original behavior
+  if (usage >= 38) return 1500;
+  if (usage >= 35) return 500;
+  return 0;
 }
 
 /**
@@ -62,11 +72,12 @@ function getPreRequestDelay(): number {
 async function shopifyFetch(
   url: string,
   options: RequestInit,
-  maxRetries = 3
+  maxRetries = 3,
+  entityType?: string
 ): Promise<{ response: Response; body: string } | { rateLimited: true; retryAfterMs: number }> {
   
-  // Add small delay if bucket is getting full
-  const preDelay = getPreRequestDelay();
+  // Add delay based on entity type and bucket state
+  const preDelay = getPreRequestDelay(entityType);
   if (preDelay > 0) {
     await sleep(preDelay);
   }
@@ -1411,12 +1422,12 @@ async function uploadOrders(
       orderPayload.order.billing_address = buildAddress(data.billing_address);
     }
     
-    // Create order
+    // Create order - pass 'orders' to enable proactive throttling
     const result = await shopifyFetch(`${shopifyUrl}/orders.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
       body: JSON.stringify(orderPayload),
-    });
+    }, 3, 'orders');
     
     if ('rateLimited' in result) {
       console.log(`[ORDERS] Batch complete before rate limit. Linked=${linkedLineItems}, Unlinked=${unlinkedLineItems}`);

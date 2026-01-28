@@ -985,16 +985,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   </TooltipProvider>
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
-                    {runningJob?.next_attempt_at ? (() => {
-                      const waitMs = new Date(runningJob.next_attempt_at).getTime() - Date.now();
-                      if (waitMs > 0) {
-                        const waitSec = Math.ceil(waitMs / 1000);
-                        return `⏳ retry om ${waitSec}s`;
-                      }
-                      return '⏳ venter på næste forsøg';
-                    })() : (
-                      secondsSinceHeartbeat > 60 ? '⏳ synkroniserer…' : '⏳ venter…'
-                    )}
+                    <span className="inline-block w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
+                    Synkroniserer med Shopify…
                   </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (
