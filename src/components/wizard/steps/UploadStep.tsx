@@ -821,12 +821,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return null; // Return null when no speed available
   };
 
-  // Get current activity message - no "venter" text
+  // Get current activity message - cleaner, less technical
   const getActivityMessage = () => {
     if (isStarting) return 'Starter upload…';
-    if (!runningJob) return isPaused ? 'Paused' : '';
+    if (!runningJob) return isPaused ? 'Sat på pause' : '';
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
-    return `${label}: uploader batch ${runningJob.current_batch || 1}…`;
+    // Hide batch number - just show what's being processed
+    return `Uploader ${label.toLowerCase()}…`;
   };
 
   return (
@@ -996,11 +997,25 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </div>
                     <div>
                       <span className="font-medium">{label}</span>
-                      {!isUploading && totalFromDb > 0 && (
-                        <div className="text-xs text-muted-foreground flex gap-2">
-                          {counts.pending > 0 && <span>{counts.pending} pending</span>}
-                          {counts.uploaded > 0 && <span className="text-green-600">{counts.uploaded} uploadet</span>}
-                          {counts.failed > 0 && <span className="text-destructive">{counts.failed} fejlet</span>}
+                      {/* Clean summary showing processed breakdown */}
+                      {totalFromDb > 0 && (
+                        <div className="text-xs text-muted-foreground">
+                          {isComplete ? (
+                            <span className="text-green-600 font-medium">
+                              {total.toLocaleString('da-DK')} behandlet
+                              {counts.uploaded > 0 && ` (${counts.uploaded.toLocaleString('da-DK')} ny`}
+                              {skipped > 0 && `, ${skipped.toLocaleString('da-DK')} eksisterende`}
+                              {counts.failed > 0 && `, ${counts.failed.toLocaleString('da-DK')} fejlet`}
+                              {(counts.uploaded > 0 || skipped > 0 || counts.failed > 0) && ')'}
+                            </span>
+                          ) : (
+                            <span>
+                              {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
+                              {counts.uploaded > 0 && <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>}
+                              {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
+                              {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1073,8 +1088,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     segments={[
                       { 
                         value: counts.uploaded, 
-                        className: "bg-primary",
+                        className: "bg-green-500",
                         label: `${counts.uploaded} uploadet` 
+                      },
+                      { 
+                        value: skipped, 
+                        className: "bg-amber-400",
+                        label: `${skipped} sprunget over (allerede i Shopify)` 
                       },
                       { 
                         value: counts.failed, 
