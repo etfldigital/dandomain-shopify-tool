@@ -870,26 +870,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (isStarting) return 'Starter upload…';
     if (!runningJob) {
       if (isPaused) return 'Sat på pause';
-      // Check if any job is waiting for retry
-      const waitingJob = jobs.find(j => j.status === 'running' && j.next_attempt_at);
-      if (waitingJob && waitingJob.next_attempt_at) {
-        const waitMs = new Date(waitingJob.next_attempt_at).getTime() - Date.now();
-        const waitSec = Math.max(0, Math.ceil(waitMs / 1000));
-        return `Venter på Shopify (retry om ${waitSec}s)`;
-      }
       return '';
     }
     
-    // Show waiting state if next_attempt_at is set (rate-limited)
+    const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
+    
+    // If currently rate-limited or waiting - show friendly message without countdown
     if (runningJob.next_attempt_at) {
       const waitMs = new Date(runningJob.next_attempt_at).getTime() - Date.now();
       if (waitMs > 0) {
-        const waitSec = Math.ceil(waitMs / 1000);
-        return `Venter på Shopify (retry om ${waitSec}s)`;
+        return `Synkroniserer ${label.toLowerCase()} med Shopify…`;
       }
     }
     
-    const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
+    // Normal processing message
     return `Uploader ${label.toLowerCase()}…`;
   };
 
@@ -926,14 +920,44 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       {/* Background processing info banner - only show while actively uploading */}
       {isUploading && !allCompleted && (
         <Card className="border-primary/50 bg-primary/5">
-          <CardContent className="pt-4">
+          <CardContent className="pt-4 pb-4">
             <div className="flex items-start gap-3">
-              <Cloud className="w-5 h-5 text-primary mt-0.5" />
-              <div>
-                <p className="font-medium text-foreground">Upload kører i baggrunden</p>
-                <p className="text-sm text-muted-foreground">
-                  Du kan trygt lukke browseren – upload fortsætter automatisk på serveren.
+              <Cloud className="w-5 h-5 text-primary mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-foreground">Upload kører automatisk i baggrunden</p>
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className={`w-2 h-2 rounded-full ${
+                      secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'
+                    } animate-pulse`} />
+                    {secondsSinceHeartbeat > 60 ? 'Venter på Shopify' : 'Arbejder'}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Du kan trygt lukke browseren – serveren fortsætter automatisk, også ved rate-limits.
                 </p>
+                {/* Live processing stats */}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-2">
+                  {runningJob && (
+                    <>
+                      <span>
+                        <span className="font-medium text-foreground">{runningJob.processed_count.toLocaleString('da-DK')}</span>
+                        {' / '}
+                        {runningJob.total_count.toLocaleString('da-DK')} behandlet
+                      </span>
+                      {currentSpeed > 0 && (
+                        <span>
+                          ~{formatSpeed(currentSpeed)}
+                        </span>
+                      )}
+                      {etaMinutes != null && totalRemainingItems > 0 && (
+                        <span>
+                          ~{formatEta(etaMinutes)} tilbage
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </CardContent>
@@ -986,7 +1010,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
                     <span className="inline-block w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
-                    Synkroniserer med Shopify…
+                    {runningJob?.next_attempt_at ? 'Synkroniserer med Shopify…' : 'Forbereder næste batch…'}
                   </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (
