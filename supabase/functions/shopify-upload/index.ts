@@ -55,8 +55,9 @@ function getPreRequestDelay(entityType?: string): number {
   // Orders: Always throttle to ~1.5 req/sec to avoid 429 loops
   // This is PROACTIVE throttling - prevents 429 instead of reacting to it
   if (entityType === 'orders') {
-    if (usage >= 35) return 1000; // Bucket filling up - slow down more
-    return 600; // Base delay: ~1.5 req/sec keeps us safely under limit
+    // Orders often require multiple API calls per record; be extra conservative.
+    if (usage >= 35) return 1500; // Bucket filling up - slow down more
+    return 900; // Base delay: keep well under 2 req/sec effective
   }
   
   // Other entities: original behavior
@@ -93,7 +94,11 @@ async function shopifyFetch(
       // Handle rate limiting - DON'T throw, return gracefully
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
-        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
+        let waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
+        // Orders are especially rate-limit prone; ensure we actually give the bucket time to recover.
+        if (entityType === 'orders') {
+          waitMs = Math.max(waitMs, 8000);
+        }
         console.log(`[SHOPIFY] Rate limited (429), need to wait ${Math.round(waitMs/1000)}s`);
         return { rateLimited: true, retryAfterMs: waitMs };
       }

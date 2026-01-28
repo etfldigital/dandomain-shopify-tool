@@ -250,25 +250,26 @@ serve(async (req) => {
 
         console.log(`[WORKER] Processing ${job.entity_type} (${job.processed_count}/${job.total_count})`);
 
+        const getRetryMs = (entityType: string, retryAfterSeconds?: number | null) => {
+          const raw = Math.max(0, (retryAfterSeconds || 0) * 1000);
+          // Orders are extra sensitive: multiple API calls per order can blow past limits fast.
+          const min = entityType === 'orders' ? 8_000 : 3_000;
+          const jitter = Math.floor(Math.random() * 750); // avoid sync-thundering herd
+          // Cap to keep things moving; watchdog can still recover if needed.
+          return Math.min(Math.max(raw, min) + jitter, 60_000);
+        };
+
         // If scheduled retry is in future, wait
         if (job.next_attempt_at) {
           const waitMs = new Date(job.next_attempt_at).getTime() - Date.now();
-          if (waitMs > 500) {
+          if (waitMs > 0) {
             await supabase
               .from('upload_jobs')
               .update({ last_heartbeat_at: new Date().toISOString() })
               .eq('id', jobId);
 
-            runInBackground((async () => {
-              await sleep(waitMs);
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-                body: JSON.stringify({ jobId, action: 'process' }),
-              });
-            })());
-
+            // IMPORTANT: Do NOT self-schedule here.
+            // Multiple concurrent invocations can otherwise stack up and create a 429 loop.
             return new Response(JSON.stringify({ 
               success: true, waiting: true, waitSeconds: Math.ceil(waitMs / 1000) 
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -437,10 +438,12 @@ serve(async (req) => {
         };
 
         // Handle rate limiting
+        let scheduledRetryMs: number | null = null;
         if (result.rateLimited && result.retryAfterSeconds) {
-          const retryMs = Math.min(result.retryAfterSeconds * 1000, 10000);
+          const retryMs = getRetryMs(job.entity_type, result.retryAfterSeconds);
+          scheduledRetryMs = retryMs;
           updateData.next_attempt_at = new Date(Date.now() + retryMs).toISOString();
-          console.log(`[WORKER] Rate limited, waiting ${Math.ceil(retryMs/1000)}s`);
+          console.log(`[WORKER] Rate limited, backing off ${Math.ceil(retryMs / 1000)}s (entity=${job.entity_type})`);
         }
 
         // Merge error details (filter transient messages)
@@ -467,8 +470,10 @@ serve(async (req) => {
 
         // Schedule next batch or start next entity
         if (hasMore) {
-          const delayMs = result.rateLimited && result.retryAfterSeconds 
-            ? Math.min(result.retryAfterSeconds * 1000, 10000)
+          // IMPORTANT: if we are rate-limited, schedule AFTER next_attempt_at (with a small safety buffer)
+          // so we don't call too early and accidentally create a 429 loop.
+          const delayMs = scheduledRetryMs != null
+            ? scheduledRetryMs + 250
             : WORKER_SCHEDULE_DELAY_MS;
 
           runInBackground((async () => {
@@ -512,11 +517,10 @@ serve(async (req) => {
               });
               console.log(`[WORKER] Started next job: ${nextJob.entity_type}`);
             })());
-          } else {
-            // All done - update project status
-            await supabase.from('projects').update({ status: 'ready' }).eq('id', job.project_id);
-            console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
-          }
+            } else {
+              // All done - keep existing project status behavior elsewhere
+              console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+            }
         }
 
         return new Response(JSON.stringify({
