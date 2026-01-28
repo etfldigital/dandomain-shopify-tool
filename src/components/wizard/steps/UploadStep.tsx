@@ -164,6 +164,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
+  
+  // ANTI-FLICKER: Throttle realtime updates to prevent UI hopping
+  const lastRealtimeUpdateRef = useRef<number>(0);
+  const pendingRealtimeJobRef = useRef<UploadJob | null>(null);
+  
+  // Stable displayed values - only update every 3s to prevent visual flicker
+  const [stableJob, setStableJob] = useState<UploadJob | null>(null);
+  const stableJobUpdateRef = useRef<number>(0);
 
   // Status counts cached to avoid excessive DB queries
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
@@ -240,7 +248,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchJobs();
     fetchStatusCounts();
 
-    // Realtime subscription to job updates
+    // ANTI-FLICKER: Throttled realtime subscription
+    // Instead of updating state on every payload, we batch updates
+    const THROTTLE_MS = 2000; // Only allow UI updates every 2 seconds
+    
     const channel = supabase
       .channel(`upload_jobs_${project.id}`)
       .on(
@@ -252,15 +263,26 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           filter: `project_id=eq.${project.id}`,
         },
         (payload) => {
-          console.log('Job update:', payload);
+          const now = Date.now();
+          
           if (payload.eventType === 'INSERT') {
+            // Inserts always apply immediately
             setJobs(prev => [...prev, toUploadJob(payload.new)]);
           } else if (payload.eventType === 'UPDATE') {
             const updated = toUploadJob(payload.new);
-            setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
+            
+            // Store the latest pending update
+            pendingRealtimeJobRef.current = updated;
+            
+            // Throttle: only update UI if enough time has passed
+            if (now - lastRealtimeUpdateRef.current >= THROTTLE_MS) {
+              lastRealtimeUpdateRef.current = now;
+              setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
+            }
           } else if (payload.eventType === 'DELETE') {
             setJobs(prev => prev.filter(j => j.id !== (payload.old as { id: string }).id));
           }
+          
           // Refresh counts only when jobs complete/fail (not on every heartbeat)
           const updated = toUploadJob(payload.new);
           if (updated && (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled')) {
@@ -275,27 +297,34 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
   }, [project.id]);
 
-  // UI timer + minimal polling
+  // UI timer + minimal polling + ANTI-FLICKER flush
   useEffect(() => {
     const hasActiveJobs = jobs.some(j => j.status === 'running' || j.status === 'paused');
     if (!hasActiveJobs) return;
     
-    // UI time for smooth ETA display
-    const uiTimer = window.setInterval(() => setUiNow(Date.now()), 1000);
+    // UI time for smooth ETA display - update every 3s instead of 1s to reduce re-renders
+    const uiTimer = window.setInterval(() => setUiNow(Date.now()), 3000);
     
-    // Light polling every 10 seconds (reduced from 3s)
+    // ANTI-FLICKER: Flush any pending realtime updates that were throttled
+    const flushTimer = window.setInterval(() => {
+      if (pendingRealtimeJobRef.current) {
+        const pending = pendingRealtimeJobRef.current;
+        pendingRealtimeJobRef.current = null;
+        lastRealtimeUpdateRef.current = Date.now();
+        setJobs(prev => prev.map(j => j.id === pending.id ? pending : j));
+      }
+    }, 3000);
+    
+    // Light polling every 15 seconds (increased from 10s for less flicker)
     const pollTimer = window.setInterval(() => {
       fetchJobs();
       fetchStatusCounts(); // Throttled internally
-    }, 10_000);
+    }, 15_000);
 
     // Watchdog for stalled jobs
     const runWatchdog = async () => {
       const stillHasRunning = jobs.some(j => j.status === 'running');
-      if (!stillHasRunning) {
-        console.log('[UploadStep] No running jobs, skipping watchdog');
-        return;
-      }
+      if (!stillHasRunning) return;
       
       try {
         const { error } = await supabase.functions.invoke('job-watchdog');
@@ -310,10 +339,32 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     
     return () => {
       window.clearInterval(uiTimer);
+      window.clearInterval(flushTimer);
       window.clearInterval(pollTimer);
       window.clearInterval(watchdogTimer);
     };
   }, [jobs]);
+  
+  // ANTI-FLICKER: Update stable job reference only when values change significantly
+  useEffect(() => {
+    const runningJob = jobs.find(j => j.status === 'running');
+    if (!runningJob) {
+      setStableJob(null);
+      return;
+    }
+    
+    const now = Date.now();
+    const STABLE_UPDATE_INTERVAL = 3000; // Only update displayed values every 3s
+    
+    // Always update if no stable job or if status/entity changed
+    if (!stableJob || 
+        stableJob.id !== runningJob.id || 
+        stableJob.status !== runningJob.status ||
+        now - stableJobUpdateRef.current >= STABLE_UPDATE_INTERVAL) {
+      stableJobUpdateRef.current = now;
+      setStableJob(runningJob);
+    }
+  }, [jobs, stableJob]);
 
   const fetchJobs = async () => {
     const { data } = await supabase
@@ -917,7 +968,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         </Card>
       )}
 
-      {/* Background processing info banner - only show while actively uploading */}
+      {/* Background processing info banner - STABILIZED with stableJob to prevent flicker */}
       {isUploading && !allCompleted && (
         <Card className="border-primary/50 bg-primary/5">
           <CardContent className="pt-4 pb-4">
@@ -936,23 +987,34 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 <p className="text-sm text-muted-foreground mt-1">
                   Du kan trygt lukke browseren – serveren fortsætter automatisk, også ved rate-limits.
                 </p>
-                {/* Live processing stats */}
+                {/* Live processing stats - use stableJob to prevent number flickering */}
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-2">
-                  {runningJob && (
+                  {(stableJob || runningJob) && (
                     <>
                       <span>
-                        <span className="font-medium text-foreground">{runningJob.processed_count.toLocaleString('da-DK')}</span>
+                        <span className="font-medium text-foreground tabular-nums">
+                          {(stableJob?.processed_count ?? runningJob?.processed_count ?? 0).toLocaleString('da-DK')}
+                        </span>
                         {' / '}
-                        {runningJob.total_count.toLocaleString('da-DK')} behandlet
+                        <span className="tabular-nums">
+                          {(stableJob?.total_count ?? runningJob?.total_count ?? 0).toLocaleString('da-DK')}
+                        </span>
+                        {' behandlet'}
                       </span>
                       {currentSpeed > 0 && (
-                        <span>
+                        <span className="tabular-nums">
                           ~{formatSpeed(currentSpeed)}
                         </span>
                       )}
                       {etaMinutes != null && totalRemainingItems > 0 && (
-                        <span>
+                        <span className="tabular-nums">
                           ~{formatEta(etaMinutes)} tilbage
+                        </span>
+                      )}
+                      {/* Last activity timestamp for reassurance */}
+                      {runningJob?.last_heartbeat_at && (
+                        <span className="text-muted-foreground/70">
+                          Seneste aktivitet: {secondsSinceHeartbeat < 5 ? 'nu' : `${secondsSinceHeartbeat}s siden`}
                         </span>
                       )}
                     </>
@@ -973,7 +1035,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               : 'Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer'
             }
           </CardDescription>
-          {/* Only show live stats while actively uploading, NOT when completed */}
+          {/* Only show live stats while actively uploading, NOT when completed - STABILIZED */}
           {(isUploading || isStarting) && !allCompleted && (
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               <div className="flex items-center gap-2">
@@ -993,15 +1055,15 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="text-primary font-medium cursor-help flex items-center gap-1">
+                        <span className="text-primary font-medium cursor-help flex items-center gap-1 tabular-nums">
                           ⚡ {formatSpeed(currentSpeed)}
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
                         <p>{liveSpeed ? 'Live hastighed (sidste 60 sek)' : 'Seneste batch-hastighed'}</p>
-                        {runningJob?.last_batch_items && runningJob?.last_batch_duration_ms && (
+                        {(stableJob || runningJob)?.last_batch_items && (stableJob || runningJob)?.last_batch_duration_ms && (
                           <p className="text-muted-foreground text-xs mt-1">
-                            {runningJob.last_batch_items} items på {Math.round(runningJob.last_batch_duration_ms / 1000)}s
+                            {(stableJob || runningJob)?.last_batch_items} items på {Math.round(((stableJob || runningJob)?.last_batch_duration_ms ?? 0) / 1000)}s
                           </p>
                         )}
                       </TooltipContent>
@@ -1017,7 +1079,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help">
+                        <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help tabular-nums">
                           ~{formatEta(etaMinutes)} tilbage
                         </span>
                       </TooltipTrigger>
