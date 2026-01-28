@@ -251,12 +251,11 @@ serve(async (req) => {
         console.log(`[WORKER] Processing ${job.entity_type} (${job.processed_count}/${job.total_count})`);
 
         const getRetryMs = (entityType: string, retryAfterSeconds?: number | null) => {
+          // Use Shopify's suggested retry time, or default minimum
           const raw = Math.max(0, (retryAfterSeconds || 0) * 1000);
-          // Orders are extra sensitive: multiple API calls per order can blow past limits fast.
-          const min = entityType === 'orders' ? 8_000 : 3_000;
-          const jitter = Math.floor(Math.random() * 750); // avoid sync-thundering herd
-          // Cap to keep things moving; watchdog can still recover if needed.
-          return Math.min(Math.max(raw, min) + jitter, 60_000);
+          const min = 2000; // 2s minimum - Shopify bucket refills at 2 req/s
+          const jitter = Math.floor(Math.random() * 500);
+          return Math.min(Math.max(raw, min) + jitter, 30_000);
         };
 
         // If scheduled retry is in future, wait

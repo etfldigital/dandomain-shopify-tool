@@ -47,22 +47,23 @@ function getCurrentBucketUsage(): number {
 
 /**
  * Check if we should add a small delay before the next request
- * For orders, we always add a base delay to stay under 2 req/sec
+ * Strategy: Only throttle when bucket is actually filling up.
+ * Shopify allows 2 req/sec sustained - we can safely do ~1.5 req/sec baseline.
  */
 function getPreRequestDelay(entityType?: string): number {
   const usage = getCurrentBucketUsage();
   
-  // Orders: Always throttle to ~1.5 req/sec to avoid 429 loops
-  // This is PROACTIVE throttling - prevents 429 instead of reacting to it
+  // Graduated throttling based on bucket usage
+  // Bucket size is 40, leak rate is 2/sec
+  if (usage >= 38) return 1000;  // Almost full - pause 1s
+  if (usage >= 35) return 500;   // Getting full - slow down
+  if (usage >= 30) return 200;   // Moderate usage - small delay
+  
+  // Orders: small baseline delay to smooth out bursts
   if (entityType === 'orders') {
-    // Orders often require multiple API calls per record; be extra conservative.
-    if (usage >= 35) return 1500; // Bucket filling up - slow down more
-    return 900; // Base delay: keep well under 2 req/sec effective
+    return 100; // 100ms baseline = ~10 req/sec max burst, but bucket limits us to ~2/sec sustained
   }
   
-  // Other entities: original behavior
-  if (usage >= 38) return 1500;
-  if (usage >= 35) return 500;
   return 0;
 }
 
@@ -94,11 +95,8 @@ async function shopifyFetch(
       // Handle rate limiting - DON'T throw, return gracefully
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
-        let waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
-        // Orders are especially rate-limit prone; ensure we actually give the bucket time to recover.
-        if (entityType === 'orders') {
-          waitMs = Math.max(waitMs, 8000);
-        }
+        // Use Shopify's suggested retry time, or default to 2s
+        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
         console.log(`[SHOPIFY] Rate limited (429), need to wait ${Math.round(waitMs/1000)}s`);
         return { rateLimited: true, retryAfterMs: waitMs };
       }
