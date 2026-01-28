@@ -1115,6 +1115,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               ? getLiveProcessedCount(job, processedActual)
               : processedActual;
             const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
+
+            // UI-only: show when worker is waiting for next attempt (rate limit/backoff)
+            const waitMs = job?.status === 'running' && job?.next_attempt_at
+              ? new Date(job.next_attempt_at).getTime() - uiNow
+              : 0;
+            const isWaiting = Number.isFinite(waitMs) && waitMs > 0;
             
             // CRITICAL: Job is ONLY complete when pending = 0
             // This ensures the progress bar reaches 100% before showing green checkmark
@@ -1169,6 +1175,31 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
                               {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Extra clarity during uploads: DB-confirmed vs worker progress */}
+                      {isUploading && job?.status === 'running' && (
+                        <div className="mt-1 text-[11px] text-muted-foreground/80">
+                          <span className="tabular-nums">
+                            Server: {job.processed_count.toLocaleString('da-DK')} / {job.total_count.toLocaleString('da-DK')} gennemløbet
+                          </span>
+                          <span className="mx-2">•</span>
+                          <span className="tabular-nums">
+                            Bekræftet: {processedActual.toLocaleString('da-DK')} / {total.toLocaleString('da-DK')}
+                          </span>
+                          {isWaiting && (
+                            <>
+                              <span className="mx-2">•</span>
+                              <span>Venter på Shopify (genoptager automatisk)</span>
+                            </>
+                          )}
+                          {isEstimated && !isWaiting && (
+                            <>
+                              <span className="mx-2">•</span>
+                              <span>Opdaterer…</span>
+                            </>
                           )}
                         </div>
                       )}
