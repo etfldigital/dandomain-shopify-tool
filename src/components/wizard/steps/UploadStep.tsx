@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -165,7 +165,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
 
-  // Status counts for each entity type (for the menu)
+  // Status counts cached to avoid excessive DB queries
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
     products: { pending: 0, uploaded: 0, failed: 0 },
     customers: { pending: 0, uploaded: 0, failed: 0 },
@@ -173,6 +173,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     categories: { pending: 0, uploaded: 0, failed: 0 },
     pages: { pending: 0, uploaded: 0, failed: 0 },
   });
+  const lastCountsFetchRef = useRef<number>(0);
+  const autoRecoverRef = useRef<Record<string, number>>({}); // jobId -> last auto recover ts
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
@@ -182,8 +184,15 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     count: number;
   }>({ open: false, entityType: null, scope: null, count: 0 });
 
-  // Fetch status counts for all entity types
+  // Fetch status counts - CACHED to avoid overloading DB
   const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
+    // Throttle: avoid hammering DB (this was causing UI "freeze" feelings)
+    const now = Date.now();
+    if (now - lastCountsFetchRef.current < 15_000) {
+      return statusCounts;
+    }
+    lastCountsFetchRef.current = now;
+    
     const counts: Record<EntityType, StatusCounts> = {
       products: { pending: 0, uploaded: 0, failed: 0 },
       customers: { pending: 0, uploaded: 0, failed: 0 },
@@ -226,13 +235,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
-  // Subscribe to job updates via realtime
   useEffect(() => {
     // Initial fetch
     fetchJobs();
     fetchStatusCounts();
 
-    // Subscribe to realtime updates
+    // Realtime subscription to job updates
     const channel = supabase
       .channel(`upload_jobs_${project.id}`)
       .on(
@@ -253,8 +261,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           } else if (payload.eventType === 'DELETE') {
             setJobs(prev => prev.filter(j => j.id !== (payload.old as { id: string }).id));
           }
-          // Also refresh status counts periodically
-          fetchStatusCounts();
+          // Refresh counts only when jobs complete/fail (not on every heartbeat)
+          const updated = toUploadJob(payload.new);
+          if (updated && (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled')) {
+            fetchStatusCounts();
+          }
         }
       )
       .subscribe();
@@ -264,24 +275,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
   }, [project.id]);
 
-  // Heartbeat timer for UI updates + fallback polling
+  // UI timer + minimal polling
   useEffect(() => {
     const hasActiveJobs = jobs.some(j => j.status === 'running' || j.status === 'paused');
     if (!hasActiveJobs) return;
     
-    // Update UI time every second for smooth animations
+    // UI time for smooth ETA display
     const uiTimer = window.setInterval(() => setUiNow(Date.now()), 1000);
     
-    // Fallback polling every 3 seconds for more frequent count updates
+    // Light polling every 10 seconds (reduced from 3s)
     const pollTimer = window.setInterval(() => {
       fetchJobs();
-      fetchStatusCounts();
-    }, 3000);
+      fetchStatusCounts(); // Throttled internally
+    }, 10_000);
 
-    // Safety net: regularly run watchdog to restart jobs if a batch gets stuck.
-    // ONLY runs when we have active jobs (running/paused) to prevent unwanted restarts.
+    // Watchdog for stalled jobs
     const runWatchdog = async () => {
-      // Double-check we still have running jobs before calling watchdog
       const stillHasRunning = jobs.some(j => j.status === 'running');
       if (!stillHasRunning) {
         console.log('[UploadStep] No running jobs, skipping watchdog');
@@ -292,12 +301,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         const { error } = await supabase.functions.invoke('job-watchdog');
         if (error) throw error;
       } catch (e) {
-        // Silent fail: watchdog is best-effort; polling + user controls still work.
         console.warn('[UploadStep] job-watchdog failed:', e);
       }
     };
 
-    // Run watchdog on interval only (not immediately - let user control initial start)
+    // Watchdog interval
     const watchdogTimer = window.setInterval(runWatchdog, WATCHDOG_INTERVAL_MS);
     
     return () => {
@@ -692,6 +700,42 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const secondsSinceHeartbeat = runningJob?.last_heartbeat_at 
     ? Math.max(0, Math.floor((uiNow - new Date(runningJob.last_heartbeat_at).getTime()) / 1000))
     : 0;
+
+  // Auto-recovery: if we have a running job that hasn't heartbeated for a while AND no retry is scheduled,
+  // trigger a force-restart. This removes the need for manual stop/start loops.
+  useEffect(() => {
+    if (!runningJob) return;
+    if (runningJob.status !== 'running') return;
+
+    // If the worker has scheduled a retry (rate limit/backoff), don't interfere.
+    if (runningJob.next_attempt_at) {
+      const nextMs = new Date(runningJob.next_attempt_at).getTime();
+      if (Number.isFinite(nextMs) && nextMs > Date.now()) return;
+    }
+
+    // Conservative stall threshold
+    const STALL_SECONDS = 120;
+    if (secondsSinceHeartbeat < STALL_SECONDS) return;
+
+    const last = autoRecoverRef.current[runningJob.id] ?? 0;
+    const COOLDOWN_MS = 5 * 60_000;
+    if (Date.now() - last < COOLDOWN_MS) return;
+
+    autoRecoverRef.current[runningJob.id] = Date.now();
+
+    (async () => {
+      try {
+        console.log('[UploadStep] Auto-recover: force-restart', { jobId: runningJob.id, entity: runningJob.entity_type });
+        const { error } = await supabase.functions.invoke('upload-worker', {
+          body: { projectId: project.id, action: 'force-restart' },
+        });
+        if (error) throw error;
+        toast.info('Upload fortsætter automatisk – processen blev genstartet.');
+      } catch (e) {
+        console.warn('[UploadStep] Auto-recover failed:', e);
+      }
+    })();
+  }, [runningJob?.id, runningJob?.status, runningJob?.next_attempt_at, secondsSinceHeartbeat, project.id]);
   
   // Track speed history for live calculation
   useEffect(() => {
@@ -821,12 +865,31 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return null; // Return null when no speed available
   };
 
-  // Get current activity message - cleaner, less technical
+  // Activity message with better retry/waiting states
   const getActivityMessage = () => {
     if (isStarting) return 'Starter upload…';
-    if (!runningJob) return isPaused ? 'Sat på pause' : '';
+    if (!runningJob) {
+      if (isPaused) return 'Sat på pause';
+      // Check if any job is waiting for retry
+      const waitingJob = jobs.find(j => j.status === 'running' && j.next_attempt_at);
+      if (waitingJob && waitingJob.next_attempt_at) {
+        const waitMs = new Date(waitingJob.next_attempt_at).getTime() - Date.now();
+        const waitSec = Math.max(0, Math.ceil(waitMs / 1000));
+        return `Venter på Shopify (retry om ${waitSec}s)`;
+      }
+      return '';
+    }
+    
+    // Show waiting state if next_attempt_at is set (rate-limited)
+    if (runningJob.next_attempt_at) {
+      const waitMs = new Date(runningJob.next_attempt_at).getTime() - Date.now();
+      if (waitMs > 0) {
+        const waitSec = Math.ceil(waitMs / 1000);
+        return `Venter på Shopify (retry om ${waitSec}s)`;
+      }
+    }
+    
     const label = ENTITY_CONFIG.find(e => e.type === runningJob.entity_type)?.label || runningJob.entity_type;
-    // Hide batch number - just show what's being processed
     return `Uploader ${label.toLowerCase()}…`;
   };
 
@@ -895,8 +958,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               </div>
               <div className="flex items-center gap-4 text-muted-foreground">
                 <span className="flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
-                  <span className="text-sm">{secondsSinceHeartbeat > 60 ? 'Synkroniserer' : 'Aktiv'}</span>
+                  <span className={`w-2 h-2 rounded-full ${
+                    secondsSinceHeartbeat > 60 ? 'bg-warning' : 'bg-success'
+                  } animate-pulse`} />
+                  <span className="text-sm">
+                    {secondsSinceHeartbeat > 60 ? 'Synkroniserer' : 'Aktiv'}
+                  </span>
                 </span>
                 {currentSpeed > 0 ? (
                   <TooltipProvider>
@@ -918,7 +985,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                   </TooltipProvider>
                 ) : (
                   <span className="text-muted-foreground font-medium flex items-center gap-1">
-                    ⚡ beregner…
+                    {runningJob?.next_attempt_at ? (() => {
+                      const waitMs = new Date(runningJob.next_attempt_at).getTime() - Date.now();
+                      if (waitMs > 0) {
+                        const waitSec = Math.ceil(waitMs / 1000);
+                        return `⏳ retry om ${waitSec}s`;
+                      }
+                      return '⏳ venter på næste forsøg';
+                    })() : (
+                      secondsSinceHeartbeat > 60 ? '⏳ synkroniserer…' : '⏳ venter…'
+                    )}
                   </span>
                 )}
                 {etaMinutes != null && totalRemainingItems > 0 && (
