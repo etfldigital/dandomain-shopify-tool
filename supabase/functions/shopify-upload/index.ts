@@ -215,6 +215,14 @@ const sessionProductCache: Map<string, string> = new Map();
 // Cache for category external_id -> shopify_tag mapping
 let categoryTagCache: Map<string, string> = new Map();
 
+// ============================================================================
+// SKU -> SHOPIFY ID TRANSLATION MAP
+// ============================================================================
+// This map is built during product upload and used during order upload
+// to link line items to their actual Shopify products/variants
+// Key: SKU or external_id, Value: { productId, variantId }
+const skuToShopifyMap: Map<string, { productId: string; variantId: string }> = new Map();
+
 /**
  * Load category tags from database for a project.
  * Maps category external_id to shopify_tag for fast lookup.
@@ -815,6 +823,48 @@ async function processProductGroup(
   
   sessionProductCache.set(titleLower, shopifyId);
 
+  // ============================================================================
+  // BUILD SKU -> SHOPIFY ID TRANSLATION MAP
+  // ============================================================================
+  // Map each variant's SKU to its Shopify product/variant IDs
+  // This enables order line items to link correctly to products
+  const shopifyVariants = responseData.product.variants || [];
+  for (const sv of shopifyVariants) {
+    const sku = String(sv.sku || '').trim();
+    if (sku) {
+      skuToShopifyMap.set(sku, {
+        productId: shopifyId,
+        variantId: String(sv.id),
+      });
+    }
+  }
+  
+  // Also map by external_id for fallback lookup during order import
+  for (const item of items) {
+    const extId = String(item.external_id || '').trim();
+    if (extId && !skuToShopifyMap.has(extId)) {
+      // Find matching variant by SKU
+      const itemSku = String(item.data?.sku || '').trim();
+      const matchingVariant = shopifyVariants.find((sv: any) => 
+        String(sv.sku || '').trim().toLowerCase() === itemSku.toLowerCase()
+      );
+      if (matchingVariant) {
+        skuToShopifyMap.set(extId, {
+          productId: shopifyId,
+          variantId: String(matchingVariant.id),
+        });
+      } else if (shopifyVariants.length > 0) {
+        // Default to first variant if no SKU match
+        skuToShopifyMap.set(extId, {
+          productId: shopifyId,
+          variantId: String(shopifyVariants[0].id),
+        });
+      }
+    }
+  }
+  
+  console.log(`[PRODUCTS] "${transformedTitle}": mapped ${shopifyVariants.length} variant SKUs to Shopify IDs`);
+
   // If we had to drop images due to a 422 Image error, try to add them back one-by-one.
   // This avoids losing ALL images because a single URL was invalid.
   if (initialImageCount > 0 && (productPayload?.product?.images || []).length === 0 && allImages.length > 0) {
@@ -852,9 +902,20 @@ async function processProductGroup(
     console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair done. Added=${added}, Failed=${failed}`);
   }
 
-  // Update all items
+  // Update all items with Shopify variant IDs for future order linking
   for (const item of items) {
-    const updatedData = { ...item.data, shopify_handle: shopifyHandle };
+    const itemSku = String(item.data?.sku || '').trim();
+    const matchingVariant = shopifyVariants.find((sv: any) => 
+      String(sv.sku || '').trim().toLowerCase() === itemSku.toLowerCase()
+    );
+    const shopifyVariantId = matchingVariant ? String(matchingVariant.id) : (shopifyVariants[0] ? String(shopifyVariants[0].id) : null);
+    
+    const updatedData = { 
+      ...item.data, 
+      shopify_handle: shopifyHandle,
+      _shopify_product_id: shopifyId,
+      _shopify_variant_id: shopifyVariantId,
+    };
     await supabase
       .from('canonical_products')
       .update({ status: 'uploaded', shopify_id: shopifyId, data: updatedData, updated_at: new Date().toISOString() })
@@ -1168,6 +1229,61 @@ async function uploadCustomers(
 
 const orderCustomerCache: Map<string, string> = new Map();
 
+// Cache for SKU/external_id -> {productId, variantId} loaded from DB
+const orderProductCache: Map<string, { productId: string; variantId: string }> = new Map();
+
+async function loadProductMappingForOrders(supabase: any, projectId: string): Promise<void> {
+  // Load all uploaded products with their Shopify IDs
+  // We need to map SKUs to Shopify product/variant IDs for order line items
+  if (orderProductCache.size > 0) return; // Already loaded
+  
+  console.log('[ORDERS] Loading product SKU -> Shopify ID mapping...');
+  
+  let page = 0;
+  const pageSize = 1000;
+  let totalLoaded = 0;
+  
+  while (true) {
+    const { data: products, error } = await supabase
+      .from('canonical_products')
+      .select('external_id, shopify_id, data')
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .range(page * pageSize, (page + 1) * pageSize - 1);
+    
+    if (error) {
+      console.error('[ORDERS] Error loading product mapping:', error.message);
+      break;
+    }
+    
+    if (!products || products.length === 0) break;
+    
+    for (const p of products) {
+      const shopifyProductId = p.shopify_id ? String(p.shopify_id) : null;
+      const shopifyVariantId = p.data?._shopify_variant_id ? String(p.data._shopify_variant_id) : null;
+      const sku = String(p.data?.sku || '').trim();
+      const extId = String(p.external_id || '').trim();
+      
+      if (shopifyProductId && shopifyVariantId) {
+        // Map by SKU
+        if (sku) {
+          orderProductCache.set(sku.toLowerCase(), { productId: shopifyProductId, variantId: shopifyVariantId });
+        }
+        // Map by external_id
+        if (extId) {
+          orderProductCache.set(extId.toLowerCase(), { productId: shopifyProductId, variantId: shopifyVariantId });
+        }
+      }
+    }
+    
+    totalLoaded += products.length;
+    if (products.length < pageSize) break;
+    page++;
+  }
+  
+  console.log(`[ORDERS] Loaded ${orderProductCache.size} SKU/ID mappings from ${totalLoaded} products`);
+}
+
 async function uploadOrders(
   supabase: any,
   projectId: string,
@@ -1177,6 +1293,9 @@ async function uploadOrders(
   startTime: number,
   timeBudget: number
 ): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
+  
+  // Load product mapping for line item linking
+  await loadProductMappingForOrders(supabase, projectId);
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
@@ -1212,6 +1331,8 @@ async function uploadOrders(
 
   let processed = 0;
   let errors = 0;
+  let linkedLineItems = 0;
+  let unlinkedLineItems = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
   for (const item of items) {
@@ -1227,15 +1348,41 @@ async function uploadOrders(
       customerId = orderCustomerCache.get(customerExtId)!;
     }
     
-    // Build order payload
-    const lineItems = (data.line_items || []).map((li: any) => ({
-      title: li.title || 'Product',
-      quantity: li.quantity || 1,
-      price: String(li.price || '0'),
-    }));
+    // Build order payload with product linking
+    const lineItems = (data.line_items || []).map((li: any) => {
+      const lineItem: any = {
+        title: li.title || 'Product',
+        quantity: li.quantity || 1,
+        price: String(li.price || '0'),
+      };
+      
+      // Try to link to actual Shopify product/variant
+      // Priority: 1) SKU, 2) product_external_id
+      const sku = String(li.sku || '').trim().toLowerCase();
+      const productExtId = String(li.product_external_id || '').trim().toLowerCase();
+      
+      let mapping = null;
+      if (sku && orderProductCache.has(sku)) {
+        mapping = orderProductCache.get(sku);
+      } else if (productExtId && orderProductCache.has(productExtId)) {
+        mapping = orderProductCache.get(productExtId);
+      }
+      
+      if (mapping) {
+        // Set explicit product_id and variant_id for proper linking
+        lineItem.product_id = parseInt(mapping.productId, 10);
+        lineItem.variant_id = parseInt(mapping.variantId, 10);
+        linkedLineItems++;
+      } else {
+        unlinkedLineItems++;
+      }
+      
+      return lineItem;
+    });
     
     if (lineItems.length === 0) {
       lineItems.push({ title: 'Order Item', quantity: 1, price: '0' });
+      unlinkedLineItems++;
     }
     
     const orderPayload: any = {
@@ -1272,6 +1419,7 @@ async function uploadOrders(
     });
     
     if ('rateLimited' in result) {
+      console.log(`[ORDERS] Batch complete before rate limit. Linked=${linkedLineItems}, Unlinked=${unlinkedLineItems}`);
       return {
         success: true, processed, errors, hasMore: true,
         rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000),
@@ -1300,6 +1448,8 @@ async function uploadOrders(
     
     processed++;
   }
+
+  console.log(`[ORDERS] Batch complete. Processed=${processed}, Errors=${errors}, Linked=${linkedLineItems}, Unlinked=${unlinkedLineItems}`);
 
   const { count } = await supabase
     .from('canonical_orders')
