@@ -12,6 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ShopifyDestinationSearch } from './ShopifyDestinationSearch';
 import * as XLSX from 'xlsx';
 import { 
   ArrowRight, 
@@ -1128,16 +1129,36 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                             </TableCell>
                             <TableCell>
                               <div className="space-y-1">
-                                <Input
-                                  value={redirect.new_path}
-                                  onChange={(e) => updateNewPath(redirect.id, e.target.value)}
-                                  className={`font-mono text-xs h-8 ${
-                                    redirect.status === 'pending' && !isPathValid(redirect.new_path)
-                                      ? 'border-destructive focus-visible:ring-destructive'
-                                      : ''
-                                  }`}
-                                  disabled={redirect.status !== 'pending'}
-                                />
+                                <div className="flex items-center gap-1">
+                                  <Input
+                                    value={redirect.new_path}
+                                    onChange={(e) => updateNewPath(redirect.id, e.target.value)}
+                                    className={`font-mono text-xs h-8 flex-1 ${
+                                      redirect.status === 'pending' && !isPathValid(redirect.new_path)
+                                        ? 'border-destructive focus-visible:ring-destructive'
+                                        : ''
+                                    }`}
+                                    disabled={redirect.status !== 'pending'}
+                                  />
+                                  <ShopifyDestinationSearch
+                                    projectId={project.id}
+                                    currentValue={redirect.new_path}
+                                    onSelect={(path) => updateNewPath(redirect.id, path)}
+                                    disabled={redirect.status !== 'pending'}
+                                    shopifyDomain={project.shopify_store_domain || undefined}
+                                  />
+                                  {project.shopify_store_domain && redirect.new_path && (
+                                    <a
+                                      href={`https://${project.shopify_store_domain.replace(/^https?:\/\//, '')}${redirect.new_path}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="h-8 w-8 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                                      title="Se siden i Shopify"
+                                    >
+                                      <ExternalLink className="w-4 h-4" />
+                                    </a>
+                                  )}
+                                </div>
                                 {redirect.status === 'pending' && !isPathValid(redirect.new_path) && (
                                   <div className="text-xs text-destructive flex items-center gap-1">
                                     <AlertCircle className="w-3 h-3" />
