@@ -63,24 +63,27 @@ Deno.serve(async (req) => {
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
 
-    // Get redirects to create
+    // Get redirects to create - build query carefully
     let query = supabase
       .from('project_redirects')
       .select('*')
       .eq('project_id', projectId)
-      .eq('status', 'pending')
-      .order('created_at');
+      .eq('status', 'pending');
 
-    if (redirectIds && redirectIds.length > 0) {
+    // Only add .in() filter if we have specific IDs
+    if (redirectIds && Array.isArray(redirectIds) && redirectIds.length > 0) {
       query = query.in('id', redirectIds);
     }
 
-    const { data: redirects, error: redirectsError } = await query.limit(100);
+    // Apply order and limit last
+    const { data: redirects, error: redirectsError } = await query
+      .order('created_at', { ascending: true })
+      .limit(100);
 
     if (redirectsError) {
-      console.error('Error fetching redirects:', redirectsError);
+      console.error('Error fetching redirects:', JSON.stringify(redirectsError));
       return new Response(
-        JSON.stringify({ error: 'Failed to fetch redirects' }),
+        JSON.stringify({ error: 'Failed to fetch redirects', details: redirectsError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
