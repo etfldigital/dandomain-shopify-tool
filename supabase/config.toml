@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.fetch-metafields]
 verify_jwt = false
+
+[functions.inspect-url]
+verify_jwt = false

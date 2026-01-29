@@ -135,14 +135,18 @@ export function ShopifyDestinationSearch({
     }
   };
 
+  // Generate proper Shopify handle - MUST NOT contain spaces!
   const generateShopifyHandle = (title: string): string => {
     return title
       .toLowerCase()
+      .trim()
       .replace(/[æ]/g, 'ae')
       .replace(/[ø]/g, 'oe')
       .replace(/[å]/g, 'aa')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
+      .replace(/\s+/g, '-') // Replace spaces with hyphens
+      .replace(/[^a-z0-9-]+/g, '-') // Replace non-alphanumeric (except hyphens) with hyphens
+      .replace(/-+/g, '-') // Collapse multiple hyphens
+      .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
       .substring(0, 255);
   };
 

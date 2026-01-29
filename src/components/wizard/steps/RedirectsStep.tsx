@@ -13,6 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ShopifyDestinationSearch } from './ShopifyDestinationSearch';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import * as XLSX from 'xlsx';
 import { 
   ArrowRight, 
@@ -29,8 +30,29 @@ import {
   FileSpreadsheet,
   ChevronDown,
   ChevronRight,
-  AlertTriangle
+  AlertTriangle,
+  Eye,
+  Package,
+  FolderOpen,
+  FileText
 } from 'lucide-react';
+
+// Interface for URL inspection result
+interface UrlInspectionResult {
+  success: boolean;
+  pageType: 'product' | 'collection' | 'page' | 'unknown';
+  title?: string;
+  productInfo?: {
+    name: string;
+    sku?: string;
+    price?: string;
+  };
+  collectionInfo?: {
+    name: string;
+    productCount?: number;
+  };
+  error?: string;
+}
 
 interface RedirectsStepProps {
   project: Project;
@@ -85,6 +107,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [unmatchedExpanded, setUnmatchedExpanded] = useState(true);
   const [validShopifyPaths, setValidShopifyPaths] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // URL inspection state
+  const [inspectionResult, setInspectionResult] = useState<UrlInspectionResult | null>(null);
+  const [inspectionUrl, setInspectionUrl] = useState<string>('');
+  const [isInspecting, setIsInspecting] = useState(false);
+  const [inspectionDialogOpen, setInspectionDialogOpen] = useState(false);
 
   // Load existing redirects and valid paths
   useEffect(() => {
@@ -315,15 +343,18 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
-  // Generate Shopify handle from title
+  // Generate proper Shopify handle - MUST NOT contain spaces!
   const generateShopifyHandle = (title: string): string => {
     return title
       .toLowerCase()
+      .trim()
       .replace(/[æ]/g, 'ae')
       .replace(/[ø]/g, 'oe')
       .replace(/[å]/g, 'aa')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
+      .replace(/\s+/g, '-') // Replace spaces with hyphens
+      .replace(/[^a-z0-9-]+/g, '-') // Replace non-alphanumeric (except hyphens) with hyphens
+      .replace(/-+/g, '-') // Collapse multiple hyphens
+      .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
       .substring(0, 255);
   };
 
@@ -917,6 +948,45 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
+  // Inspect a URL to determine its page type
+  const inspectUrl = async (oldPath: string) => {
+    const fullUrl = getOldPathUrl(oldPath);
+    setInspectionUrl(fullUrl);
+    setIsInspecting(true);
+    setInspectionResult(null);
+    setInspectionDialogOpen(true);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('inspect-url', {
+        body: { url: fullUrl },
+      });
+
+      if (error) throw error;
+      setInspectionResult(data as UrlInspectionResult);
+    } catch (err) {
+      console.error('Error inspecting URL:', err);
+      setInspectionResult({
+        success: false,
+        pageType: 'unknown',
+        error: err instanceof Error ? err.message : 'Kunne ikke inspicere URL',
+      });
+    } finally {
+      setIsInspecting(false);
+    }
+  };
+
+  // Sanitize a path to ensure it's a valid Shopify URL (no spaces, proper encoding)
+  const sanitizeShopifyPath = (path: string): string => {
+    return path
+      .trim()
+      .replace(/\s+/g, '-') // Replace spaces with hyphens
+      .replace(/[^\w\-\/]/g, '-') // Replace non-word chars (except / and -) with hyphens
+      .replace(/-+/g, '-') // Collapse multiple hyphens
+      .replace(/\/-/g, '/') // Remove hyphens after slashes
+      .replace(/-\//g, '/') // Remove hyphens before slashes
+      .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+  };
+
   // Build full URL for old path using DanDomain base URL
   const getOldPathUrl = (oldPath: string): string => {
     const baseUrl = project.dandomain_shop_url || '';
@@ -1272,15 +1342,26 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               />
                             </TableCell>
                             <TableCell className="font-mono text-xs">
-                              <a
-                                href={getOldPathUrl(redirect.old_path)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:underline inline-flex items-center gap-1"
-                              >
-                                {redirect.old_path}
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
+                              <div className="flex items-center gap-1">
+                                <a
+                                  href={getOldPathUrl(redirect.old_path)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary hover:underline inline-flex items-center gap-1 flex-1 truncate"
+                                >
+                                  {redirect.old_path}
+                                  <ExternalLink className="w-3 h-3 shrink-0" />
+                                </a>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 shrink-0"
+                                  onClick={() => inspectUrl(redirect.old_path)}
+                                  title="Inspicér gammel URL"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                </Button>
+                              </div>
                             </TableCell>
                             <TableCell>
                               <ArrowRight className="w-4 h-4 text-muted-foreground" />
@@ -1378,6 +1459,111 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           </CardContent>
         </Card>
       )}
+
+      {/* URL Inspection Dialog */}
+      <Dialog open={inspectionDialogOpen} onOpenChange={setInspectionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="w-5 h-5" />
+              URL Inspektion
+            </DialogTitle>
+            <DialogDescription className="font-mono text-xs break-all">
+              {inspectionUrl}
+            </DialogDescription>
+          </DialogHeader>
+          
+          {isInspecting ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            </div>
+          ) : inspectionResult ? (
+            <div className="space-y-4">
+              {!inspectionResult.success ? (
+                <div className="p-4 bg-destructive/10 rounded-lg text-destructive">
+                  <AlertCircle className="w-5 h-5 inline mr-2" />
+                  {inspectionResult.error || 'Kunne ikke inspicere URL'}
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 p-4 bg-muted rounded-lg">
+                    {inspectionResult.pageType === 'product' && (
+                      <Package className="w-8 h-8 text-primary" />
+                    )}
+                    {inspectionResult.pageType === 'collection' && (
+                      <FolderOpen className="w-8 h-8 text-primary" />
+                    )}
+                    {inspectionResult.pageType === 'page' && (
+                      <FileText className="w-8 h-8 text-muted-foreground" />
+                    )}
+                    {inspectionResult.pageType === 'unknown' && (
+                      <AlertCircle className="w-8 h-8 text-muted-foreground" />
+                    )}
+                    <div>
+                      <Badge variant={
+                        inspectionResult.pageType === 'product' ? 'default' :
+                        inspectionResult.pageType === 'collection' ? 'secondary' :
+                        'outline'
+                      }>
+                        {inspectionResult.pageType === 'product' && 'Produktside'}
+                        {inspectionResult.pageType === 'collection' && 'Kollektionsside'}
+                        {inspectionResult.pageType === 'page' && 'Indholdsside'}
+                        {inspectionResult.pageType === 'unknown' && 'Ukendt type'}
+                      </Badge>
+                      {inspectionResult.title && (
+                        <p className="text-sm font-medium mt-1">{inspectionResult.title}</p>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {inspectionResult.productInfo && (
+                    <div className="space-y-2 text-sm">
+                      <h4 className="font-medium">Produktinfo</h4>
+                      <dl className="grid grid-cols-2 gap-2">
+                        <dt className="text-muted-foreground">Navn:</dt>
+                        <dd className="font-medium">{inspectionResult.productInfo.name}</dd>
+                        {inspectionResult.productInfo.sku && (
+                          <>
+                            <dt className="text-muted-foreground">SKU:</dt>
+                            <dd className="font-mono text-xs">{inspectionResult.productInfo.sku}</dd>
+                          </>
+                        )}
+                        {inspectionResult.productInfo.price && (
+                          <>
+                            <dt className="text-muted-foreground">Pris:</dt>
+                            <dd>{inspectionResult.productInfo.price}</dd>
+                          </>
+                        )}
+                      </dl>
+                    </div>
+                  )}
+                  
+                  {inspectionResult.collectionInfo && (
+                    <div className="space-y-2 text-sm">
+                      <h4 className="font-medium">Kollektionsinfo</h4>
+                      <dl className="grid grid-cols-2 gap-2">
+                        <dt className="text-muted-foreground">Navn:</dt>
+                        <dd className="font-medium">{inspectionResult.collectionInfo.name}</dd>
+                        {inspectionResult.collectionInfo.productCount && (
+                          <>
+                            <dt className="text-muted-foreground">Produkter:</dt>
+                            <dd>{inspectionResult.collectionInfo.productCount}</dd>
+                          </>
+                        )}
+                      </dl>
+                    </div>
+                  )}
+                  
+                  <div className="text-xs text-muted-foreground border-t pt-3">
+                    <p>Brug denne information til at vælge den rigtige destination i Shopify.</p>
+                    <p className="mt-1">Klik på søgeikonet ved "Ny sti" for at finde det matchende produkt/kollektion.</p>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {/* Next button */}
       <div className="flex justify-end pt-4">
