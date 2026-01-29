@@ -125,7 +125,18 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   
   // AI matching state
   const [isAiMatching, setIsAiMatching] = useState(false);
+  const [isTestMatching, setIsTestMatching] = useState(false);
   const [aiMatchProgress, setAiMatchProgress] = useState({ current: 0, total: 0 });
+  const [testMatchResult, setTestMatchResult] = useState<{
+    matched: number;
+    unmatched: number;
+    details: Array<{
+      old_path: string;
+      new_path: string;
+      confidence: number;
+      matched_by: string;
+    }>;
+  } | null>(null);
 
   // Load existing redirects and valid paths
   useEffect(() => {
@@ -212,7 +223,83 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
-  // AI-driven matching for unmatched URLs
+  // Test AI matching with only 10 URLs to preview results
+  const runTestAiMatching = async () => {
+    // Get low-confidence or unmatched redirects
+    const unmatchedRedirects = redirects.filter(r => 
+      r.confidence_score < CONFIDENCE_THRESHOLD && r.status === 'pending'
+    );
+    
+    // Also get URLs from the unmatchedUrls state (from Excel upload)
+    const allUrlsToMatch = [
+      ...unmatchedUrls.map(u => u.normalizedPath),
+      ...unmatchedRedirects.map(r => r.old_path),
+    ];
+    
+    // Remove duplicates and take only 10 for testing
+    const uniqueUrls = [...new Set(allUrlsToMatch)].slice(0, 10);
+    
+    if (uniqueUrls.length === 0) {
+      toast({
+        title: 'Ingen URLs at teste',
+        description: 'Der er ingen umatchede URLs at behandle.',
+      });
+      return;
+    }
+    
+    setIsTestMatching(true);
+    setTestMatchResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('match-redirects', {
+        body: {
+          projectId: project.id,
+          oldPaths: uniqueUrls,
+          testMode: true, // Indicate this is a test run
+        },
+      });
+      
+      if (error) throw error;
+      
+      // Fetch the newly matched redirects to show details
+      const { data: matchedRedirects } = await supabase
+        .from('project_redirects')
+        .select('old_path, new_path, confidence_score, matched_by')
+        .eq('project_id', project.id)
+        .in('old_path', uniqueUrls)
+        .order('confidence_score', { ascending: false });
+      
+      setTestMatchResult({
+        matched: data.matched || 0,
+        unmatched: data.unmatched || 0,
+        details: (matchedRedirects || []).map(r => ({
+          old_path: r.old_path,
+          new_path: r.new_path,
+          confidence: r.confidence_score ?? 0,
+          matched_by: r.matched_by ?? 'auto',
+        })),
+      });
+      
+      toast({
+        title: 'Test fuldført',
+        description: `Testet ${uniqueUrls.length} URLs. ${data.matched || 0} matchet, ${data.unmatched || 0} umatched.`,
+      });
+      
+      // Reload redirects to show updated data
+      await loadRedirects();
+    } catch (err) {
+      console.error('Error in test AI matching:', err);
+      toast({
+        title: 'Fejl ved test',
+        description: err instanceof Error ? err.message : 'Kunne ikke køre test',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsTestMatching(false);
+    }
+  };
+
+  // AI-driven matching for ALL unmatched URLs
   const runAiMatching = async () => {
     // Get low-confidence or unmatched redirects
     const unmatchedRedirects = redirects.filter(r => 
@@ -238,6 +325,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     
     setIsAiMatching(true);
     setAiMatchProgress({ current: 0, total: uniqueUrls.length });
+    setTestMatchResult(null); // Clear test results
     
     try {
       // Process in batches for progress updates
@@ -1226,10 +1314,25 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Upload Excel
             </Button>
             
-            {/* AI Match Button */}
+            {/* Test AI Match Button - test with only 10 URLs first */}
+            <Button
+              onClick={runTestAiMatching}
+              disabled={isTestMatching || isAiMatching || (unmatchedUrls.length === 0 && stats.byType.unmatched.length === 0)}
+              variant="outline"
+              className="border-primary/50 text-primary hover:bg-primary/10"
+            >
+              {isTestMatching ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4 mr-2" />
+              )}
+              Test AI (10 stk)
+            </Button>
+            
+            {/* Full AI Match Button */}
             <Button
               onClick={runAiMatching}
-              disabled={isAiMatching || (unmatchedUrls.length === 0 && stats.byType.unmatched.length === 0)}
+              disabled={isAiMatching || isTestMatching || (unmatchedUrls.length === 0 && stats.byType.unmatched.length === 0)}
               variant="secondary"
               className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground border-0"
             >
@@ -1238,7 +1341,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               ) : (
                 <Wand2 className="w-4 h-4 mr-2" />
               )}
-              AI Match ({unmatchedUrls.length + stats.byType.unmatched.length})
+              AI Match Alle ({unmatchedUrls.length + stats.byType.unmatched.length})
             </Button>
             
             <Button
@@ -1307,6 +1410,67 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <Progress value={(aiMatchProgress.current / aiMatchProgress.total) * 100} />
               <p className="text-sm text-muted-foreground mt-1">
                 {aiMatchProgress.current} af {aiMatchProgress.total} behandlet...
+              </p>
+            </div>
+          )}
+          
+          {/* Test Match Results */}
+          {testMatchResult && (
+            <div className="mt-4 p-4 bg-muted/50 rounded-lg border">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-medium flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-primary" />
+                  Testresultater ({testMatchResult.details.length} URLs)
+                </h4>
+                <Badge variant="outline">
+                  {testMatchResult.matched} matchet, {testMatchResult.unmatched} umatched
+                </Badge>
+              </div>
+              <ScrollArea className="h-[200px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[40%]">Gammel URL</TableHead>
+                      <TableHead className="w-[40%]">Ny destination</TableHead>
+                      <TableHead className="w-[10%]">Score</TableHead>
+                      <TableHead className="w-[10%]">Metode</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {testMatchResult.details.map((r, idx) => (
+                      <TableRow key={idx}>
+                        <TableCell className="font-mono text-xs truncate max-w-[200px]" title={r.old_path}>
+                          {r.old_path}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs truncate max-w-[200px]" title={r.new_path}>
+                          {r.new_path}
+                        </TableCell>
+                        <TableCell>
+                          <Badge 
+                            variant={r.confidence >= 70 ? "default" : "destructive"}
+                            className="text-xs"
+                          >
+                            {r.confidence}%
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {r.matched_by === 'exact' && '✓ Eksakt'}
+                          {r.matched_by === 'sku' && '📦 SKU'}
+                          {r.matched_by === 'title' && '📝 Titel'}
+                          {r.matched_by === 'ai' && '✨ AI'}
+                          {!['exact', 'sku', 'title', 'ai'].includes(r.matched_by) && r.matched_by}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+              <p className="text-xs text-muted-foreground mt-3">
+                {testMatchResult.matched > 0 && testMatchResult.unmatched <= testMatchResult.matched ? (
+                  <span className="text-primary">✓ AI-matching ser ud til at fungere godt! Kør "AI Match Alle" for at fortsætte.</span>
+                ) : (
+                  <span className="text-warning">⚠ Tjek resultaterne og juster eventuelt før du kører fuld matching.</span>
+                )}
               </p>
             </div>
           )}
