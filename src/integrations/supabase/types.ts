@@ -460,12 +460,14 @@ export type Database = {
       }
       project_redirects: {
         Row: {
+          ai_suggestions: Json | null
           confidence_score: number | null
           created_at: string
           entity_id: string
           entity_type: string
           error_message: string | null
           id: string
+          matched_by: string | null
           new_path: string
           old_path: string
           project_id: string
@@ -474,12 +476,14 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          ai_suggestions?: Json | null
           confidence_score?: number | null
           created_at?: string
           entity_id: string
           entity_type: string
           error_message?: string | null
           id?: string
+          matched_by?: string | null
           new_path: string
           old_path: string
           project_id: string
@@ -488,12 +492,14 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          ai_suggestions?: Json | null
           confidence_score?: number | null
           created_at?: string
           entity_id?: string
           entity_type?: string
           error_message?: string | null
           id?: string
+          matched_by?: string | null
           new_path?: string
           old_path?: string
           project_id?: string

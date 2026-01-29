@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.inspect-url]
 verify_jwt = false
+
+[functions.match-redirects]
+verify_jwt = false
