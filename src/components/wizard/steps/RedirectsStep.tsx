@@ -34,7 +34,9 @@ import {
   Eye,
   Package,
   FolderOpen,
-  FileText
+  FileText,
+  Sparkles,
+  Wand2
 } from 'lucide-react';
 
 // Interface for URL inspection result
@@ -71,6 +73,13 @@ interface RedirectRow {
   selected: boolean;
   isValidPath?: boolean; // Whether the new_path exists in Shopify
   confidence_score: number; // 0-100 confidence score for the match
+  matched_by?: string; // Strategy used: exact, sku, title, ai, manual
+  ai_suggestions?: Array<{
+    entity_id: string;
+    new_path: string;
+    title: string;
+    score: number;
+  }>;
 }
 
 // Threshold for "unmatched" - redirects below this score go to the Unmatched tab
@@ -113,6 +122,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [inspectionUrl, setInspectionUrl] = useState<string>('');
   const [isInspecting, setIsInspecting] = useState(false);
   const [inspectionDialogOpen, setInspectionDialogOpen] = useState(false);
+  
+  // AI matching state
+  const [isAiMatching, setIsAiMatching] = useState(false);
+  const [aiMatchProgress, setAiMatchProgress] = useState({ current: 0, total: 0 });
 
   // Load existing redirects and valid paths
   useEffect(() => {
@@ -183,6 +196,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           selected: r.status === 'pending',
           isValidPath: true, // Will be validated when validShopifyPaths is loaded
           confidence_score: (r as unknown as { confidence_score?: number }).confidence_score ?? 0,
+          matched_by: (r as unknown as { matched_by?: string }).matched_by ?? 'auto',
+          ai_suggestions: (r as unknown as { ai_suggestions?: Array<{ entity_id: string; new_path: string; title: string; score: number }> }).ai_suggestions ?? [],
         }))
       );
     } catch (err) {
@@ -194,6 +209,80 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // AI-driven matching for unmatched URLs
+  const runAiMatching = async () => {
+    // Get low-confidence or unmatched redirects
+    const unmatchedRedirects = redirects.filter(r => 
+      r.confidence_score < CONFIDENCE_THRESHOLD && r.status === 'pending'
+    );
+    
+    // Also get URLs from the unmatchedUrls state (from Excel upload)
+    const allUrlsToMatch = [
+      ...unmatchedUrls.map(u => u.normalizedPath),
+      ...unmatchedRedirects.map(r => r.old_path),
+    ];
+    
+    // Remove duplicates
+    const uniqueUrls = [...new Set(allUrlsToMatch)];
+    
+    if (uniqueUrls.length === 0) {
+      toast({
+        title: 'Ingen URLs at matche',
+        description: 'Der er ingen umatchede URLs at behandle.',
+      });
+      return;
+    }
+    
+    setIsAiMatching(true);
+    setAiMatchProgress({ current: 0, total: uniqueUrls.length });
+    
+    try {
+      // Process in batches for progress updates
+      const BATCH_SIZE = 50;
+      let totalMatched = 0;
+      let totalUnmatched = 0;
+      
+      for (let i = 0; i < uniqueUrls.length; i += BATCH_SIZE) {
+        const batch = uniqueUrls.slice(i, i + BATCH_SIZE);
+        
+        const { data, error } = await supabase.functions.invoke('match-redirects', {
+          body: {
+            projectId: project.id,
+            oldPaths: batch,
+          },
+        });
+        
+        if (error) throw error;
+        
+        totalMatched += data.matched || 0;
+        totalUnmatched += data.unmatched || 0;
+        
+        setAiMatchProgress({ current: Math.min(i + BATCH_SIZE, uniqueUrls.length), total: uniqueUrls.length });
+      }
+      
+      // Clear the unmatchedUrls state since they've been processed
+      setUnmatchedUrls([]);
+      
+      toast({
+        title: 'AI-matching fuldført',
+        description: `${totalMatched} URLs matchet automatisk. ${totalUnmatched} kræver manuel gennemgang.`,
+      });
+      
+      // Reload redirects to show updated data
+      await loadRedirects();
+    } catch (err) {
+      console.error('Error in AI matching:', err);
+      toast({
+        title: 'Fejl ved AI-matching',
+        description: err instanceof Error ? err.message : 'Kunne ikke køre AI-matching',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsAiMatching(false);
+      setAiMatchProgress({ current: 0, total: 0 });
     }
   };
 
@@ -1137,6 +1226,21 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Upload Excel
             </Button>
             
+            {/* AI Match Button */}
+            <Button
+              onClick={runAiMatching}
+              disabled={isAiMatching || (unmatchedUrls.length === 0 && stats.byType.unmatched.length === 0)}
+              variant="secondary"
+              className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground border-0"
+            >
+              {isAiMatching ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Wand2 className="w-4 h-4 mr-2" />
+              )}
+              AI Match ({unmatchedUrls.length + stats.byType.unmatched.length})
+            </Button>
+            
             <Button
               onClick={createRedirectsInShopify}
               disabled={isCreating || redirects.filter(r => r.selected && r.status === 'pending' && isPathValid(r.new_path)).length === 0}
@@ -1193,16 +1297,29 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               </p>
             </div>
           )}
+          
+          {isAiMatching && aiMatchProgress.total > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="w-4 h-4 text-primary animate-pulse" />
+                <span className="text-sm font-medium">AI matcher URLs...</span>
+              </div>
+              <Progress value={(aiMatchProgress.current / aiMatchProgress.total) * 100} />
+              <p className="text-sm text-muted-foreground mt-1">
+                {aiMatchProgress.current} af {aiMatchProgress.total} behandlet...
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* Unmatched URLs section */}
       {unmatchedUrls.length > 0 && (
-        <Card className="border-amber-500/30">
+        <Card className="border-warning/30">
           <Collapsible open={unmatchedExpanded} onOpenChange={setUnmatchedExpanded}>
             <CardHeader className="pb-3">
               <CollapsibleTrigger className="flex items-center justify-between w-full">
-                <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                <CardTitle className="flex items-center gap-2 text-warning">
                   <AlertTriangle className="w-5 h-5" />
                   Umatchede URLs ({unmatchedUrls.length})
                 </CardTitle>
@@ -1286,7 +1403,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                   <TabsTrigger value="page">
                     Sider ({stats.byType.page.length})
                   </TabsTrigger>
-                  <TabsTrigger value="unmatched" className="text-amber-600 dark:text-amber-400">
+                  <TabsTrigger value="unmatched" className="text-warning">
                     Unmatched ({stats.byType.unmatched.length})
                   </TabsTrigger>
                 </TabsList>
@@ -1407,18 +1524,45 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <Badge 
-                                variant={redirect.confidence_score >= 85 ? "default" : redirect.confidence_score >= 70 ? "secondary" : "outline"}
-                                className={redirect.confidence_score < 70 ? "text-amber-600 border-amber-400" : ""}
-                              >
-                                {redirect.confidence_score}%
-                              </Badge>
+                              <div className="flex flex-col gap-1">
+                                <Badge 
+                                  variant={redirect.confidence_score >= 85 ? "default" : redirect.confidence_score >= 70 ? "secondary" : "outline"}
+                                  className={redirect.confidence_score < 70 ? "text-warning border-warning/50" : ""}
+                                >
+                                  {redirect.confidence_score}%
+                                </Badge>
+                                {redirect.matched_by && redirect.matched_by !== 'auto' && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {redirect.matched_by === 'exact' && 'Eksakt'}
+                                    {redirect.matched_by === 'sku' && 'SKU'}
+                                    {redirect.matched_by === 'title' && 'Titel'}
+                                    {redirect.matched_by === 'ai' && '✨ AI'}
+                                    {redirect.matched_by === 'manual' && 'Manuel'}
+                                  </span>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell>
                               {getStatusBadge(redirect.status)}
                               {redirect.error_message && (
                                 <div className="text-xs text-destructive mt-1">
                                   {redirect.error_message}
+                                </div>
+                              )}
+                              {/* AI suggestions for unmatched */}
+                              {activeTab === 'unmatched' && redirect.ai_suggestions && redirect.ai_suggestions.length > 0 && (
+                                <div className="mt-2 space-y-1">
+                                  <span className="text-xs text-muted-foreground">AI forslag:</span>
+                                  {redirect.ai_suggestions.slice(0, 2).map((suggestion, idx) => (
+                                    <button
+                                      key={idx}
+                                      onClick={() => updateNewPath(redirect.id, suggestion.new_path, true)}
+                                      className="block w-full text-left px-2 py-1 text-xs rounded bg-muted/50 hover:bg-muted transition-colors"
+                                    >
+                                      <span className="font-medium">{suggestion.title}</span>
+                                      <span className="text-muted-foreground ml-1">({suggestion.score}%)</span>
+                                    </button>
+                                  ))}
                                 </div>
                               )}
                             </TableCell>
