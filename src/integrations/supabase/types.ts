@@ -460,6 +460,7 @@ export type Database = {
       }
       project_redirects: {
         Row: {
+          confidence_score: number | null
           created_at: string
           entity_id: string
           entity_type: string
@@ -473,6 +474,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          confidence_score?: number | null
           created_at?: string
           entity_id: string
           entity_type: string
@@ -486,6 +488,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          confidence_score?: number | null
           created_at?: string
           entity_id?: string
           entity_type?: string
