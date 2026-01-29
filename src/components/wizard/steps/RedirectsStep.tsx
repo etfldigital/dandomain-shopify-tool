@@ -48,7 +48,11 @@ interface RedirectRow {
   error_message: string | null;
   selected: boolean;
   isValidPath?: boolean; // Whether the new_path exists in Shopify
+  confidence_score: number; // 0-100 confidence score for the match
 }
+
+// Threshold for "unmatched" - redirects below this score go to the Unmatched tab
+const CONFIDENCE_THRESHOLD = 70;
 
 interface UploadedEntity {
   id: string;
@@ -64,6 +68,9 @@ interface UnmatchedUrl {
   normalizedPath: string;
 }
 
+// Extended tab type to include "unmatched"
+type TabType = RedirectEntityType | 'unmatched';
+
 export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const { toast } = useToast();
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
@@ -71,7 +78,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [activeTab, setActiveTab] = useState<RedirectEntityType>('product');
+  const [activeTab, setActiveTab] = useState<TabType>('product');
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [unmatchedUrls, setUnmatchedUrls] = useState<UnmatchedUrl[]>([]);
@@ -147,6 +154,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           error_message: r.error_message,
           selected: r.status === 'pending',
           isValidPath: true, // Will be validated when validShopifyPaths is loaded
+          confidence_score: (r as unknown as { confidence_score?: number }).confidence_score ?? 0,
         }))
       );
     } catch (err) {
@@ -584,6 +592,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         entity_id: string;
         old_path: string;
         new_path: string;
+        confidence_score: number;
       }> = [];
 
       const newUnmatchedUrls: UnmatchedUrl[] = [];
@@ -602,32 +611,131 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const oldSlug = extractSlugFromPath(normalizedOldPath);
         const normalizedOldSlug = normalizeForComparison(oldSlug);
         
-        // Try multiple matching strategies
+        // Try multiple matching strategies with confidence scores
+        // PRIORITY ORDER: Products first (we have 1360+), then Pages, then Collections (only 174)
         let matchedEntity: UploadedEntity | undefined;
+        let confidenceScore = 0;
         
-        // Strategy 1: Exact path match
-        matchedEntity = pathToEntity.get(normalizedOldPath);
+        // Separate entities by type for prioritized matching
+        const productEntities = uploadedEntities.filter(e => e.entity_type === 'product');
+        const pageEntities = uploadedEntities.filter(e => e.entity_type === 'page');
+        const categoryEntities = uploadedEntities.filter(e => e.entity_type === 'category');
         
-        // Strategy 2: Slug match (extract slug from URL and match)
+        // Strategy 1: EXACT source_path match (highest confidence)
+        // Check products first
+        for (const entity of productEntities) {
+          if (entity.source_path && normalizePath(entity.source_path) === normalizedOldPath) {
+            matchedEntity = entity;
+            confidenceScore = 100;
+            break;
+          }
+        }
+        
+        // Then pages
+        if (!matchedEntity) {
+          for (const entity of pageEntities) {
+            if (entity.source_path && normalizePath(entity.source_path) === normalizedOldPath) {
+              matchedEntity = entity;
+              confidenceScore = 100;
+              break;
+            }
+          }
+        }
+        
+        // Categories last - require EXACT source_path match (strict)
+        if (!matchedEntity) {
+          for (const entity of categoryEntities) {
+            if (entity.source_path && normalizePath(entity.source_path) === normalizedOldPath) {
+              matchedEntity = entity;
+              confidenceScore = 100;
+              break;
+            }
+          }
+        }
+        
+        // Strategy 2: EXACT slug match - products get priority
         if (!matchedEntity && oldSlug) {
-          matchedEntity = slugToEntity.get(oldSlug);
+          // Check product slugs first
+          for (const entity of productEntities) {
+            const handleSlug = entity.shopify_handle.split('/').pop() || '';
+            if (handleSlug && handleSlug === oldSlug) {
+              matchedEntity = entity;
+              confidenceScore = 95;
+              break;
+            }
+          }
+          
+          // Then page slugs
+          if (!matchedEntity) {
+            for (const entity of pageEntities) {
+              const handleSlug = entity.shopify_handle.split('/').pop() || '';
+              if (handleSlug && handleSlug === oldSlug) {
+                matchedEntity = entity;
+                confidenceScore = 95;
+                break;
+              }
+            }
+          }
+          
+          // Categories - only exact slug match (strict)
+          if (!matchedEntity) {
+            for (const entity of categoryEntities) {
+              const handleSlug = entity.shopify_handle.split('/').pop() || '';
+              if (handleSlug && handleSlug === oldSlug) {
+                matchedEntity = entity;
+                confidenceScore = 90;
+                break;
+              }
+            }
+          }
         }
         
-        // Strategy 3: Normalized title match (fuzzy)
+        // Strategy 3: Normalized title EXACT match - products first
         if (!matchedEntity && normalizedOldSlug) {
-          matchedEntity = titleNormalizedToEntity.get(normalizedOldSlug);
-        }
-        
-        // Strategy 4: Partial title match - find entity where normalized title contains the slug
-        if (!matchedEntity && normalizedOldSlug && normalizedOldSlug.length > 3) {
-          for (const entity of uploadedEntities) {
+          // Products
+          for (const entity of productEntities) {
             if (entity.title) {
               const normalizedEntityTitle = normalizeForComparison(entity.title);
-              // Check if titles are similar enough
-              if (normalizedEntityTitle === normalizedOldSlug || 
-                  normalizedEntityTitle.includes(normalizedOldSlug) ||
-                  normalizedOldSlug.includes(normalizedEntityTitle)) {
+              if (normalizedEntityTitle === normalizedOldSlug) {
                 matchedEntity = entity;
+                confidenceScore = 85;
+                break;
+              }
+            }
+          }
+          
+          // Pages
+          if (!matchedEntity) {
+            for (const entity of pageEntities) {
+              if (entity.title) {
+                const normalizedEntityTitle = normalizeForComparison(entity.title);
+                if (normalizedEntityTitle === normalizedOldSlug) {
+                  matchedEntity = entity;
+                  confidenceScore = 85;
+                  break;
+                }
+              }
+            }
+          }
+          
+          // NO category matching by title - too many false positives
+        }
+        
+        // Strategy 4: Partial title match - ONLY for products (looser matching)
+        // Categories are NOT matched here to prevent false positives
+        if (!matchedEntity && normalizedOldSlug && normalizedOldSlug.length > 5) {
+          for (const entity of productEntities) {
+            if (entity.title) {
+              const normalizedEntityTitle = normalizeForComparison(entity.title);
+              // Product title contains the slug OR slug contains title (for short product names)
+              if (normalizedEntityTitle.includes(normalizedOldSlug)) {
+                matchedEntity = entity;
+                confidenceScore = 65; // Lower confidence for partial match
+                break;
+              }
+              if (normalizedOldSlug.includes(normalizedEntityTitle) && normalizedEntityTitle.length > 5) {
+                matchedEntity = entity;
+                confidenceScore = 55; // Even lower for reverse partial match
                 break;
               }
             }
@@ -641,6 +749,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             entity_id: matchedEntity.id,
             old_path: normalizedOldPath,
             new_path: matchedEntity.shopify_handle,
+            confidence_score: confidenceScore,
           });
         } else {
           newUnmatchedUrls.push({
@@ -740,32 +849,61 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
   // Toggle all in current tab
   const toggleAllInTab = () => {
-    const tabRedirects = redirects.filter(r => r.entity_type === activeTab && r.status === 'pending');
+    let tabRedirects: RedirectRow[];
+    
+    if (activeTab === 'unmatched') {
+      // Unmatched = low confidence
+      tabRedirects = redirects.filter(r => 
+        r.confidence_score < CONFIDENCE_THRESHOLD && r.status === 'pending'
+      );
+    } else {
+      // High confidence for specific entity type
+      tabRedirects = redirects.filter(r => 
+        r.entity_type === activeTab && 
+        r.confidence_score >= CONFIDENCE_THRESHOLD && 
+        r.status === 'pending'
+      );
+    }
+    
     const allSelected = tabRedirects.every(r => r.selected);
+    const tabRedirectIds = new Set(tabRedirects.map(r => r.id));
     
     setRedirects(prev =>
       prev.map(r => 
-        r.entity_type === activeTab && r.status === 'pending'
+        tabRedirectIds.has(r.id)
           ? { ...r, selected: !allSelected }
           : r
       )
     );
   };
 
-  // Update new_path for a redirect with validation
-  const updateNewPath = async (id: string, newPath: string) => {
+  // Update new_path for a redirect with validation (and boost confidence if manually selected)
+  const updateNewPath = async (id: string, newPath: string, isManualSelection = false) => {
     const pathIsValid = isPathValid(newPath);
+    
+    // If manually selected via search, boost confidence to 100
+    const newConfidence = isManualSelection ? 100 : undefined;
     
     // Update locally first with validation status
     setRedirects(prev =>
-      prev.map(r => r.id === id ? { ...r, new_path: newPath, isValidPath: pathIsValid } : r)
+      prev.map(r => r.id === id ? { 
+        ...r, 
+        new_path: newPath, 
+        isValidPath: pathIsValid,
+        confidence_score: newConfidence ?? r.confidence_score 
+      } : r)
     );
 
     // Persist to database
     try {
+      const updateData: Record<string, unknown> = { new_path: newPath };
+      if (newConfidence !== undefined) {
+        updateData.confidence_score = newConfidence;
+      }
+      
       const { error } = await supabase
         .from('project_redirects')
-        .update({ new_path: newPath })
+        .update(updateData)
         .eq('id', id);
 
       if (error) throw error;
@@ -793,23 +931,39 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     return cleanBase + oldPath;
   };
 
-  // Filter redirects
+  // Filter redirects based on active tab (including unmatched)
   const filteredRedirects = useMemo(() => {
-    return redirects
-      .filter(r => r.entity_type === activeTab)
-      .filter(r => 
-        searchQuery === '' ||
-        r.old_path.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        r.new_path.toLowerCase().includes(searchQuery.toLowerCase())
+    let filtered: RedirectRow[];
+    
+    if (activeTab === 'unmatched') {
+      // Show redirects with low confidence scores (below threshold)
+      filtered = redirects.filter(r => r.confidence_score < CONFIDENCE_THRESHOLD);
+    } else {
+      // Show redirects with high confidence scores for the specific entity type
+      filtered = redirects.filter(r => 
+        r.entity_type === activeTab && 
+        r.confidence_score >= CONFIDENCE_THRESHOLD
       );
+    }
+    
+    // Apply search filter
+    return filtered.filter(r => 
+      searchQuery === '' ||
+      r.old_path.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      r.new_path.toLowerCase().includes(searchQuery.toLowerCase())
+    );
   }, [redirects, activeTab, searchQuery]);
 
-  // Stats
+  // Stats including unmatched count
   const stats = useMemo(() => {
+    const highConfidence = redirects.filter(r => r.confidence_score >= CONFIDENCE_THRESHOLD);
+    const lowConfidence = redirects.filter(r => r.confidence_score < CONFIDENCE_THRESHOLD);
+    
     const byType = {
-      product: redirects.filter(r => r.entity_type === 'product'),
-      category: redirects.filter(r => r.entity_type === 'category'),
-      page: redirects.filter(r => r.entity_type === 'page'),
+      product: highConfidence.filter(r => r.entity_type === 'product'),
+      category: highConfidence.filter(r => r.entity_type === 'category'),
+      page: highConfidence.filter(r => r.entity_type === 'page'),
+      unmatched: lowConfidence,
     };
 
     const total = redirects.length;
@@ -1050,7 +1204,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as RedirectEntityType)}>
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabType)}>
               <div className="flex items-center justify-between mb-4">
                 <TabsList>
                   <TabsTrigger value="product">
@@ -1061,6 +1215,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                   </TabsTrigger>
                   <TabsTrigger value="page">
                     Sider ({stats.byType.page.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="unmatched" className="text-amber-600 dark:text-amber-400">
+                    Unmatched ({stats.byType.unmatched.length})
                   </TabsTrigger>
                 </TabsList>
 
@@ -1093,14 +1250,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                         <TableHead>Gammel sti</TableHead>
                         <TableHead className="w-10"></TableHead>
                         <TableHead>Ny sti</TableHead>
+                        <TableHead className="w-16">Score</TableHead>
                         <TableHead className="w-24">Status</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredRedirects.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                            {searchQuery ? 'Ingen resultater' : 'Ingen redirects - klik "Generer redirects"'}
+                          <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                            {searchQuery ? 'Ingen resultater' : activeTab === 'unmatched' ? 'Ingen usikre matches' : 'Ingen redirects - klik "Generer redirects"'}
                           </TableCell>
                         </TableRow>
                       ) : (
@@ -1143,7 +1301,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   <ShopifyDestinationSearch
                                     projectId={project.id}
                                     currentValue={redirect.new_path}
-                                    onSelect={(path) => updateNewPath(redirect.id, path)}
+                                    onSelect={(path) => updateNewPath(redirect.id, path, true)}
                                     disabled={redirect.status !== 'pending'}
                                     shopifyDomain={project.shopify_store_domain || undefined}
                                   />
@@ -1166,6 +1324,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   </div>
                                 )}
                               </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge 
+                                variant={redirect.confidence_score >= 85 ? "default" : redirect.confidence_score >= 70 ? "secondary" : "outline"}
+                                className={redirect.confidence_score < 70 ? "text-amber-600 border-amber-400" : ""}
+                              >
+                                {redirect.confidence_score}%
+                              </Badge>
                             </TableCell>
                             <TableCell>
                               {getStatusBadge(redirect.status)}
