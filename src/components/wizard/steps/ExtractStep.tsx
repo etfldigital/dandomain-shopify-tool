@@ -45,11 +45,11 @@ interface ProjectFile {
 }
 
 const ENTITY_CONFIG: Record<EntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
-  products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'PRODUCTS.xml' },
-  categories: { icon: Folder, label: 'Produktgrupper / Kategorier', acceptedLabel: 'PRODUCTCATEGORIES.xml' },
-  customers: { icon: Users, label: 'Kunder', acceptedLabel: 'ORDERS.xml (kunder ekstraheres)' },
-  orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'ORDERS.xml' },
-  pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'pages.xml' },
+  products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'XML fil' },
+  categories: { icon: Folder, label: 'Kategorier', acceptedLabel: 'XML fil' },
+  customers: { icon: Users, label: 'Kunder', acceptedLabel: 'XML fil' },
+  orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'XML fil' },
+  pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'XML fil' },
 };
 
 export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepProps) {
