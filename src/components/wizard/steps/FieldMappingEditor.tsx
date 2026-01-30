@@ -104,6 +104,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   const [loading, setLoading] = useState(true);
   const [fetchingMetafields, setFetchingMetafields] = useState(false);
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
+  const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -118,6 +119,13 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   useEffect(() => {
     loadFieldMappings();
   }, [projectId]);
+
+  // Auto-fetch metafields on mount
+  useEffect(() => {
+    if (!metafieldsLoaded) {
+      fetchShopifyMetafields(true);
+    }
+  }, [projectId, metafieldsLoaded]);
 
   const loadFieldMappings = async () => {
     setLoading(true);
@@ -145,7 +153,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
     }
   };
 
-  const fetchShopifyMetafields = async () => {
+  const fetchShopifyMetafields = async (silent = false) => {
     setFetchingMetafields(true);
     try {
       const { data, error } = await supabase.functions.invoke('fetch-metafields', {
@@ -154,17 +162,18 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
 
       if (error) {
         console.error('Error fetching metafields:', error);
-        toast.error('Kunne ikke hente metafelter fra Shopify');
+        if (!silent) toast.error('Kunne ikke hente metafelter fra Shopify');
         return;
       }
 
       if (data?.metafields) {
         setShopifyMetafields(data.metafields);
-        toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
+        setMetafieldsLoaded(true);
+        if (!silent) toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
       }
     } catch (error) {
       console.error('Error fetching metafields:', error);
-      toast.error('Fejl ved hentning af metafelter');
+      if (!silent) toast.error('Fejl ved hentning af metafelter');
     } finally {
       setFetchingMetafields(false);
     }
@@ -262,32 +271,34 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <div>
-          <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
-          <CardDescription>
-            Map ekstra felter fra DanDomain XML til Shopify felter
-          </CardDescription>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={fetchShopifyMetafields}
-          disabled={fetchingMetafields}
-        >
-          {fetchingMetafields ? (
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-          ) : (
-            <RefreshCw className="w-4 h-4 mr-2" />
+      <CardHeader className="pb-2">
+        <CardTitle className="text-lg">Feltmapping</CardTitle>
+        <CardDescription>
+          Map ekstra felter fra DanDomain XML til Shopify felter
+          {fetchingMetafields && (
+            <span className="ml-2 text-xs text-muted-foreground">
+              <Loader2 className="w-3 h-3 inline animate-spin mr-1" />
+              Henter metafelter...
+            </span>
           )}
-          Hent metafelter
-        </Button>
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Auto map button centered above columns */}
+        <div className="flex justify-center">
+          <Button
+            onClick={addFieldMapping}
+            disabled={!newMapping.sourceField || !newMapping.targetField}
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Tilføj mapping
+          </Button>
+        </div>
+
         {/* Add new mapping */}
         <div className="flex gap-3 items-end">
           <div className="flex-1">
-            <Label className="text-xs">Kilde felt (DanDomain)</Label>
+            <Label className="text-xs">Kilde felt</Label>
             <Select
               value={newMapping.sourceField}
               onValueChange={(v) => setNewMapping(prev => ({ ...prev, sourceField: v }))}
@@ -330,9 +341,6 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={addFieldMapping} size="icon">
-            <Plus className="w-4 h-4" />
-          </Button>
         </div>
 
         {/* Existing mappings */}

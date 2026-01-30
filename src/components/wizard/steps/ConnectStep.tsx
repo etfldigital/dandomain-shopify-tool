@@ -146,23 +146,23 @@ export function ConnectStep({ project, onUpdateProject, onNext }: ConnectStepPro
             </div>
           )}
 
-          {danDomainResult !== 'success' && (
-            <Button
-              onClick={handleTestDanDomain}
-              disabled={!shopUrl || !apiKey || testingDanDomain}
-              variant="outline"
-              className="w-full"
-            >
-              {testingDanDomain ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Tester forbindelse...
-                </>
-              ) : (
-                'Test DanDomain forbindelse'
-              )}
-            </Button>
-          )}
+          <Button
+            onClick={handleTestDanDomain}
+            disabled={!shopUrl || !apiKey || testingDanDomain}
+            variant={danDomainResult === 'success' ? 'outline' : 'default'}
+            className="w-full"
+          >
+            {testingDanDomain ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Tester forbindelse...
+              </>
+            ) : danDomainResult === 'success' ? (
+              'Opdater DanDomain forbindelse'
+            ) : (
+              'Test DanDomain forbindelse'
+            )}
+          </Button>
         </CardContent>
       </Card>
 
@@ -247,23 +247,23 @@ export function ConnectStep({ project, onUpdateProject, onNext }: ConnectStepPro
             </div>
           )}
 
-          {shopifyResult !== 'success' && (
-            <Button
-              onClick={handleTestShopify}
-              disabled={!storeDomain || !accessToken || testingShopify}
-              variant="outline"
-              className="w-full"
-            >
-              {testingShopify ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Tester forbindelse...
-                </>
-              ) : (
-                'Test Shopify forbindelse'
-              )}
-            </Button>
-          )}
+          <Button
+            onClick={handleTestShopify}
+            disabled={!storeDomain || !accessToken || testingShopify}
+            variant={shopifyResult === 'success' ? 'outline' : 'default'}
+            className="w-full"
+          >
+            {testingShopify ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Tester forbindelse...
+              </>
+            ) : shopifyResult === 'success' ? (
+              'Opdater Shopify forbindelse'
+            ) : (
+              'Test Shopify forbindelse'
+            )}
+          </Button>
 
           <div className="p-4 rounded-lg border border-border bg-muted/30">
             <h4 className="font-medium mb-2 text-sm">Påkrævede API Scopes</h4>
