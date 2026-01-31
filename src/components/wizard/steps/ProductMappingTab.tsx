@@ -495,13 +495,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
     for (const mapping of fieldMappings) {
       const sourceValue = rawData[mapping.sourceField];
-      if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') {
-        mappedFields.push({
-          field: mapping.targetField,
-          value: sourceValue,
-          source: mapping.sourceField,
-        });
+      
+      // ALTID tilføj mapping - også for tomme værdier (så de vises i preview)
+      mappedFields.push({
+        field: mapping.targetField,
+        value: sourceValue ?? null, // null for tomme værdier
+        source: mapping.sourceField,
+      });
 
+      // Kun anvend til transformed hvis der er en værdi
+      if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') {
         // Apply mapping to transformed data
         switch (mapping.targetField) {
           case 'variants[0].sku':
@@ -1322,9 +1325,8 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     </CardContent>
                   </Card>
 
-                  {/* Metafields Card - Show original fields AND mapped metafields */}
-                  {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9 || 
-                    product.mappedFields.some(m => m.field.startsWith('metafields.'))) && (
+                  {/* Metafields Card - Vis ALLE mappede metafelter fra fieldMappings */}
+                  {fieldMappings.filter(m => m.targetField.startsWith('metafields.')).length > 0 && (
                     <Card>
                       <CardContent className="pt-4">
                         <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
@@ -1334,65 +1336,32 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           </Badge>
                         </label>
                         <div className="grid grid-cols-2 gap-3">
-                          {/* Original hardcoded fields */}
-                          {product.original.field_1 && (
-                            <div>
-                              <label className="text-xs text-muted-foreground mb-1 block">Materiale</label>
-                              <Input 
-                                value={product.original.field_1} 
-                                readOnly 
-                                className="bg-background h-8 text-xs"
-                              />
-                            </div>
-                          )}
-                          {product.original.field_2 && (
-                            <div>
-                              <label className="text-xs text-muted-foreground mb-1 block">Farve</label>
-                              <Input 
-                                value={product.original.field_2} 
-                                readOnly 
-                                className="bg-background h-8 text-xs"
-                              />
-                            </div>
-                          )}
-                          {product.original.field_3 && (
-                            <div>
-                              <label className="text-xs text-muted-foreground mb-1 block">Pasform</label>
-                              <Input 
-                                value={product.original.field_3} 
-                                readOnly 
-                                className="bg-background h-8 text-xs"
-                              />
-                            </div>
-                          )}
-                          {product.original.field_9 && (
-                            <div>
-                              <label className="text-xs text-muted-foreground mb-1 block">Vaskeanvisning</label>
-                              <Input 
-                                value={product.original.field_9} 
-                                readOnly 
-                                className="bg-background h-8 text-xs"
-                              />
-                            </div>
-                          )}
-                          {/* Dynamically mapped metafields from field mappings */}
-                          {product.mappedFields
-                            .filter(m => m.field.startsWith('metafields.'))
+                          {fieldMappings
+                            .filter(m => m.targetField.startsWith('metafields.'))
                             .map((mapping, i) => {
-                              // Extract the metafield key from the field path (e.g., "metafields.custom.materiale" -> "materiale")
-                              const parts = mapping.field.split('.');
+                              // Find værdien for dette produkt
+                              const mappedField = product.mappedFields.find(
+                                mf => mf.field === mapping.targetField
+                              );
+                              const value = mappedField?.value;
+                              const hasValue = value !== null && value !== undefined && value !== '';
+                              
+                              // Udled visningsnavn fra targetField
+                              const parts = mapping.targetField.split('.');
                               const fieldName = parts[parts.length - 1].replace(/_/g, ' ');
                               const displayName = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+                              
                               return (
                                 <div key={i}>
                                   <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
                                     {displayName}
-                                    <span className="text-[10px] text-primary">← {mapping.source}</span>
+                                    <span className="text-[10px] text-primary">← {mapping.sourceField}</span>
                                   </label>
                                   <Input 
-                                    value={String(mapping.value)} 
+                                    value={hasValue ? String(value) : ''} 
+                                    placeholder={hasValue ? undefined : 'Ikke udfyldt'}
                                     readOnly 
-                                    className="bg-background h-8 text-xs"
+                                    className={`bg-background h-8 text-xs ${!hasValue ? 'text-muted-foreground italic placeholder:text-muted-foreground' : ''}`}
                                   />
                                 </div>
                               );
