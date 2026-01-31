@@ -47,6 +47,8 @@ const PRODUCT_CODE_PATTERNS = [
   /^601$/,  // Known product code
   /^12$/,   // Known product code
   /^7\d{4}$/, // 5-digit codes starting with 7
+  /^0\d{3}$/, // 4-digit codes starting with 0 (e.g., 0156)
+  /^\d{4,}$/, // Any 4+ digit number is likely a product code, not a size
 ];
 
 function isLikelyProductCode(segment: string, position: number, totalParts: number): boolean {
@@ -83,6 +85,10 @@ function isValidSizeVariant(option: string): boolean {
   const numMatch = trimmed.match(/^(\d+)$/);
   if (numMatch) {
     const num = parseInt(numMatch[1], 10);
+    // 4+ digit numbers are never valid sizes (these are product codes)
+    if (numMatch[1].length >= 4) {
+      return false;
+    }
     return isValidNumericSize(num);
   }
   return false;
