@@ -267,24 +267,37 @@ export function ConnectStep({ project, onUpdateProject, onNext }: ConnectStepPro
 
           <div className="p-4 rounded-lg border border-border bg-muted/30">
             <h4 className="font-medium mb-2 text-sm">Påkrævede API Scopes</h4>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               {[
-                'read_products', 'write_products',
-                'read_customers', 'write_customers',
-                'read_orders', 'write_orders',
-                'read_content', 'write_content',
-              ].map(scope => (
-                <code 
-                  key={scope} 
-                  className="px-2 py-1 rounded bg-secondary text-xs cursor-pointer hover:bg-secondary/80 transition-colors"
-                  onClick={() => {
-                    navigator.clipboard.writeText(scope);
-                    toast.success(`Kopieret: ${scope}`);
-                  }}
-                  title="Klik for at kopiere"
-                >
-                  {scope}
-                </code>
+                { read: 'read_products', write: 'write_products' },
+                { read: 'read_customers', write: 'write_customers' },
+                { read: 'read_orders', write: 'write_orders' },
+                { read: 'read_content', write: 'write_content' },
+                { read: 'read_metaobjects', write: 'write_metaobjects' },
+              ].map((pair, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <code 
+                    className="px-2 py-1 rounded bg-secondary text-xs cursor-pointer hover:bg-secondary/80 transition-colors"
+                    onClick={() => {
+                      navigator.clipboard.writeText(pair.read);
+                      toast.success(`Kopieret: ${pair.read}`);
+                    }}
+                    title="Klik for at kopiere"
+                  >
+                    {pair.read}
+                  </code>
+                  <span className="text-muted-foreground text-xs">/</span>
+                  <code 
+                    className="px-2 py-1 rounded bg-secondary text-xs cursor-pointer hover:bg-secondary/80 transition-colors"
+                    onClick={() => {
+                      navigator.clipboard.writeText(pair.write);
+                      toast.success(`Kopieret: ${pair.write}`);
+                    }}
+                    title="Klik for at kopiere"
+                  >
+                    {pair.write}
+                  </code>
+                </div>
               ))}
             </div>
           </div>
