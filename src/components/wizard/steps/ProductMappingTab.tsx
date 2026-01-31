@@ -1322,8 +1322,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     </CardContent>
                   </Card>
 
-                  {/* Metafields Card */}
-                  {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9) && (
+                  {/* Metafields Card - Show original fields AND mapped metafields */}
+                  {(product.original.field_1 || product.original.field_2 || product.original.field_3 || product.original.field_9 || 
+                    product.mappedFields.some(m => m.field.startsWith('metafields.'))) && (
                     <Card>
                       <CardContent className="pt-4">
                         <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
@@ -1333,6 +1334,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           </Badge>
                         </label>
                         <div className="grid grid-cols-2 gap-3">
+                          {/* Original hardcoded fields */}
                           {product.original.field_1 && (
                             <div>
                               <label className="text-xs text-muted-foreground mb-1 block">Materiale</label>
@@ -1373,6 +1375,28 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                               />
                             </div>
                           )}
+                          {/* Dynamically mapped metafields from field mappings */}
+                          {product.mappedFields
+                            .filter(m => m.field.startsWith('metafields.'))
+                            .map((mapping, i) => {
+                              // Extract the metafield key from the field path (e.g., "metafields.custom.materiale" -> "materiale")
+                              const parts = mapping.field.split('.');
+                              const fieldName = parts[parts.length - 1].replace(/_/g, ' ');
+                              const displayName = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+                              return (
+                                <div key={i}>
+                                  <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                                    {displayName}
+                                    <span className="text-[10px] text-primary">← {mapping.source}</span>
+                                  </label>
+                                  <Input 
+                                    value={String(mapping.value)} 
+                                    readOnly 
+                                    className="bg-background h-8 text-xs"
+                                  />
+                                </div>
+                              );
+                            })}
                         </div>
                       </CardContent>
                     </Card>
