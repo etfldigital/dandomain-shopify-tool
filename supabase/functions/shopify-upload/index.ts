@@ -541,13 +541,14 @@ async function processProductGroup(
   }
 
   type VariantCandidate = {
-    option1: string;
+    option1: string | null; // null = no variant option (product without variants)
     sku: string;
     price: string;
     compare_at_price: string | null;
     inventory_quantity: number;
     weight: number;
     barcode?: string;
+    noVariantOption?: boolean; // True if product should have no variant selector
   };
 
   const variantByOption: Map<string, VariantCandidate> = new Map();
@@ -555,10 +556,13 @@ async function processProductGroup(
   if (mergedVariants && mergedVariants.length > 0) {
     for (const mv of mergedVariants) {
       const sku = String(mv?.sku || '').trim();
-      const option1 = normalizeSizeOption(String(mv?.size || ''));
+      // Check if this is a true no-variant product (should NOT get ONE-SIZE)
+      const hasNoVariantOption = mv?.noVariantOption === true;
+      const option1 = hasNoVariantOption ? null : normalizeSizeOption(String(mv?.size || ''));
 
-      // Dedupe by option value (keep first)
-      if (variantByOption.has(option1)) continue;
+      // Dedupe by option value (keep first) - for no-variant products, use SKU as key
+      const dedupeKey = option1 ?? `__no_option_${sku}`;
+      if (variantByOption.has(dedupeKey)) continue;
 
       const v: VariantCandidate = {
         option1,
@@ -567,9 +571,10 @@ async function processProductGroup(
         compare_at_price: mv?.compareAtPrice ? String(mv.compareAtPrice) : null,
         inventory_quantity: parseInt(String(mv?.stockQuantity ?? 0), 10),
         weight: mv?.weight ? parseFloat(String(mv.weight)) : 0,
+        noVariantOption: hasNoVariantOption,
       };
       if (mv?.barcode) v.barcode = String(mv.barcode);
-      variantByOption.set(option1, v);
+      variantByOption.set(dedupeKey, v);
     }
   } else {
     // Fallback: derive variants from raw items (pre-prepare upload)
@@ -597,18 +602,29 @@ async function processProductGroup(
     }
   }
 
-  const variants: any[] = Array.from(variantByOption.values()).map((v) => ({
-    sku: v.sku,
-    price: v.price,
-    compare_at_price: v.compare_at_price,
-    inventory_management: 'shopify',
-    inventory_quantity: v.inventory_quantity,
-    weight: v.weight,
-    weight_unit: 'kg',
-    requires_shipping: true,
-    option1: v.option1, // ALWAYS set to avoid Shopify "Default Title"
-    ...(v.barcode ? { barcode: v.barcode } : {}),
-  }));
+  // Check if this is a no-variant product (should NOT have option1)
+  const hasNoVariantOption = Array.from(variantByOption.values()).some(v => v.noVariantOption === true);
+
+  const variants: any[] = Array.from(variantByOption.values()).map((v) => {
+    const variantData: any = {
+      sku: v.sku,
+      price: v.price,
+      compare_at_price: v.compare_at_price,
+      inventory_management: 'shopify',
+      inventory_quantity: v.inventory_quantity,
+      weight: v.weight,
+      weight_unit: 'kg',
+      requires_shipping: true,
+      ...(v.barcode ? { barcode: v.barcode } : {}),
+    };
+    
+    // Only add option1 if product has real variant options
+    if (!v.noVariantOption && v.option1) {
+      variantData.option1 = v.option1;
+    }
+    
+    return variantData;
+  });
 
   // Collect images from the PRIMARY record (which has merged images from prepare-upload)
   // IMPORTANT: Use primaryData.images or _mergedImages as the primary source
@@ -763,10 +779,14 @@ async function processProductGroup(
     }
   };
 
-  // Always set option values so Shopify never creates "Default" variants
-  const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
-  const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
-  productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions.length > 0 ? uniqueOptions : ['ONE-SIZE'] }];
+  // Only set options if product has real variant options (not for products without variants)
+  if (!hasNoVariantOption) {
+    const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
+    const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
+    productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions.length > 0 ? uniqueOptions : ['ONE-SIZE'] }];
+  }
+  // If hasNoVariantOption is true, we don't set options - Shopify will use "Default Title" internally
+  // but the product won't show a size/variant dropdown to customers
 
   console.log(`[PRODUCTS] Creating "${transformedTitle}" with ${variants.length} variant(s)`);
 

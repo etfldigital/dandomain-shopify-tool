@@ -228,6 +228,7 @@ interface ValidatedVariant {
   stockQuantity: number;
   weight: number;
   barcode: string | null;
+  noVariantOption?: boolean; // True if product has no real variant options (should not get ONE-SIZE)
 }
 
 interface ProductGroup {
@@ -440,16 +441,18 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
       if (group.variants.length === 0) {
         // First item in group with no size - tentatively add as single variant
         // We might remove this later if sized variants are added
+        // Mark this as a true no-variant product (not ONE-SIZE)
         group.variants.push({
           recordId: product.id,
           externalId: product.external_id,
           sku: sku,
-          size: '', // No size option
+          size: '', // Empty = no size option, will NOT become ONE-SIZE
           price: String(data.price || '0'),
           compareAtPrice: data.compare_at_price ? String(data.compare_at_price) : null,
           stockQuantity: parseInt(String(data.stock_quantity || 0), 10),
           weight: data.weight ? parseFloat(String(data.weight)) : 0,
           barcode: data.barcode || null,
+          noVariantOption: true, // Flag: this product has no real variant options
         });
       } else if (group.variants.some(v => v.size)) {
         // Group already has sized variants, this one has no size
