@@ -265,6 +265,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     await saveMappings(fieldMappings);
     setSavingMappings(false);
     toast.success('Felt-mappings gemt');
+
+    // Refresh metafields from Shopify so preview shows the newly created ones
+    await fetchShopifyMetafields(true);
   };
 
   useEffect(() => {
@@ -1407,10 +1410,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                               const value = mappedField?.value;
                               const hasValue = value !== null && value !== undefined && value !== '';
                               
-                              // Udled visningsnavn fra targetField
-                              const parts = mapping.targetField.split('.');
-                              const fieldName = parts[parts.length - 1].replace(/_/g, ' ');
-                              const displayName = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+                              // Try to get the official name from Shopify metafields first
+                              const shopifyField = allShopifyFields.find(f => f.value === mapping.targetField);
+                              let displayName: string;
+                              if (shopifyField && 'isMetafield' in shopifyField) {
+                                // Use the Shopify name
+                                displayName = shopifyField.label;
+                              } else {
+                                // Fallback: derive from targetField
+                                const parts = mapping.targetField.split('.');
+                                const fieldName = parts[parts.length - 1].replace(/_/g, ' ');
+                                displayName = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+                              }
                               
                               return (
                                 <div key={i}>
