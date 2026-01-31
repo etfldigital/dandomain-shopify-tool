@@ -612,16 +612,19 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     setSearchQuery('');
   };
 
-  const addFieldMapping = async () => {
-    if (!newMapping.sourceField || !newMapping.targetField) {
+  const addFieldMapping = async (customTargetField?: string) => {
+    const sourceField = newMapping.sourceField;
+    const targetField = customTargetField || newMapping.targetField;
+    
+    if (!sourceField || !targetField) {
       toast.error('Vælg både kilde- og målfelt');
       return;
     }
 
     const mapping: FieldMapping = {
       id: `mapping-${Date.now()}`,
-      sourceField: newMapping.sourceField,
-      targetField: newMapping.targetField,
+      sourceField: sourceField,
+      targetField: targetField,
     };
 
     const updatedMappings = [...fieldMappings, mapping];
@@ -837,7 +840,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
               {/* Centered add mapping button */}
               <div className="flex justify-center">
                 <Button
-                  onClick={addFieldMapping}
+                  onClick={() => addFieldMapping()}
                   disabled={!newMapping.sourceField || !newMapping.targetField}
                 >
                   <Plus className="w-4 h-4 mr-2" />
@@ -878,12 +881,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                       />
                       <Button
                         size="sm"
-                        onClick={() => {
-                          if (customMetafieldName.trim()) {
+                        onClick={async () => {
+                          if (customMetafieldName.trim() && newMapping.sourceField) {
                             const key = customMetafieldName.trim().toLowerCase().replace(/\s+/g, '_');
-                            setNewMapping(prev => ({ ...prev, targetField: `metafields.custom.${key}` }));
+                            const customTarget = `metafields.custom.${key}`;
                             setShowCustomMetafieldInput(false);
                             setCustomMetafieldName('');
+                            // Directly add the mapping with the custom target
+                            await addFieldMapping(customTarget);
+                          } else if (!newMapping.sourceField) {
+                            toast.error('Vælg først et kilde felt');
                           }
                         }}
                         disabled={!customMetafieldName.trim()}
