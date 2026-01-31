@@ -219,6 +219,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   // Dynamic metafields from Shopify
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
   const [fetchingMetafields, setFetchingMetafields] = useState(false);
+  const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -233,6 +234,13 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   useEffect(() => {
     loadData();
   }, [projectId]);
+
+  // Auto-fetch Shopify metafields on mount
+  useEffect(() => {
+    if (!metafieldsLoaded && projectId) {
+      fetchShopifyMetafields(true); // silent mode
+    }
+  }, [projectId, metafieldsLoaded]);
 
   useEffect(() => {
     if (productIds.length > 0) {
@@ -307,7 +315,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     }
   };
 
-  const fetchShopifyMetafields = async () => {
+  const fetchShopifyMetafields = async (silent = false) => {
     setFetchingMetafields(true);
     try {
       const { data, error } = await supabase.functions.invoke('fetch-metafields', {
@@ -316,17 +324,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       if (error) {
         console.error('Error fetching metafields:', error);
-        toast.error('Kunne ikke hente metafelter fra Shopify');
+        if (!silent) toast.error('Kunne ikke hente metafelter fra Shopify');
         return;
       }
 
       if (data?.metafields) {
         setShopifyMetafields(data.metafields);
-        toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
+        setMetafieldsLoaded(true);
+        if (!silent) toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
       }
     } catch (error) {
       console.error('Error fetching metafields:', error);
-      toast.error('Fejl ved hentning af metafelter');
+      if (!silent) toast.error('Fejl ved hentning af metafelter');
     } finally {
       setFetchingMetafields(false);
     }
@@ -797,27 +806,20 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         {/* Field Mapping Tab */}
         <TabsContent value="mapping" className="mt-6">
           <Card>
-            <CardHeader className="flex flex-row items-start justify-between space-y-0">
-              <div>
-                <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
-                <CardDescription>
-                  Map ekstra felter fra DanDomain XML til Shopify felter
-                </CardDescription>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={fetchShopifyMetafields}
-                  disabled={fetchingMetafields}
-                >
-                  {fetchingMetafields ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                  )}
-                  Hent metafelter
-                </Button>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg">Ekstra felt-mappings</CardTitle>
+                  <CardDescription>
+                    Map ekstra felter fra DanDomain XML til Shopify felter
+                    {fetchingMetafields && (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        <Loader2 className="w-3 h-3 inline animate-spin mr-1" />
+                        Henter metafelter...
+                      </span>
+                    )}
+                  </CardDescription>
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -830,7 +832,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Add new mapping */}
+              {/* Centered add mapping button */}
+              <div className="flex justify-center">
+                <Button
+                  onClick={addFieldMapping}
+                  disabled={!newMapping.sourceField || !newMapping.targetField}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Tilføj mapping
+                </Button>
+              </div>
+
+              {/* Source and target field selectors */}
               <div className="flex gap-3 items-end">
                 <div className="flex-1">
                   <Label className="text-xs">Kilde felt (DanDomain)</Label>
@@ -876,9 +889,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button onClick={addFieldMapping} size="icon">
-                  <Plus className="w-4 h-4" />
-                </Button>
               </div>
 
               {/* Existing mappings */}
