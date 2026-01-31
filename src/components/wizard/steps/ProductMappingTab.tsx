@@ -201,6 +201,7 @@ const defaultMappingRules: MappingRules = {
 
 export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'transform' | 'mapping' | 'preview'>('transform');
   const [mappingRules, setMappingRules] = useState<MappingRules>(defaultMappingRules);
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
   const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
@@ -812,7 +813,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   return (
     <div className="space-y-6">
       {/* Inner Tabs for Transformation, Mapping, Preview */}
-      <Tabs defaultValue="transform" className="w-full">
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          const next = v as 'transform' | 'mapping' | 'preview';
+          setActiveTab(next);
+          // Ensure preview always reflects latest DB state (e.g. after regrouping/prepare-upload)
+          if (next === 'preview' && productIds.length > 0) {
+            void loadProduct(productIds[currentIndex].id);
+          }
+        }}
+        className="w-full"
+      >
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="transform" className="flex items-center gap-2">
             <Settings className="w-4 h-4" />
@@ -1113,7 +1125,17 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
             <div className="space-y-4">
               {/* Search and Navigation Bar */}
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <h3 className="text-lg font-medium">Shopify Preview</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-medium">Shopify Preview</h3>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => productIds[currentIndex] && loadProduct(productIds[currentIndex].id)}
+                    title="Opdater preview"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </Button>
+                </div>
                 
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
                   {/* Search Input */}

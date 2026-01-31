@@ -659,6 +659,27 @@ serve(async (req) => {
             }
           }
           const primaryRecord = allProducts.find(p => p.id === primaryId);
+
+          // Some DanDomain fields (e.g. FIELD_1/2/3/9) can be present only on ONE record in the group
+          // (often the base SKU without size), while the chosen primary might be a size-variant record.
+          // To ensure previews/uploads see these fields, copy “best non-empty” values from ANY record
+          // in the group onto the primary.
+          const groupRecords = group.recordIds
+            .map(id => allProducts.find(p => p.id === id))
+            .filter(Boolean) as any[];
+
+          const pickBestNonEmpty = (key: string) => {
+            for (const r of groupRecords) {
+              const v = r?.data?.[key];
+              if (typeof v === 'string') {
+                const t = v.trim();
+                if (t !== '') return t;
+                continue;
+              }
+              if (v !== null && v !== undefined) return v;
+            }
+            return undefined;
+          };
           
           // Primary record update data - MERGE all group fields into primary
           // This ensures images, body_html, tags, vendor from ALL variants are preserved
@@ -672,6 +693,16 @@ serve(async (req) => {
               vendor: group.vendor || primaryRecord?.data?.vendor || '',
               tags: group.tags.length > 0 ? group.tags : (primaryRecord?.data?.tags || []),
               images: group.images.length > 0 ? group.images : (primaryRecord?.data?.images || []),
+
+              // Copy custom fields + SEO from any record in the group (best non-empty wins)
+              field_1: pickBestNonEmpty('field_1') ?? primaryRecord?.data?.field_1 ?? null,
+              field_2: pickBestNonEmpty('field_2') ?? primaryRecord?.data?.field_2 ?? null,
+              field_3: pickBestNonEmpty('field_3') ?? primaryRecord?.data?.field_3 ?? null,
+              field_9: pickBestNonEmpty('field_9') ?? primaryRecord?.data?.field_9 ?? null,
+              meta_title: pickBestNonEmpty('meta_title') ?? primaryRecord?.data?.meta_title ?? null,
+              meta_description: pickBestNonEmpty('meta_description') ?? primaryRecord?.data?.meta_description ?? null,
+              source_path: pickBestNonEmpty('source_path') ?? primaryRecord?.data?.source_path ?? null,
+
               // Group metadata - SET FOR ALL PRODUCTS (single or multi-variant)
               _groupKey: group.key,
               _groupTitle: group.title,
