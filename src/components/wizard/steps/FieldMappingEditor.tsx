@@ -16,7 +16,7 @@ import { Loader2, Trash2, AlertTriangle, Plus, ArrowRight, Save } from 'lucide-r
 import { EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { MetafieldTypeDialog, SHOPIFY_METAFIELD_TYPES } from './MetafieldTypeDialog';
+import { CreateMetafieldsDialog, NewMetafieldConfig } from './CreateMetafieldsDialog';
 
 interface FieldMappingEditorProps {
   projectId: string;
@@ -108,10 +108,9 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
   const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
   
-  // New metafield dialog state
-  const [showMetafieldDialog, setShowMetafieldDialog] = useState(false);
-  const [pendingSourceField, setPendingSourceField] = useState('');
-  const [creatingMetafield, setCreatingMetafield] = useState(false);
+  // Create metafields dialog state
+  const [showCreateMetafieldsDialog, setShowCreateMetafieldsDialog] = useState(false);
+  const [pendingNewMetafields, setPendingNewMetafields] = useState<{ sourceField: string; targetField: string }[]>([]);
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -186,82 +185,50 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
     }
   };
 
-  // Handle when user selects "Create new metafield" option
+  // Handle when user selects "Create new metafield" option - just add it to mapping list
   const handleTargetFieldChange = (value: string) => {
     if (value === '__create_new_metafield__') {
       if (!newMapping.sourceField) {
         toast.error('Vælg først et kilde felt');
         return;
       }
-      setPendingSourceField(newMapping.sourceField);
-      setShowMetafieldDialog(true);
+      // Create a new metafield target with a generated key
+      const key = newMapping.sourceField.toLowerCase().replace(/_/g, '_');
+      const targetField = `metafields.custom.${key}`;
+      setNewMapping(prev => ({ ...prev, targetField }));
     } else {
       setNewMapping(prev => ({ ...prev, targetField: value }));
     }
   };
 
-  // Handle metafield creation from dialog
-  const handleCreateMetafield = async (metafieldName: string, metafieldType: string) => {
-    setCreatingMetafield(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('create-metafield-definition', {
-        body: {
-          projectId,
-          name: metafieldName.charAt(0).toUpperCase() + metafieldName.slice(1).replace(/_/g, ' '),
-          namespace: 'custom',
-          key: metafieldName,
-          type: metafieldType,
-          ownerType: 'PRODUCT',
-        },
-      });
+  // Find metafields in mappings that don't exist in Shopify yet
+  const findNewMetafields = (mappings: FieldMapping[]) => {
+    const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
+    return mappings
+      .filter(m => m.targetField.startsWith('metafields.') && !existingKeys.has(m.targetField))
+      .map(m => ({ sourceField: m.sourceField, targetField: m.targetField }));
+  };
 
-      if (error) {
-        console.error('Error creating metafield:', error);
-        toast.error('Fejl ved oprettelse af metafelt i Shopify');
-        return;
-      }
-
-      if (data?.success) {
-        const targetField = `metafields.custom.${metafieldName}`;
-        
-        // Add to local metafields list
-        const newMetafield: ShopifyMetafield = {
-          namespace: 'custom',
-          key: metafieldName,
-          name: metafieldName.charAt(0).toUpperCase() + metafieldName.slice(1).replace(/_/g, ' '),
-          type: metafieldType,
-        };
-        setShopifyMetafields(prev => [...prev, newMetafield]);
-        
-        // Create and save the mapping
-        const mapping: FieldMapping = {
-          id: `mapping-${Date.now()}`,
-          sourceField: pendingSourceField,
-          targetField,
-          entityType: 'products',
-          metafieldType,
-        };
-
-        const updatedMappings = [...fieldMappings, mapping];
-        setFieldMappings(updatedMappings);
-        setNewMapping({ sourceField: '', targetField: '' });
-        
-        await saveMappings(updatedMappings);
-        
-        if (data.alreadyExists) {
-          toast.success('Metafelt fandtes allerede - mapping tilføjet');
-        } else {
-          toast.success('Metafelt oprettet i Shopify og mapping tilføjet');
-        }
-        
-        setShowMetafieldDialog(false);
-      }
-    } catch (error) {
-      console.error('Error creating metafield:', error);
-      toast.error('Fejl ved oprettelse af metafelt');
-    } finally {
-      setCreatingMetafield(false);
-    }
+  // Handle completion of metafield creation dialog
+  const handleMetafieldsCreated = async (createdConfigs: NewMetafieldConfig[]) => {
+    // Add successful ones to local shopify metafields list
+    const successfulConfigs = createdConfigs.filter(c => c.status === 'success');
+    const newShopifyMetafields: ShopifyMetafield[] = successfulConfigs.map(c => ({
+      namespace: 'custom',
+      key: c.metafieldName.toLowerCase().replace(/\s+/g, '_'),
+      name: c.metafieldName.charAt(0).toUpperCase() + c.metafieldName.slice(1).replace(/_/g, ' '),
+      type: c.metafieldType,
+    }));
+    setShopifyMetafields(prev => [...prev, ...newShopifyMetafields]);
+    
+    // Close dialog and save mappings
+    setShowCreateMetafieldsDialog(false);
+    
+    // Save the mappings to database
+    await saveMappings(fieldMappings);
+    setSaving(false);
+    toast.success('Felt-mappings gemt');
+    onSave?.();
   };
 
   const addFieldMapping = async () => {
@@ -339,11 +306,22 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   };
 
   const handleSaveClick = async () => {
-    setSaving(true);
-    await saveMappings(fieldMappings);
-    setSaving(false);
-    toast.success('Felt-mappings gemt');
-    onSave?.();
+    // Check if there are new metafields that need to be created
+    const newMetafields = findNewMetafields(fieldMappings);
+    
+    if (newMetafields.length > 0) {
+      // Show dialog to configure and create new metafields
+      setPendingNewMetafields(newMetafields);
+      setShowCreateMetafieldsDialog(true);
+      setSaving(true); // Will be set to false when dialog completes
+    } else {
+      // No new metafields, just save
+      setSaving(true);
+      await saveMappings(fieldMappings);
+      setSaving(false);
+      toast.success('Felt-mappings gemt');
+      onSave?.();
+    }
   };
 
   if (loading) {
@@ -523,13 +501,16 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
         )}
       </CardContent>
 
-      {/* Metafield type dialog */}
-      <MetafieldTypeDialog
-        open={showMetafieldDialog}
-        onOpenChange={setShowMetafieldDialog}
-        sourceField={pendingSourceField}
-        onConfirm={handleCreateMetafield}
-        isCreating={creatingMetafield}
+      {/* Create metafields dialog - shown when saving with new metafields */}
+      <CreateMetafieldsDialog
+        open={showCreateMetafieldsDialog}
+        onOpenChange={(open) => {
+          setShowCreateMetafieldsDialog(open);
+          if (!open) setSaving(false);
+        }}
+        projectId={projectId}
+        newMetafields={pendingNewMetafields}
+        onComplete={handleMetafieldsCreated}
       />
     </Card>
   );
