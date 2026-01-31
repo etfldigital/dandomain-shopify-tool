@@ -203,6 +203,8 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [mappingRules, setMappingRules] = useState<MappingRules>(defaultMappingRules);
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
   const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
+  const [customMetafieldName, setCustomMetafieldName] = useState('');
+  const [showCustomMetafieldInput, setShowCustomMetafieldInput] = useState(false);
   
   // Preview state
   const [product, setProduct] = useState<ProductPreviewData | null>(null);
@@ -866,28 +868,78 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 <ArrowRight className="w-5 h-5 text-muted-foreground mb-2" />
                 <div className="flex-1">
                   <Label className="text-xs">Mål felt (Shopify)</Label>
-                  <Select
-                    value={newMapping.targetField}
-                    onValueChange={(v) => setNewMapping(prev => ({ ...prev, targetField: v }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Vælg mål felt..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {allShopifyFields.map(field => (
-                        <SelectItem key={field.value} value={field.value}>
+                  {showCustomMetafieldInput ? (
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Navngiv metafelt..."
+                        value={customMetafieldName}
+                        onChange={(e) => setCustomMetafieldName(e.target.value)}
+                        className="flex-1"
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          if (customMetafieldName.trim()) {
+                            const key = customMetafieldName.trim().toLowerCase().replace(/\s+/g, '_');
+                            setNewMapping(prev => ({ ...prev, targetField: `metafields.custom.${key}` }));
+                            setShowCustomMetafieldInput(false);
+                            setCustomMetafieldName('');
+                          }
+                        }}
+                        disabled={!customMetafieldName.trim()}
+                      >
+                        <Check className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setShowCustomMetafieldInput(false);
+                          setCustomMetafieldName('');
+                        }}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Select
+                      value={newMapping.targetField}
+                      onValueChange={(v) => {
+                        if (v === '__custom_metafield__') {
+                          setShowCustomMetafieldInput(true);
+                        } else {
+                          setNewMapping(prev => ({ ...prev, targetField: v }));
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Vælg mål felt..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {allShopifyFields.map(field => (
+                          <SelectItem key={field.value} value={field.value}>
+                            <span className="flex items-center gap-2">
+                              {field.label}
+                              {'isMetafield' in field && field.isMetafield && (
+                                <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+                                  Metafelt
+                                </Badge>
+                              )}
+                            </span>
+                          </SelectItem>
+                        ))}
+                        {/* Custom metafield option at the bottom */}
+                        <SelectItem value="__custom_metafield__">
                           <span className="flex items-center gap-2">
-                            {field.label}
-                            {'isMetafield' in field && field.isMetafield && (
-                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
-                                Metafelt
-                              </Badge>
-                            )}
+                            <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10">
+                              <Plus className="w-3 h-3 text-primary" />
+                            </span>
+                            Metafelt
                           </span>
                         </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
               </div>
 
