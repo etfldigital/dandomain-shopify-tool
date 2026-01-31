@@ -526,12 +526,35 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
     const rawData = product.original.rawData;
     const mappedFields: { field: string; value: any; source: string }[] = [];
+
+    const getSourceValue = (sourceField: string) => {
+      // 1) Direct hit
+      if (rawData && Object.prototype.hasOwnProperty.call(rawData, sourceField)) {
+        return rawData[sourceField];
+      }
+
+      // 2) Handle DanDomain custom fields: FIELD_1 -> field_1
+      const m = sourceField.match(/^FIELD_(\d+)$/i);
+      if (m) {
+        const n = m[1];
+        const camel = `field_${n}`;
+        if (rawData && Object.prototype.hasOwnProperty.call(rawData, camel)) {
+          return rawData[camel];
+        }
+      }
+
+      // 3) Generic case-insensitive fallback
+      if (!rawData) return undefined;
+      const lower = sourceField.toLowerCase();
+      const hitKey = Object.keys(rawData).find(k => k.toLowerCase() === lower);
+      return hitKey ? rawData[hitKey] : undefined;
+    };
     
     // Start with original values
     const transformed = { ...product.transformed };
 
     for (const mapping of fieldMappings) {
-      const sourceValue = rawData[mapping.sourceField];
+      const sourceValue = getSourceValue(mapping.sourceField);
       
       // ALTID tilføj mapping - også for tomme værdier (så de vises i preview)
       mappedFields.push({
@@ -583,7 +606,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       transformed,
       mappedFields,
     } : null);
-  }, [fieldMappings]);
+  }, [fieldMappings, product?.original.rawData]);
 
   const handlePrevious = () => {
     setCurrentIndex(prev => Math.max(0, prev - 1));
