@@ -20,6 +20,7 @@ import { Loader2, ArrowRight, Package, AlertTriangle, Check, X, Plus, Trash2, Ch
 import { supabase } from '@/integrations/supabase/client';
 import { ProductData } from '@/types/database';
 import { toast } from 'sonner';
+import { CreateMetafieldsDialog, NewMetafieldConfig } from './CreateMetafieldsDialog';
 
 interface ProductMappingTabProps {
   projectId: string;
@@ -205,6 +206,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [newMapping, setNewMapping] = useState({ sourceField: '', targetField: '' });
   const [customMetafieldName, setCustomMetafieldName] = useState('');
   const [showCustomMetafieldInput, setShowCustomMetafieldInput] = useState(false);
+
+  // Create metafields dialog state (for new custom metafields)
+  const [showCreateMetafieldsDialog, setShowCreateMetafieldsDialog] = useState(false);
+  const [pendingNewMetafields, setPendingNewMetafields] = useState<{ sourceField: string; targetField: string }[]>([]);
+  const [savingMappings, setSavingMappings] = useState(false);
   
   // Preview state
   const [product, setProduct] = useState<ProductPreviewData | null>(null);
@@ -232,6 +238,34 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       isMetafield: true,
     })),
   ];
+
+  const findNewMetafields = (mappings: FieldMapping[]) => {
+    const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
+    return mappings
+      .filter(m => m.targetField.startsWith('metafields.') && !existingKeys.has(m.targetField))
+      .map(m => ({ sourceField: m.sourceField, targetField: m.targetField }));
+  };
+
+  const handleMetafieldsCreated = async (createdConfigs: NewMetafieldConfig[]) => {
+    // Add successful ones to local shopify metafields list (so subsequent checks don't re-trigger)
+    const successfulConfigs = createdConfigs.filter(c => c.status === 'success');
+    const newShopifyMetafields: ShopifyMetafield[] = successfulConfigs.map(c => ({
+      namespace: 'custom',
+      key: c.metafieldName.toLowerCase().replace(/\s+/g, '_'),
+      name: c.metafieldName.charAt(0).toUpperCase() + c.metafieldName.slice(1).replace(/_/g, ' '),
+      type: c.metafieldType,
+    }));
+    if (newShopifyMetafields.length > 0) {
+      setShopifyMetafields(prev => [...prev, ...newShopifyMetafields]);
+    }
+
+    setShowCreateMetafieldsDialog(false);
+
+    // Now persist the mappings (they were already added to state)
+    await saveMappings(fieldMappings);
+    setSavingMappings(false);
+    toast.success('Felt-mappings gemt');
+  };
 
   useEffect(() => {
     loadData();
@@ -633,16 +667,29 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     const updatedMappings = [...fieldMappings, mapping];
     setFieldMappings(updatedMappings);
     setNewMapping({ sourceField: '', targetField: '' });
-    
+
+    // If this introduces new metafields (not yet present in Shopify), force the dialog
+    const newMetafields = findNewMetafields(updatedMappings);
+    if (newMetafields.length > 0) {
+      setPendingNewMetafields(newMetafields);
+      setShowCreateMetafieldsDialog(true);
+      setSavingMappings(true);
+      return;
+    }
+
+    setSavingMappings(true);
     await saveMappings(updatedMappings);
+    setSavingMappings(false);
     toast.success('Felt-mapping tilføjet');
   };
 
   const removeFieldMapping = async (id: string) => {
     const updatedMappings = fieldMappings.filter(m => m.id !== id);
     setFieldMappings(updatedMappings);
-    
+
+    setSavingMappings(true);
     await saveMappings(updatedMappings);
+    setSavingMappings(false);
     toast.success('Felt-mapping fjernet');
   };
 
@@ -670,7 +717,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
     const updatedMappings = [...fieldMappings, ...newMappings];
     setFieldMappings(updatedMappings);
+
+    const newMetafields = findNewMetafields(updatedMappings);
+    if (newMetafields.length > 0) {
+      setPendingNewMetafields(newMetafields);
+      setShowCreateMetafieldsDialog(true);
+      setSavingMappings(true);
+      return;
+    }
+
+    setSavingMappings(true);
     await saveMappings(updatedMappings);
+    setSavingMappings(false);
     toast.success(`${newMappings.length} felt-mappings tilføjet automatisk`);
   };
 
@@ -833,6 +891,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                   size="sm"
                   onClick={autoMapFields}
                   className="flex items-center gap-2"
+                  disabled={savingMappings}
                 >
                   <Wand2 className="w-4 h-4" />
                   Auto-map
@@ -844,7 +903,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
               <div className="flex justify-center">
                 <Button
                   onClick={() => addFieldMapping()}
-                  disabled={!newMapping.sourceField || !newMapping.targetField}
+                  disabled={savingMappings || !newMapping.sourceField || !newMapping.targetField}
                 >
                   <Plus className="w-4 h-4 mr-2" />
                   Tilføj mapping
@@ -896,7 +955,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                             toast.error('Vælg først et kilde felt');
                           }
                         }}
-                        disabled={!customMetafieldName.trim()}
+                        disabled={savingMappings || !customMetafieldName.trim()}
                       >
                         <Check className="w-4 h-4" />
                       </Button>
@@ -907,6 +966,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           setShowCustomMetafieldInput(false);
                           setCustomMetafieldName('');
                         }}
+                        disabled={savingMappings}
                       >
                         <X className="w-4 h-4" />
                       </Button>
@@ -985,6 +1045,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                               size="sm"
                               onClick={() => removeFieldMapping(mapping.id)}
                               className="text-destructive hover:text-destructive"
+                              disabled={savingMappings}
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
@@ -1546,6 +1607,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Create metafields dialog - shown when saving mappings that reference new metafields */}
+      <CreateMetafieldsDialog
+        open={showCreateMetafieldsDialog}
+        onOpenChange={(open) => {
+          setShowCreateMetafieldsDialog(open);
+          if (!open) setSavingMappings(false);
+        }}
+        projectId={projectId}
+        newMetafields={pendingNewMetafields}
+        onComplete={handleMetafieldsCreated}
+      />
     </div>
   );
 }
