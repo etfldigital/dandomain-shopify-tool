@@ -92,10 +92,12 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       
       // CUSTOM_FIELDS section - custom fields FIELD_1 to FIELD_20
       const customFieldsSection = product.getElementsByTagName('CUSTOM_FIELDS')[0];
-      const field1 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_1') : '';
-      const field2 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_2') : '';
-      const field3 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_3') : '';
-      const field9 = customFieldsSection ? getElementText(customFieldsSection, 'FIELD_9') : '';
+      // Some DanDomain exports may not nest these under <CUSTOM_FIELDS>. Be defensive and fall back
+      // to searching within the full <PRODUCT> element.
+      const field1 = (customFieldsSection ? getElementText(customFieldsSection, 'FIELD_1') : '') || getElementText(product, 'FIELD_1');
+      const field2 = (customFieldsSection ? getElementText(customFieldsSection, 'FIELD_2') : '') || getElementText(product, 'FIELD_2');
+      const field3 = (customFieldsSection ? getElementText(customFieldsSection, 'FIELD_3') : '') || getElementText(product, 'FIELD_3');
+      const field9 = (customFieldsSection ? getElementText(customFieldsSection, 'FIELD_9') : '') || getElementText(product, 'FIELD_9');
       
       // STOCK section
       const stock = product.getElementsByTagName('STOCK')[0];
