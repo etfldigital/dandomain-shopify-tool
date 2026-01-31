@@ -12,10 +12,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Trash2, AlertTriangle, Plus, ArrowRight, Save, RefreshCw } from 'lucide-react';
+import { Loader2, Trash2, AlertTriangle, Plus, ArrowRight, Save } from 'lucide-react';
 import { EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { MetafieldTypeDialog, SHOPIFY_METAFIELD_TYPES } from './MetafieldTypeDialog';
 
 interface FieldMappingEditorProps {
   projectId: string;
@@ -28,6 +29,7 @@ export interface FieldMapping {
   sourceField: string;
   targetField: string;
   entityType: EntityType;
+  metafieldType?: string; // Shopify metafield type (e.g., single_line_text_field)
 }
 
 // Base Shopify product fields that can be mapped
@@ -105,6 +107,11 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   const [fetchingMetafields, setFetchingMetafields] = useState(false);
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
   const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
+  
+  // New metafield dialog state
+  const [showMetafieldDialog, setShowMetafieldDialog] = useState(false);
+  const [pendingSourceField, setPendingSourceField] = useState('');
+  const [creatingMetafield, setCreatingMetafield] = useState(false);
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -176,6 +183,84 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
       if (!silent) toast.error('Fejl ved hentning af metafelter');
     } finally {
       setFetchingMetafields(false);
+    }
+  };
+
+  // Handle when user selects "Create new metafield" option
+  const handleTargetFieldChange = (value: string) => {
+    if (value === '__create_new_metafield__') {
+      if (!newMapping.sourceField) {
+        toast.error('Vælg først et kilde felt');
+        return;
+      }
+      setPendingSourceField(newMapping.sourceField);
+      setShowMetafieldDialog(true);
+    } else {
+      setNewMapping(prev => ({ ...prev, targetField: value }));
+    }
+  };
+
+  // Handle metafield creation from dialog
+  const handleCreateMetafield = async (metafieldName: string, metafieldType: string) => {
+    setCreatingMetafield(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('create-metafield-definition', {
+        body: {
+          projectId,
+          name: metafieldName.charAt(0).toUpperCase() + metafieldName.slice(1).replace(/_/g, ' '),
+          namespace: 'custom',
+          key: metafieldName,
+          type: metafieldType,
+          ownerType: 'PRODUCT',
+        },
+      });
+
+      if (error) {
+        console.error('Error creating metafield:', error);
+        toast.error('Fejl ved oprettelse af metafelt i Shopify');
+        return;
+      }
+
+      if (data?.success) {
+        const targetField = `metafields.custom.${metafieldName}`;
+        
+        // Add to local metafields list
+        const newMetafield: ShopifyMetafield = {
+          namespace: 'custom',
+          key: metafieldName,
+          name: metafieldName.charAt(0).toUpperCase() + metafieldName.slice(1).replace(/_/g, ' '),
+          type: metafieldType,
+        };
+        setShopifyMetafields(prev => [...prev, newMetafield]);
+        
+        // Create and save the mapping
+        const mapping: FieldMapping = {
+          id: `mapping-${Date.now()}`,
+          sourceField: pendingSourceField,
+          targetField,
+          entityType: 'products',
+          metafieldType,
+        };
+
+        const updatedMappings = [...fieldMappings, mapping];
+        setFieldMappings(updatedMappings);
+        setNewMapping({ sourceField: '', targetField: '' });
+        
+        await saveMappings(updatedMappings);
+        
+        if (data.alreadyExists) {
+          toast.success('Metafelt fandtes allerede - mapping tilføjet');
+        } else {
+          toast.success('Metafelt oprettet i Shopify og mapping tilføjet');
+        }
+        
+        setShowMetafieldDialog(false);
+      }
+    } catch (error) {
+      console.error('Error creating metafield:', error);
+      toast.error('Fejl ved oprettelse af metafelt');
+    } finally {
+      setCreatingMetafield(false);
     }
   };
 
@@ -320,7 +405,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
             <Label className="text-xs">Mål felt (Shopify)</Label>
             <Select
               value={newMapping.targetField}
-              onValueChange={(v) => setNewMapping(prev => ({ ...prev, targetField: v }))}
+              onValueChange={handleTargetFieldChange}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Vælg mål felt..." />
@@ -338,6 +423,18 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
                     </span>
                   </SelectItem>
                 ))}
+                {/* Separator and create new option */}
+                <SelectItem 
+                  value="__create_new_metafield__" 
+                  className="border-t mt-1 pt-2 text-primary font-medium"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10">
+                      <Plus className="w-3 h-3 text-primary" />
+                    </span>
+                    Opret nyt metafelt...
+                  </span>
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -425,6 +522,15 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
           </div>
         )}
       </CardContent>
+
+      {/* Metafield type dialog */}
+      <MetafieldTypeDialog
+        open={showMetafieldDialog}
+        onOpenChange={setShowMetafieldDialog}
+        sourceField={pendingSourceField}
+        onConfirm={handleCreateMetafield}
+        isCreating={creatingMetafield}
+      />
     </Card>
   );
 }
