@@ -1,98 +1,96 @@
 
-# Plan: Fjern "Hent metafelter" knap og auto-fetch metafelter
+# Plan: Vis alle mappede metafelter i Shopify preview
 
-## Baggrund
-I `ProductMappingTab.tsx` under "Felt-mapping" fanen er der stadig en manuel "Hent metafelter" knap. Den skal fjernes, og Shopify metafelter skal automatisk hentes i baggrunden når komponenten indlæses - præcis som allerede implementeret i `FieldMappingEditor.tsx`.
+## Problemet
+Aktuelt filtreres metafelter med tomme værdier væk i preview'et (linje 498). Dette betyder at brugeren ikke kan se hvilke felter der kommer til at eksistere i Shopify - kun dem der har data for det specifikke produkt.
 
-DanDomain kildefelterne (FIELD_1, FIELD_2, FIELD_3, FIELD_9) er korrekt defineret i `KNOWN_SOURCE_FIELDS` og vises altid i "Kilde felt" dropdown'en. Disse afhænger ikke af "Hent metafelter" funktionen - den henter kun Shopify's egne metafield definitioner til "Mål felt" dropdown'en.
+## Løsning
+Ændre logikken så **alle** konfigurerede felt-mappings vises i preview'et, med "Ikke udfyldt" i grå tekst for tomme felter.
 
 ---
 
 ## Ændringer
 
-### 1. Tilføj auto-fetch af metafelter ved mount
-- Tilføj en `useEffect` hook der kalder `fetchShopifyMetafields(true)` stille i baggrunden når komponenten indlæses
-- Brug en `metafieldsLoaded` state for at undgå gentagne kald
+### 1. Opdater useEffect der beregner mappedFields (linje 486-546)
+Fjern filtreringen af tomme værdier, så alle mappings inkluderes:
 
-### 2. Fjern "Hent metafelter" knappen
-- Fjern knappen helt fra CardHeader (linje 807-820)
-- Behold kun "Auto-map" knappen i headeren
-
-### 3. Omstrukturér layoutet
-- Flyt "Tilføj mapping" knappen op over kilde- og målfelterne, centreret
-- Gør "Tilføj mapping" knappen blå (primary variant) med Plus ikon og tekst
-- Vis en lille loading-indikator i beskrivelsen mens metafelter hentes
-
----
-
-## Tekniske detaljer
-
-**Fil:** `src/components/wizard/steps/ProductMappingTab.tsx`
-
-### Nye state variabler:
 ```typescript
-const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
-```
-
-### Ny useEffect for auto-fetch:
-```typescript
-useEffect(() => {
-  if (!metafieldsLoaded) {
-    fetchShopifyMetafields(true); // silent mode
+for (const mapping of fieldMappings) {
+  const sourceValue = rawData[mapping.sourceField];
+  // ALTID tilføj mapping - også for tomme værdier
+  mappedFields.push({
+    field: mapping.targetField,
+    value: sourceValue ?? null, // null for tomme værdier
+    source: mapping.sourceField,
+  });
+  
+  // Kun anvend til transformed hvis der er en værdi
+  if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') {
+    // ... eksisterende switch statement
   }
-}, [projectId, metafieldsLoaded]);
+}
 ```
 
-### Opdateret fetchShopifyMetafields funktion:
-Tilføj `silent` parameter for at undertrykke toast-beskeder ved automatisk hentning.
+### 2. Opdater Metafields Card i preview'et (linje 1325-1403)
+- Fjern de hardcodede felter (Materiale, Farve, Pasform, Vaskeanvisning) da disse nu vises dynamisk via mappings
+- Vis ALLE metafield mappings fra `fieldMappings` i stedet for kun dem på produktet
+- For tomme værdier: vis grå "Ikke udfyldt" tekst
 
-### Nyt layout i CardHeader:
 ```tsx
-<CardHeader>
-  <div className="flex items-center justify-between">
-    <div>
-      <CardTitle>Ekstra felt-mappings</CardTitle>
-      <CardDescription>
-        Map ekstra felter fra DanDomain XML til Shopify felter
-        {fetchingMetafields && (
-          <span className="ml-2 text-xs">
-            <Loader2 className="w-3 h-3 inline animate-spin mr-1" />
-            Henter metafelter...
-          </span>
-        )}
-      </CardDescription>
-    </div>
-    <Button variant="outline" onClick={autoMapFields}>
-      <Wand2 className="w-4 h-4 mr-2" />
-      Auto-map
-    </Button>
-  </div>
-</CardHeader>
-```
-
-### Nyt layout for "Tilføj mapping":
-```tsx
-{/* Centreret knap over kolonner */}
-<div className="flex justify-center mb-4">
-  <Button
-    onClick={addFieldMapping}
-    disabled={!newMapping.sourceField || !newMapping.targetField}
-  >
-    <Plus className="w-4 h-4 mr-2" />
-    Tilføj mapping
-  </Button>
-</div>
-
-{/* Kilde og mål felt dropdowns */}
-<div className="flex gap-3 items-end">
-  ...
-</div>
+{/* Metafields Card - Vis ALLE mappede metafelter */}
+{fieldMappings.filter(m => m.targetField.startsWith('metafields.')).length > 0 && (
+  <Card>
+    <CardContent className="pt-4">
+      <label className="text-sm font-medium text-foreground mb-2 block flex items-center gap-2">
+        Metafelter
+        <Badge variant="secondary" className="text-[10px] py-0 px-1.5 font-medium rounded-full">
+          Shopify
+        </Badge>
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        {fieldMappings
+          .filter(m => m.targetField.startsWith('metafields.'))
+          .map((mapping, i) => {
+            // Find værdien for dette produkt
+            const mappedField = product.mappedFields.find(
+              mf => mf.field === mapping.targetField
+            );
+            const value = mappedField?.value;
+            const hasValue = value !== null && value !== undefined && value !== '';
+            
+            // Udled visningsnavn fra targetField
+            const parts = mapping.targetField.split('.');
+            const fieldName = parts[parts.length - 1].replace(/_/g, ' ');
+            const displayName = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+            
+            return (
+              <div key={i}>
+                <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                  {displayName}
+                  <span className="text-[10px] text-primary">← {mapping.sourceField}</span>
+                </label>
+                <Input 
+                  value={hasValue ? String(value) : ''} 
+                  placeholder={hasValue ? undefined : 'Ikke udfyldt'}
+                  readOnly 
+                  className={cn(
+                    "bg-background h-8 text-xs",
+                    !hasValue && "text-muted-foreground italic placeholder:text-muted-foreground"
+                  )}
+                />
+              </div>
+            );
+          })}
+      </div>
+    </CardContent>
+  </Card>
+)}
 ```
 
 ---
 
 ## Resultat
-- Shopify metafelter hentes automatisk og stille i baggrunden
-- Brugeren ser ikke længere "Hent metafelter" knappen
-- "Tilføj mapping" knappen er nu centreret, blå og mere synlig
-- DanDomain felterne (FIELD_1, FIELD_2, etc.) vises som altid i "Kilde felt" dropdown
+- Alle konfigurerede metafelt-mappings vises altid i preview'et
+- Felter uden værdi for det aktuelle produkt viser "Ikke udfyldt" i grå, kursiv tekst
+- Brugeren kan nu se præcis hvilke metafelter der oprettes i Shopify, uanset om de har data
+- Hardcodede feltnavne (Materiale, Farve, etc.) er fjernet - i stedet vises det faktiske feltnavn fra mapping
