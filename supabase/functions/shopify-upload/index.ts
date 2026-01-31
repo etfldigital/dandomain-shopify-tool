@@ -1183,15 +1183,20 @@ async function uploadCustomers(
     }
     
     // Create customer
+    // Note: Customer data stores addresses as an array in data.addresses
+    const addresses = Array.isArray(data.addresses) && data.addresses.length > 0
+      ? data.addresses.map((addr: any) => buildAddress(addr))
+      : undefined;
+    
     const customerPayload = {
       customer: {
         email: email,
         first_name: data.first_name || '',
         last_name: data.last_name || '',
-        phone: normalizePhone(data.phone),
+        phone: normalizePhone(data.phone || data.addresses?.[0]?.phone),
         verified_email: true,
         send_email_welcome: false,
-        addresses: data.address ? [buildAddress(data.address)] : undefined,
+        addresses: addresses,
       }
     };
     
