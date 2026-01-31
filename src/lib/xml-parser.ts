@@ -474,14 +474,23 @@ export function parseCustomersFromOrdersXML(xmlText: string): (CustomerData & { 
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
     
+    // Try multiple phone fields - DanDomain may store phone in different locations
+    const custPhone = getElementText(customerSection, 'CUST_PHONE') 
+      || getElementText(customerSection, 'PHONE')
+      || getElementText(customerSection, 'CUST_MOBILE')
+      || getElementText(customerSection, 'MOBILE');
+    
     const address: Address = {
       address1: getElementText(customerSection, 'CUST_ADDRESS'),
       address2: getElementText(customerSection, 'CUST_ADDRESS_2') || null,
       city: getElementText(customerSection, 'CUST_CITY'),
       zip: getElementText(customerSection, 'CUST_ZIP_CODE'),
       country: getElementText(customerSection, 'CUST_COUNTRY_ISO') || 'DK',
-      phone: getElementText(customerSection, 'CUST_PHONE') || null,
+      phone: custPhone || null,
     };
+    
+    // Use customer phone, fallback to address phone if empty
+    const finalPhone = custPhone || address.phone;
     
     customerMap.set(key, {
       external_id: custNum || email,
@@ -489,7 +498,7 @@ export function parseCustomersFromOrdersXML(xmlText: string): (CustomerData & { 
       first_name: firstName,
       last_name: lastName,
       company: getElementText(customerSection, 'CUST_COMPANY') || null,
-      phone: getElementText(customerSection, 'CUST_PHONE') || null,
+      phone: finalPhone || null,
       country: getElementText(customerSection, 'CUST_COUNTRY_ISO') || null,
       vat_number: getElementText(customerSection, 'VAT_REG_NUM') || null,
       accepts_marketing: false,
@@ -532,14 +541,23 @@ export function parseCustomersXML(xmlText: string): (CustomerData & { external_i
     const fullName = getElementText(customer, 'CUST_NAME') || getElementText(customer, 'NAME');
     const nameParts = fullName.split(' ');
     
+    // Try multiple phone fields - DanDomain may store phone in different locations
+    const custPhone = getElementText(customer, 'CUST_PHONE') 
+      || getElementText(customer, 'PHONE')
+      || getElementText(customer, 'CUST_MOBILE')
+      || getElementText(customer, 'MOBILE');
+    
     const address: Address = {
       address1: getElementText(customer, 'CUST_ADDRESS') || getElementText(customer, 'ADDRESS'),
       address2: null,
       city: getElementText(customer, 'CUST_CITY') || getElementText(customer, 'CITY'),
       zip: getElementText(customer, 'CUST_ZIP_CODE') || getElementText(customer, 'ZIP_CODE'),
       country: getElementText(customer, 'CUST_COUNTRY_ISO') || getElementText(customer, 'COUNTRY') || 'DK',
-      phone: getElementText(customer, 'CUST_PHONE') || getElementText(customer, 'PHONE') || null,
+      phone: custPhone || null,
     };
+    
+    // Use customer phone, fallback to address phone if empty
+    const finalPhone = custPhone || address.phone;
     
     return {
       external_id: id || email,
@@ -547,7 +565,7 @@ export function parseCustomersXML(xmlText: string): (CustomerData & { external_i
       first_name: nameParts[0] || '',
       last_name: nameParts.slice(1).join(' ') || '',
       company: getElementText(customer, 'CUST_COMPANY') || null,
-      phone: getElementText(customer, 'CUST_PHONE') || null,
+      phone: finalPhone || null,
       country: getElementText(customer, 'CUST_COUNTRY_ISO') || null,
       vat_number: getElementText(customer, 'VAT_REG_NUM') || null,
       accepts_marketing: false,
