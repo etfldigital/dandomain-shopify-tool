@@ -248,9 +248,19 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
     setFieldMappings(updatedMappings);
     setNewMapping({ sourceField: '', targetField: '' });
     
-    // Auto-save when adding
-    await saveMappings(updatedMappings);
-    toast.success('Felt-mapping tilføjet');
+    // Check if there are new metafields that need to be created
+    const newMetafields = findNewMetafields(updatedMappings);
+    
+    if (newMetafields.length > 0) {
+      // Show dialog to configure and create new metafields
+      setPendingNewMetafields(newMetafields);
+      setShowCreateMetafieldsDialog(true);
+      setSaving(true);
+    } else {
+      // No new metafields, just save
+      await saveMappings(updatedMappings);
+      toast.success('Felt-mapping tilføjet');
+    }
   };
 
   const removeFieldMapping = async (id: string) => {
