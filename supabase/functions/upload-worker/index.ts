@@ -74,23 +74,50 @@ serve(async (req) => {
         const entitiesToProcess = entityTypes || ['pages', 'categories', 'products', 'customers', 'orders'];
         const jobs = [];
 
-        for (const entityType of entitiesToProcess) {
-          const tableName = `canonical_${entityType}`;
-          
-          // For products, we need special handling:
-          // Only count records where _isPrimary is true OR _isPrimary is not set (not yet grouped)
-          // Secondary records (variants) should NOT be counted as separate items
-          let pendingQuery = supabase
+        // Helper to get reliable count - handles null results from large tables
+        const getReliableCount = async (tableName: string, projectId: string, status: string, extraFilters?: { key: string; value: any }[] | { jsonPath?: string }): Promise<number> => {
+          let query = supabase
             .from(tableName)
             .select('*', { count: 'exact', head: true })
             .eq('project_id', projectId)
-            .eq('status', 'pending');
+            .eq('status', status);
           
-          if (entityType === 'categories') {
-            pendingQuery = pendingQuery.eq('exclude', false);
+          if (Array.isArray(extraFilters)) {
+            for (const f of extraFilters) {
+              query = query.eq(f.key, f.value);
+            }
+          } else if (extraFilters?.jsonPath) {
+            query = query.or(extraFilters.jsonPath);
           }
           
-          const { count: pendingCount } = await pendingQuery;
+          const { count, error } = await query;
+          
+          if (error) {
+            console.warn(`[WORKER] Count error for ${tableName}/${status}: ${error.message}`);
+            return 0;
+          }
+          
+          // If count is null (can happen with large tables + HTTP 206), fall back to fetching IDs
+          if (count === null) {
+            console.warn(`[WORKER] Count returned null for ${tableName}/${status}, using fallback`);
+            const { data: ids } = await supabase
+              .from(tableName)
+              .select('id')
+              .eq('project_id', projectId)
+              .eq('status', status)
+              .limit(200000);
+            return ids?.length || 0;
+          }
+          
+          return count;
+        };
+
+        for (const entityType of entitiesToProcess) {
+          const tableName = `canonical_${entityType}`;
+          
+          // Get pending count
+          const extraFilter = entityType === 'categories' ? [{ key: 'exclude', value: false }] : undefined;
+          const pendingCount = await getReliableCount(tableName, projectId, 'pending', extraFilter);
           
           // For products, get counts of PRIMARY records only (these are actual Shopify products)
           let uploadedCount = 0;
@@ -98,41 +125,17 @@ serve(async (req) => {
           
           if (entityType === 'products') {
             // Count uploaded primary products
-            const { count: primaryUploaded } = await supabase
-              .from(tableName)
-              .select('*', { count: 'exact', head: true })
-              .eq('project_id', projectId)
-              .eq('status', 'uploaded')
-              .or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
-            uploadedCount = primaryUploaded || 0;
-            
-            // Count failed primary products
-            const { count: primaryFailed } = await supabase
-              .from(tableName)
-              .select('*', { count: 'exact', head: true })
-              .eq('project_id', projectId)
-              .eq('status', 'failed')
-              .or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
-            failedCount = primaryFailed || 0;
+            uploadedCount = await getReliableCount(tableName, projectId, 'uploaded', { jsonPath: 'data->>_isPrimary.eq.true,data->>_isPrimary.is.null' });
+            failedCount = await getReliableCount(tableName, projectId, 'failed', { jsonPath: 'data->>_isPrimary.eq.true,data->>_isPrimary.is.null' });
           } else {
-            const { count: allUploaded } = await supabase
-              .from(tableName)
-              .select('*', { count: 'exact', head: true })
-              .eq('project_id', projectId)
-              .eq('status', 'uploaded');
-            uploadedCount = allUploaded || 0;
-
-            const { count: allFailed } = await supabase
-              .from(tableName)
-              .select('*', { count: 'exact', head: true })
-              .eq('project_id', projectId)
-              .eq('status', 'failed');
-            failedCount = allFailed || 0;
+            uploadedCount = await getReliableCount(tableName, projectId, 'uploaded');
+            failedCount = await getReliableCount(tableName, projectId, 'failed');
           }
 
-          const totalCount = (pendingCount || 0) + uploadedCount + failedCount;
+          const totalCount = pendingCount + uploadedCount + failedCount;
           const alreadyProcessedCount = uploadedCount + failedCount;
           
+          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
           console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
           
           if (pendingCount && pendingCount > 0) {
@@ -395,32 +398,55 @@ serve(async (req) => {
           itemsPerMinute = job.items_per_minute * 0.7 + batchSpeed * 0.3;
         }
 
-        // Get actual database counts
+        // Get actual database counts using reliable method
+        // NOTE: Supabase .count queries can return null/partial on large tables (HTTP 206)
+        // Use direct SQL count via rpc or ensure we get exact counts
         const tableName = `canonical_${job.entity_type}`;
-        let pendingQuery = supabase
-          .from(tableName)
-          .select('*', { count: 'exact', head: true })
-          .eq('project_id', job.project_id)
-          .eq('status', 'pending');
         
-        if (job.entity_type === 'categories') {
-          pendingQuery = pendingQuery.eq('exclude', false);
-        }
+        // Helper to get reliable count - retry if null
+        const getExactCount = async (status: string, extraFilter?: string): Promise<number> => {
+          let query = supabase
+            .from(tableName)
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', job.project_id)
+            .eq('status', status);
+          
+          if (extraFilter === 'exclude_false') {
+            query = query.eq('exclude', false);
+          }
+          
+          const { count, error } = await query;
+          
+          if (error) {
+            console.warn(`[WORKER] Count query error for ${status}: ${error.message}`);
+            return 0;
+          }
+          
+          // If count is null, something went wrong - log it
+          if (count === null) {
+            console.warn(`[WORKER] Count query returned null for ${tableName} status=${status}, treating as 0`);
+            // Try to get at least a rough count by fetching IDs
+            const { data: ids } = await supabase
+              .from(tableName)
+              .select('id')
+              .eq('project_id', job.project_id)
+              .eq('status', status)
+              .limit(100000); // Large limit to get actual count
+            return ids?.length || 0;
+          }
+          
+          return count;
+        };
         
-        const { count: actualPending } = await pendingQuery;
-        const { count: actualUploaded } = await supabase
-          .from(tableName)
-          .select('*', { count: 'exact', head: true })
-          .eq('project_id', job.project_id)
-          .eq('status', 'uploaded');
-        const { count: actualFailed } = await supabase
-          .from(tableName)
-          .select('*', { count: 'exact', head: true })
-          .eq('project_id', job.project_id)
-          .eq('status', 'failed');
+        const extraFilter = job.entity_type === 'categories' ? 'exclude_false' : undefined;
+        const actualPending = await getExactCount('pending', extraFilter);
+        const actualUploaded = await getExactCount('uploaded');
+        const actualFailed = await getExactCount('failed');
+        
+        console.log(`[WORKER] Counts for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}`);
 
-        const actualTotal = (actualPending || 0) + (actualUploaded || 0) + (actualFailed || 0);
-        const actualProcessed = (actualUploaded || 0) + (actualFailed || 0);
+        const actualTotal = actualPending + actualUploaded + actualFailed;
+        const actualProcessed = actualUploaded + actualFailed;
 
         // Prepare update
         const updateData: Record<string, any> = {
