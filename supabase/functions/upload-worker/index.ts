@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -138,10 +138,14 @@ serve(async (req) => {
           console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
           console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
           
-          if (pendingCount && pendingCount > 0) {
+           if (pendingCount && pendingCount > 0) {
             const batchSize = isTestMode ? 3 : (DEFAULT_BATCH_SIZE[entityType] || 10);
             
-            const { data: job, error } = await supabase
+             // IMPORTANT: For products, the UI may already have run prepare-upload.
+             // In that case, skip the worker-side prepare step by starting at current_batch=1.
+             const initialBatch = entityType === 'products' && skipPrepare ? 1 : 0;
+
+             const { data: job, error } = await supabase
               .from('upload_jobs')
               .insert({
                 project_id: projectId,
@@ -151,6 +155,7 @@ serve(async (req) => {
                 processed_count: isTestMode ? 0 : alreadyProcessedCount,
                 batch_size: batchSize,
                 is_test_mode: isTestMode || false,
+                 current_batch: initialBatch,
               })
               .select()
               .single();
@@ -284,13 +289,14 @@ serve(async (req) => {
           .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
           .eq('id', jobId);
 
-        // Check if prepare-upload was already run by UI (via skipPrepare flag in job metadata)
-        const jobMetadata = job.metadata || {};
-        const shouldSkipPrepare = jobMetadata.skipPrepare === true;
+        // One-time product preparation (grouping/variant extraction) before first product batch.
+        // CRITICAL: We must not re-run prepare-upload on every watchdog retrigger.
+        // We use current_batch as a durable marker:
+        // - current_batch === 0  => not prepared yet
+        // - current_batch >= 1   => prepared (or UI chose to skip prepare)
+        let effectiveCurrentBatch = typeof job.current_batch === 'number' ? job.current_batch : 0;
 
-        // One-time product preparation (grouping/variant extraction) before first product batch
-        // SKIP if UI already ran prepare-upload
-        if (job.entity_type === 'products' && (job.current_batch || 0) === 0 && !shouldSkipPrepare) {
+        if (job.entity_type === 'products' && effectiveCurrentBatch === 0) {
           console.log('[WORKER] Running product prepare step before upload...');
 
           const prepRes = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
@@ -320,8 +326,18 @@ serve(async (req) => {
           console.log(
             `[WORKER] prepare-upload committed: groups=${prepJson?.stats?.groupsCreated ?? '?'}, variants=${prepJson?.stats?.variantsTotal ?? '?'}, rejected=${prepJson?.stats?.recordsRejected ?? '?'}`
           );
-        } else if (job.entity_type === 'products' && shouldSkipPrepare) {
-          console.log('[WORKER] Skipping prepare-upload (already done by UI)');
+
+          // Mark job as prepared immediately so a watchdog retrigger does NOT re-run prepare.
+          // Use a conditional update to reduce chances of concurrent invocations flipping it back/forth.
+          await supabase
+            .from('upload_jobs')
+            .update({ current_batch: 1, last_heartbeat_at: new Date().toISOString() })
+            .eq('id', jobId)
+            .eq('current_batch', 0);
+
+          effectiveCurrentBatch = 1;
+        } else if (job.entity_type === 'products' && effectiveCurrentBatch >= 1) {
+          console.log('[WORKER] Skipping prepare-upload (already prepared)');
         }
 
         // Call shopify-upload
@@ -459,7 +475,7 @@ serve(async (req) => {
           last_batch_items: itemsProcessed,
           last_batch_duration_ms: elapsed,
           last_heartbeat_at: new Date().toISOString(),
-          current_batch: job.current_batch + 1,
+          current_batch: (typeof effectiveCurrentBatch === 'number' ? effectiveCurrentBatch : (job.current_batch || 0)) + 1,
         };
 
         // Handle rate limiting
