@@ -30,6 +30,11 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   orders: 5,
 };
 
+// Enforce strict upload order for dependent entities.
+// (Collections == categories in our schema)
+const ENTITY_SEQUENCE = ['categories', 'products', 'customers', 'orders'] as const;
+type SequencedEntity = (typeof ENTITY_SEQUENCE)[number];
+
 interface WorkerRequest {
   jobId?: string;
   projectId?: string;
@@ -49,7 +54,169 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
+    const nowIso = () => new Date().toISOString();
+
+    const isSequencedEntity = (t: string): t is SequencedEntity =>
+      (ENTITY_SEQUENCE as readonly string[]).includes(t);
+
+    const seqIndex = (t: string) =>
+      isSequencedEntity(t) ? ENTITY_SEQUENCE.indexOf(t) : -1;
+
+    // Reliable count helper for canonical_* tables.
+    // IMPORTANT: For products we ONLY count primary records to match what actually uploads.
+    const countCanonicalStatus = async (entityType: string, status: string): Promise<number> => {
+      const tableName = `canonical_${entityType}`;
+
+      let query = supabase
+        .from(tableName)
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', projectIdForCounts!)
+        .eq('status', status);
+
+      // Entity-specific filters
+      if (entityType === 'categories') {
+        query = query.eq('exclude', false);
+      }
+
+      // Products: only primary records are real Shopify products.
+      if (entityType === 'products') {
+        query = query.or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+      }
+
+      const { count, error } = await query;
+
+      if (!error && typeof count === 'number') return count;
+
+      if (error) {
+        console.warn(`[WORKER] Count error for ${tableName}/${status}: ${error.message} (fallback to id scan)`);
+      } else {
+        console.warn(`[WORKER] Count returned null for ${tableName}/${status} (fallback to id scan)`);
+      }
+
+      // Fallback: ID scan (limited, but safer than incorrectly returning 0 and breaking sequencing)
+      let scan = supabase
+        .from(tableName)
+        .select('id')
+        .eq('project_id', projectIdForCounts!)
+        .eq('status', status)
+        .limit(200000);
+
+      if (entityType === 'categories') {
+        scan = scan.eq('exclude', false);
+      }
+
+      if (entityType === 'products') {
+        scan = scan.or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+      }
+
+      const { data: ids, error: scanErr } = await scan;
+      if (scanErr) {
+        throw new Error(`Failed to count ${tableName}/${status}: ${scanErr.message}`);
+      }
+      return ids?.length || 0;
+    };
+
+    // NOTE: We can only know projectId after parsing the body, but we want helpers above.
+    // We'll assign this once we parse the request.
+    let projectIdForCounts: string | null = null;
+
+    const getEarliestIncompleteEntity = async (pid: string): Promise<SequencedEntity | null> => {
+      projectIdForCounts = pid;
+      for (const entity of ENTITY_SEQUENCE) {
+        const pending = await countCanonicalStatus(entity, 'pending');
+        if (pending > 0) return entity;
+      }
+      return null;
+    };
+
+    const ensureEntityJobRunning = async (pid: string, entity: SequencedEntity) => {
+      // Try running first
+      const { data: running } = await supabase
+        .from('upload_jobs')
+        .select('*')
+        .eq('project_id', pid)
+        .eq('entity_type', entity)
+        .eq('status', 'running')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (running?.[0]) {
+        runInBackground(
+          fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+            body: JSON.stringify({ jobId: running[0].id, action: 'process' }),
+          })
+        );
+        return;
+      }
+
+      // Then paused/pending
+      const { data: candidate } = await supabase
+        .from('upload_jobs')
+        .select('*')
+        .eq('project_id', pid)
+        .eq('entity_type', entity)
+        .in('status', ['paused', 'pending'])
+        .order('created_at', { ascending: true })
+        .limit(1);
+
+      if (candidate?.[0]) {
+        await supabase
+          .from('upload_jobs')
+          .update({ status: 'running', started_at: candidate[0].started_at || nowIso(), last_heartbeat_at: nowIso(), next_attempt_at: null })
+          .eq('id', candidate[0].id);
+
+        runInBackground(
+          fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+            body: JSON.stringify({ jobId: candidate[0].id, action: 'process' }),
+          })
+        );
+        return;
+      }
+
+      // As last resort, create a job if there is actually work.
+      projectIdForCounts = pid;
+      const pending = await countCanonicalStatus(entity, 'pending');
+      if (pending <= 0) return;
+
+      const uploaded = await countCanonicalStatus(entity, 'uploaded');
+      const failed = await countCanonicalStatus(entity, 'failed');
+      const total = pending + uploaded + failed;
+
+      const batchSize = DEFAULT_BATCH_SIZE[entity] || 10;
+      const { data: newJob, error } = await supabase
+        .from('upload_jobs')
+        .insert({
+          project_id: pid,
+          entity_type: entity,
+          status: 'running',
+          total_count: total,
+          processed_count: uploaded + failed,
+          batch_size: batchSize,
+          is_test_mode: false,
+          started_at: nowIso(),
+          last_heartbeat_at: nowIso(),
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      runInBackground(
+        fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+          body: JSON.stringify({ jobId: newJob.id, action: 'process' }),
+        })
+      );
+    };
+
     const { jobId, projectId, action, entityTypes, isTestMode, skipPrepare }: WorkerRequest = await req.json();
+
+    // Make count helpers work for this request.
+    projectIdForCounts = projectId || null;
 
     switch (action) {
       case 'start': {
@@ -74,63 +241,13 @@ serve(async (req) => {
         const entitiesToProcess = entityTypes || ['pages', 'categories', 'products', 'customers', 'orders'];
         const jobs = [];
 
-        // Helper to get reliable count - handles null results from large tables
-        const getReliableCount = async (tableName: string, projectId: string, status: string, extraFilters?: { key: string; value: any }[] | { jsonPath?: string }): Promise<number> => {
-          let query = supabase
-            .from(tableName)
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', projectId)
-            .eq('status', status);
-          
-          if (Array.isArray(extraFilters)) {
-            for (const f of extraFilters) {
-              query = query.eq(f.key, f.value);
-            }
-          } else if (extraFilters?.jsonPath) {
-            query = query.or(extraFilters.jsonPath);
-          }
-          
-          const { count, error } = await query;
-          
-          if (error) {
-            console.warn(`[WORKER] Count error for ${tableName}/${status}: ${error.message}`);
-            return 0;
-          }
-          
-          // If count is null (can happen with large tables + HTTP 206), fall back to fetching IDs
-          if (count === null) {
-            console.warn(`[WORKER] Count returned null for ${tableName}/${status}, using fallback`);
-            const { data: ids } = await supabase
-              .from(tableName)
-              .select('id')
-              .eq('project_id', projectId)
-              .eq('status', status)
-              .limit(200000);
-            return ids?.length || 0;
-          }
-          
-          return count;
-        };
-
         for (const entityType of entitiesToProcess) {
-          const tableName = `canonical_${entityType}`;
-          
-          // Get pending count
-          const extraFilter = entityType === 'categories' ? [{ key: 'exclude', value: false }] : undefined;
-          const pendingCount = await getReliableCount(tableName, projectId, 'pending', extraFilter);
-          
-          // For products, get counts of PRIMARY records only (these are actual Shopify products)
-          let uploadedCount = 0;
-          let failedCount = 0;
-          
-          if (entityType === 'products') {
-            // Count uploaded primary products
-            uploadedCount = await getReliableCount(tableName, projectId, 'uploaded', { jsonPath: 'data->>_isPrimary.eq.true,data->>_isPrimary.is.null' });
-            failedCount = await getReliableCount(tableName, projectId, 'failed', { jsonPath: 'data->>_isPrimary.eq.true,data->>_isPrimary.is.null' });
-          } else {
-            uploadedCount = await getReliableCount(tableName, projectId, 'uploaded');
-            failedCount = await getReliableCount(tableName, projectId, 'failed');
-          }
+          // Use robust counting to avoid accidentally skipping an entity (which breaks sequencing)
+          projectIdForCounts = projectId;
+
+          const pendingCount = await countCanonicalStatus(entityType, 'pending');
+          const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
+          const failedCount = await countCanonicalStatus(entityType, 'failed');
 
           const totalCount = pendingCount + uploadedCount + failedCount;
           const alreadyProcessedCount = uploadedCount + failedCount;
@@ -209,6 +326,32 @@ serve(async (req) => {
           .single();
 
         if (jobError || !job) throw new Error('Job not found');
+
+        // ================= SEQUENCING GATE =================
+        // Never allow a later entity to run while an earlier one still has pending work.
+        if (isSequencedEntity(job.entity_type)) {
+          const earliest = await getEarliestIncompleteEntity(job.project_id);
+          if (earliest && seqIndex(job.entity_type) > seqIndex(earliest)) {
+            console.log(`[WORKER] Sequencing gate: blocking ${job.entity_type} until ${earliest} is complete`);
+
+            // Put this job back to pending so it won't keep running.
+            await supabase
+              .from('upload_jobs')
+              .update({ status: 'pending', last_heartbeat_at: nowIso(), next_attempt_at: null })
+              .eq('id', jobId);
+
+            // Ensure the correct (earliest incomplete) entity is running.
+            await ensureEntityJobRunning(job.project_id, earliest);
+
+            return new Response(JSON.stringify({
+              success: true,
+              blocked: true,
+              message: `Blocked ${job.entity_type} until ${earliest} is complete`,
+              required_entity: earliest,
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          }
+        }
+        // ===================================================
 
         // ========== HARD STOP CHECK ==========
         // If uploads_paused is true on the project, DO NOT PROCESS anything.
@@ -419,45 +562,11 @@ serve(async (req) => {
         // Use direct SQL count via rpc or ensure we get exact counts
         const tableName = `canonical_${job.entity_type}`;
         
-        // Helper to get reliable count - retry if null
-        const getExactCount = async (status: string, extraFilter?: string): Promise<number> => {
-          let query = supabase
-            .from(tableName)
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', job.project_id)
-            .eq('status', status);
-          
-          if (extraFilter === 'exclude_false') {
-            query = query.eq('exclude', false);
-          }
-          
-          const { count, error } = await query;
-          
-          if (error) {
-            console.warn(`[WORKER] Count query error for ${status}: ${error.message}`);
-            return 0;
-          }
-          
-          // If count is null, something went wrong - log it
-          if (count === null) {
-            console.warn(`[WORKER] Count query returned null for ${tableName} status=${status}, treating as 0`);
-            // Try to get at least a rough count by fetching IDs
-            const { data: ids } = await supabase
-              .from(tableName)
-              .select('id')
-              .eq('project_id', job.project_id)
-              .eq('status', status)
-              .limit(100000); // Large limit to get actual count
-            return ids?.length || 0;
-          }
-          
-          return count;
-        };
-        
-        const extraFilter = job.entity_type === 'categories' ? 'exclude_false' : undefined;
-        const actualPending = await getExactCount('pending', extraFilter);
-        const actualUploaded = await getExactCount('uploaded');
-        const actualFailed = await getExactCount('failed');
+        // Use the same canonical counting logic as in start(), including product primary filtering.
+        projectIdForCounts = job.project_id;
+        const actualPending = await countCanonicalStatus(job.entity_type, 'pending');
+        const actualUploaded = await countCanonicalStatus(job.entity_type, 'uploaded');
+        const actualFailed = await countCanonicalStatus(job.entity_type, 'failed');
         
         console.log(`[WORKER] Counts for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}`);
 
@@ -528,40 +637,15 @@ serve(async (req) => {
           })());
         } else {
           // Start next pending job
-          const { data: nextJobs } = await supabase
-            .from('upload_jobs')
-            .select('*')
-            .eq('project_id', job.project_id)
-            .eq('status', 'pending')
-            .order('created_at', { ascending: true })
-            .limit(1);
+          // Always pick the earliest incomplete entity in our dependency chain.
+          const earliest = await getEarliestIncompleteEntity(job.project_id);
 
-          if (nextJobs && nextJobs.length > 0) {
-            const nextJob = nextJobs[0];
-            
-            await supabase
-              .from('upload_jobs')
-              .update({ 
-                status: 'running', 
-                started_at: new Date().toISOString(),
-                last_heartbeat_at: new Date().toISOString()
-              })
-              .eq('id', nextJob.id);
-
-            runInBackground((async () => {
-              await sleep(WORKER_SCHEDULE_DELAY_MS);
-              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-              await fetch(functionUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-                body: JSON.stringify({ jobId: nextJob.id, action: 'process' }),
-              });
-              console.log(`[WORKER] Started next job: ${nextJob.entity_type}`);
-            })());
-            } else {
-              // All done - keep existing project status behavior elsewhere
-              console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
-            }
+          if (earliest) {
+            await ensureEntityJobRunning(job.project_id, earliest);
+          } else {
+            // All done
+            console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+          }
         }
 
         return new Response(JSON.stringify({
