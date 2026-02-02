@@ -313,11 +313,13 @@ async function uploadProducts(
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Filter to only primary products (those prepared by prepare-upload)
-  // If a product doesn't have _isPrimary set, treat it as primary (legacy behavior)
+  // Filter to ONLY primary products (those explicitly marked by prepare-upload)
+  // CRITICAL: Only _isPrimary === true products should create Shopify products.
+  // Secondary variants (_isPrimary === false) are already embedded in _mergedVariants.
+  // If _isPrimary is undefined/null, the product was never processed by prepare-upload - SKIP IT.
   const primaryProducts = pendingProducts.filter((p: any) => {
     const data = p.data || {};
-    return data._isPrimary !== false; // Allow true or undefined
+    return data._isPrimary === true; // STRICT check - must be explicitly true
   });
 
   // IMPORTANT: Each primary product is its OWN group with pre-merged variants
@@ -352,7 +354,7 @@ async function uploadProducts(
     groupsProcessed++;
 
     try {
-      const result = await processProductGroup(supabase, shopifyUrl, token, groupKey, items, dandomainBaseUrl);
+      const result = await processProductGroup(supabase, shopifyUrl, token, groupKey, items, dandomainBaseUrl, projectId);
       
       if ('rateLimited' in result && result.rateLimited) {
         rateLimited = true;
@@ -454,12 +456,76 @@ async function processProductGroup(
   token: string,
   groupKey: string,
   items: any[],
-  dandomainBaseUrl: string
+  dandomainBaseUrl: string,
+  projectId: string
 ): Promise<{ skipped?: boolean; error?: string; rateLimited?: boolean; retryAfterMs?: number }> {
   
   const data = items[0].data || {};
   const title = String(data._groupTitle || data.title || '').trim();
   const vendor = String(data.vendor || '').trim();
+  const dbGroupKey = String(data._groupKey || '').trim();
+  
+  // ============================================================================
+  // IDEMPOTENCY CHECK #1: Database-level group check
+  // Before creating anything in Shopify, check if ANY record with the same 
+  // _groupKey already has a shopify_id. If so, skip this group entirely.
+  // This is the PERSISTENT dedupe mechanism that survives function restarts.
+  // ============================================================================
+  if (dbGroupKey && projectId) {
+    const { data: existingInGroup, error: groupCheckError } = await supabase
+      .from('canonical_products')
+      .select('shopify_id')
+      .eq('project_id', projectId)
+      .eq('data->>_groupKey', dbGroupKey)
+      .not('shopify_id', 'is', null)
+      .limit(1);
+    
+    if (!groupCheckError && existingInGroup && existingInGroup.length > 0 && existingInGroup[0].shopify_id) {
+      const existingShopifyId = existingInGroup[0].shopify_id;
+      console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, skipping creation`);
+      
+      // Mark all items in this batch as uploaded with the existing Shopify ID
+      const ids = items.map((it) => it.id);
+      await supabase
+        .from('canonical_products')
+        .update({ 
+          status: 'uploaded', 
+          shopify_id: existingShopifyId, 
+          error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
+          updated_at: new Date().toISOString() 
+        })
+        .in('id', ids);
+      
+      // Also update session cache for this invocation
+      const titleLower = title.toLowerCase();
+      sessionProductCache.set(titleLower, existingShopifyId);
+      
+      return { skipped: true };
+    }
+  }
+  
+  // ============================================================================
+  // IDEMPOTENCY CHECK #2: Atomic status lock
+  // Try to "claim" this product by atomically setting error_message to 'Processing...'
+  // Only proceed if the UPDATE returns count=1 (we successfully locked it).
+  // This prevents race conditions when multiple workers try to process the same product.
+  // ============================================================================
+  const primaryItem = items[0];
+  const { data: lockResult, error: lockError } = await supabase
+    .from('canonical_products')
+    .update({ 
+      error_message: 'Processing...',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', primaryItem.id)
+    .eq('status', 'pending')  // Only if still pending
+    .is('shopify_id', null)   // Only if not yet uploaded
+    .select('id');
+  
+  if (lockError || !lockResult || lockResult.length === 0) {
+    console.log(`[PRODUCTS] Failed to lock "${dbGroupKey}" - another worker may have claimed it`);
+    return { skipped: true };
+  }
   
   // Transform title - fuzzy case-insensitive vendor stripping
   // Helper to normalize brand names for comparison (remove +, &, extra spaces)
@@ -479,8 +545,6 @@ async function processProductGroup(
         const normalizedPrefix = normalizeBrand(prefix);
         
         // Exact match OR vendor starts with the prefix (fuzzy)
-        // e.g. "moshi moshi" matches "Moshi Moshi Mind"
-        // e.g. "gai + lisva" matches "gai lisva"
         if (normalizedPrefix === normalizedVendor || 
             normalizedVendor.startsWith(normalizedPrefix + ' ') ||
             normalizedVendor.startsWith(normalizedPrefix)) {
@@ -507,7 +571,8 @@ async function processProductGroup(
   
   const titleLower = transformedTitle.toLowerCase();
   
-  // Check session cache first (products we've uploaded in this function invocation)
+  // Check session cache (products we've uploaded in this function invocation)
+  // This is a secondary check - the database check above is the primary mechanism
   if (sessionProductCache.has(titleLower)) {
     const existingId = sessionProductCache.get(titleLower)!;
     console.log(`[PRODUCTS] "${transformedTitle}" already in session cache, skipping`);
@@ -952,8 +1017,34 @@ async function processProductGroup(
     };
     await supabase
       .from('canonical_products')
-      .update({ status: 'uploaded', shopify_id: shopifyId, data: updatedData, updated_at: new Date().toISOString() })
+      .update({ status: 'uploaded', shopify_id: shopifyId, error_message: null, data: updatedData, updated_at: new Date().toISOString() })
       .eq('id', item.id);
+  }
+  
+  // ============================================================================
+  // CRITICAL: Update ALL secondary records in the same _groupKey with shopify_id
+  // This ensures the entire variant group is marked as uploaded, preventing
+  // any future attempts to re-upload these variants as separate products.
+  // ============================================================================
+  const dbGroupKeyForUpdate = String(data._groupKey || '').trim();
+  if (dbGroupKeyForUpdate && projectId) {
+    const { error: groupUpdateError } = await supabase
+      .from('canonical_products')
+      .update({ 
+        status: 'uploaded', 
+        shopify_id: shopifyId,
+        error_message: 'Variant grupperet med primær produkt',
+        updated_at: new Date().toISOString() 
+      })
+      .eq('project_id', projectId)
+      .eq('data->>_groupKey', dbGroupKeyForUpdate)
+      .is('shopify_id', null); // Only update those not yet marked
+    
+    if (groupUpdateError) {
+      console.warn(`[PRODUCTS] Warning: Failed to update secondary records for group "${dbGroupKeyForUpdate}": ${groupUpdateError.message}`);
+    } else {
+      console.log(`[PRODUCTS] "${transformedTitle}": Updated entire group "${dbGroupKeyForUpdate}" with shopify_id ${shopifyId}`);
+    }
   }
 
   return {};

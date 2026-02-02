@@ -78,9 +78,11 @@ serve(async (req) => {
         query = query.eq('exclude', false);
       }
 
-      // Products: only primary records are real Shopify products.
+      // Products: ONLY count records explicitly marked as primary.
+      // Records with _isPrimary=null have NOT been processed by prepare-upload yet
+      // and should NOT be counted as uploadable products.
       if (entityType === 'products') {
-        query = query.or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+        query = query.eq('data->>_isPrimary', 'true');
       }
 
       const { count, error } = await query;
@@ -105,8 +107,9 @@ serve(async (req) => {
         scan = scan.eq('exclude', false);
       }
 
+      // Products: ONLY count records explicitly marked as primary (matches the query filter above)
       if (entityType === 'products') {
-        scan = scan.or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
+        scan = scan.eq('data->>_isPrimary', 'true');
       }
 
       const { data: ids, error: scanErr } = await scan;
