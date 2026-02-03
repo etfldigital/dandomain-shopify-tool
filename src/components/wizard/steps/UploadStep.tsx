@@ -1244,22 +1244,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             disabled={totalFromDb === 0}
                           >
                             <RotateCcw className="w-4 h-4 mr-2" />
-                            Nulstil alle til pending
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem 
-                            onClick={() => handleResetRequest(type, 'failed')}
-                            disabled={counts.failed === 0}
-                          >
-                            <AlertCircle className="w-4 h-4 mr-2" />
-                            Nulstil fejlede ({counts.failed})
-                          </DropdownMenuItem>
-                          <DropdownMenuItem 
-                            onClick={() => handleResetRequest(type, 'uploaded')}
-                            disabled={counts.uploaded === 0}
-                          >
-                            <CheckCircle2 className="w-4 h-4 mr-2" />
-                            Nulstil uploadede ({counts.uploaded})
+                            Nulstil uploads
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
