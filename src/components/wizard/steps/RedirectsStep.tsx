@@ -973,18 +973,33 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
-  // Reset sitemap URLs and uploaded DanDomain URLs (but keep database redirects)
-  const handleReset = () => {
-    setProductSitemapUrl('');
-    setCategorySitemapUrl('');
-    setDandomainUrls([]);
+  // Reset everything: sitemap URLs, uploaded files, AND database redirects
+  const handleReset = async () => {
     try {
-      localStorage.removeItem(persistKey);
-    } catch {
-      // ignore
+      // Delete all redirects from database
+      await supabase.from('project_redirects').delete().eq('project_id', project.id);
+      
+      // Clear local state
+      setRedirects([]);
+      setProductSitemapUrl('');
+      setCategorySitemapUrl('');
+      setDandomainUrls([]);
+      
+      // Clear localStorage
+      try {
+        localStorage.removeItem(persistKey);
+      } catch {
+        // ignore
+      }
+      
+      // Reset file input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      
+      toast({ title: 'Nulstillet', description: 'Alle redirects og input er blevet slettet' });
+    } catch (err) {
+      console.error('Error resetting:', err);
+      toast({ title: 'Fejl', description: 'Kunne ikke nulstille', variant: 'destructive' });
     }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    toast({ title: 'Nulstillet', description: 'Sitemap URLs og uploadede filer er blevet fjernet' });
   };
 
   const inspectUrl = async (oldPath: string) => {
