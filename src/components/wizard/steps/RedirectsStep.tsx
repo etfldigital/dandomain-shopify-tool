@@ -871,6 +871,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
+  // Reset sitemap URLs and uploaded DanDomain URLs (but keep database redirects)
+  const handleReset = () => {
+    setProductSitemapUrl('');
+    setCategorySitemapUrl('');
+    setDandomainUrls([]);
+    toast({ title: 'Nulstillet', description: 'Sitemap URLs og uploadede filer er blevet fjernet' });
+  };
+
   const inspectUrl = async (oldPath: string) => {
     const base = project.dandomain_shop_url?.replace(/\/$/, '') || '';
     const fullUrl = base ? `https://${base.replace(/^https?:\/\//, '')}${oldPath}` : oldPath;
@@ -1048,25 +1056,20 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           {/* URL counts */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
             <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{dandomanUrls.length}</div>
-              <div className="text-xs text-muted-foreground">DanDomain URLs</div>
-              {dandomanUrls.length > 0 && (
-                <div className="text-[10px] text-muted-foreground mt-1">
-                  {stats.dandomain.products} prod. / {stats.dandomain.categories} kat.
-                </div>
-              )}
+              <div className="text-2xl font-semibold">{stats.dandomain.products}</div>
+              <div className="text-xs text-muted-foreground">DanDomain produkter</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{stats.shopify.products}</div>
-              <div className="text-xs text-muted-foreground">Shopify produkter</div>
-            </div>
-            <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{stats.shopify.collections}</div>
-              <div className="text-xs text-muted-foreground">Shopify kollektioner</div>
+              <div className="text-2xl font-semibold">{stats.dandomain.categories}</div>
+              <div className="text-xs text-muted-foreground">DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.shopify.pages}</div>
-              <div className="text-xs text-muted-foreground">Shopify sider</div>
+              <div className="text-xs text-muted-foreground">Sider (redirects)</div>
+            </div>
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <div className="text-2xl font-semibold">{stats.total}</div>
+              <div className="text-xs text-muted-foreground">Samlede redirects</div>
             </div>
           </div>
         </CardContent>
@@ -1088,16 +1091,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
 
             <Button
-              onClick={runAiMatching}
-              disabled={isAiMatching || stats.needsReview + stats.noMatch === 0}
-              variant="secondary"
-              className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground"
-            >
-              {isAiMatching ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Wand2 className="w-4 h-4 mr-2" />}
-              AI Match ({stats.needsReview + stats.noMatch})
-            </Button>
-
-            <Button
               onClick={createRedirectsInShopify}
               disabled={isCreating || stats.selected === 0}
             >
@@ -1105,20 +1098,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Opret i Shopify ({stats.selected})
             </Button>
 
-            <Button onClick={downloadAsCSV} variant="outline" disabled={redirects.length === 0}>
-              <Download className="w-4 h-4 mr-2" />
-              Eksportér CSV
-            </Button>
-
-            <Button onClick={downloadAsExcel} variant="outline" disabled={redirects.length === 0}>
-              <FileSpreadsheet className="w-4 h-4 mr-2" />
-              Eksportér Excel
-            </Button>
-
             <Button
-              onClick={resetRedirects}
+              onClick={handleReset}
               variant="outline"
-              disabled={redirects.length === 0}
+              disabled={dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl}
               className="text-destructive hover:text-destructive"
             >
               <X className="w-4 h-4 mr-2" />
