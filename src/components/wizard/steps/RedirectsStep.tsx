@@ -1260,24 +1260,39 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   <span className="truncate max-w-[200px]" title={redirect.old_path}>
                                     {redirect.old_path}
                                   </span>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 shrink-0"
-                                    onClick={() => inspectUrl(redirect.old_path)}
-                                    title="Inspicér URL"
-                                  >
-                                    <Eye className="w-3 h-3" />
-                                  </Button>
+                                  {project.dandomain_shop_url && redirect.old_path && (
+                                    <a
+                                      href={`${project.dandomain_shop_url.replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? '' : '/'}${redirect.old_path}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="h-6 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
+                                      title="Åbn gammel URL"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
                                 </div>
                               </TableCell>
                               <TableCell>
-                                <Badge variant="outline" className="text-[10px]">
-                                  {redirect.old_type === 'product' && <Package className="w-3 h-3 mr-1" />}
-                                  {redirect.old_type === 'category' && <FolderOpen className="w-3 h-3 mr-1" />}
-                                  {redirect.old_type === 'unknown' && <HelpCircle className="w-3 h-3 mr-1" />}
-                                  {redirect.old_type === 'product' ? 'Prod' : redirect.old_type === 'category' ? 'Kat' : '?'}
-                                </Badge>
+                                {(() => {
+                                  // Determine display type: if old_type is unknown but new_path points to a product/collection, infer from that
+                                  let displayType = redirect.old_type;
+                                  if (displayType === 'unknown' && redirect.new_path) {
+                                    if (redirect.new_path.startsWith('/products/')) {
+                                      displayType = 'product';
+                                    } else if (redirect.new_path.startsWith('/collections/')) {
+                                      displayType = 'category';
+                                    }
+                                  }
+                                  return (
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {displayType === 'product' && <Package className="w-3 h-3 mr-1" />}
+                                      {displayType === 'category' && <FolderOpen className="w-3 h-3 mr-1" />}
+                                      {displayType === 'unknown' && <HelpCircle className="w-3 h-3 mr-1" />}
+                                      {displayType === 'product' ? 'Produkt' : displayType === 'category' ? 'Kollektion' : '?'}
+                                    </Badge>
+                                  );
+                                })()}
                               </TableCell>
                               <TableCell>
                                 <ArrowRight className="w-4 h-4 text-muted-foreground" />
