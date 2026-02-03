@@ -106,6 +106,33 @@ const REVIEW_THRESHOLD = 50;
 // HELPER FUNCTIONS
 // ============================================
 
+function getUrlOrigin(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  try {
+    const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    return new URL(withProtocol).origin;
+  } catch {
+    return null;
+  }
+}
+
+function buildOldUrl(project: Project, oldPath: string): string {
+  if (!oldPath) return '';
+  if (/^https?:\/\//i.test(oldPath)) return oldPath;
+
+  const origin =
+    getUrlOrigin(project.dandomain_base_url) ||
+    getUrlOrigin(project.dandomain_shop_url) ||
+    null;
+
+  if (!origin) return oldPath; // don't invent anything
+
+  const path = oldPath.startsWith('/') ? oldPath : `/${oldPath}`;
+  return `${origin}${path}`;
+}
+
 // Normalize path for comparison
 function normalizePath(path: string): string {
   let normalized = path.trim().toLowerCase();
@@ -227,6 +254,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // Sitemap inputs
   const [productSitemapUrl, setProductSitemapUrl] = useState('');
   const [categorySitemapUrl, setCategorySitemapUrl] = useState('');
+
+  // Suggest GoogleSitemapProducts based on the configured DanDomain domain (editable).
+  useEffect(() => {
+    if (productSitemapUrl) return;
+    const origin = getUrlOrigin(project.dandomain_base_url) || getUrlOrigin(project.dandomain_shop_url);
+    if (!origin) return;
+    setProductSitemapUrl(`${origin}/shop/GoogleSitemapProducts.asp?LangId=26`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
   
   // URL inspection
   const [inspectionDialogOpen, setInspectionDialogOpen] = useState(false);
@@ -456,8 +492,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       : [];
 
     if (urlsToMatch.length === 0) {
-      // Generate from database (canonical entities with source_path)
-      await generateFromDatabase();
+      toast({
+        title: 'Mangler DanDomain-URLs',
+        description: 'Hent først produkt-sitemap (eller upload Excel/CSV). Vi genererer ikke gamle URLs automatisk.',
+        variant: 'destructive',
+      });
       return;
     }
 
@@ -465,6 +504,29 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     setProgress({ current: 0, total: urlsToMatch.length });
 
     try {
+      // Remove previously generated/incorrect redirects for the entity types we are importing.
+      // (Keep already created redirects.)
+      const hasProducts = dandomanUrls.some(u => u.type === 'product');
+      const hasCategories = dandomanUrls.some(u => u.type === 'category');
+
+      if (hasProducts) {
+        await supabase
+          .from('project_redirects')
+          .delete()
+          .eq('project_id', project.id)
+          .eq('entity_type', 'product')
+          .neq('status', 'created');
+      }
+
+      if (hasCategories) {
+        await supabase
+          .from('project_redirects')
+          .delete()
+          .eq('project_id', project.id)
+          .eq('entity_type', 'category')
+          .neq('status', 'created');
+      }
+
       // Call match-redirects edge function in batches
       const BATCH_SIZE = 100;
       let totalMatched = 0;
@@ -926,8 +988,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   };
 
   const inspectUrl = async (oldPath: string) => {
-    const base = project.dandomain_shop_url?.replace(/\/$/, '') || '';
-    const fullUrl = base ? `https://${base.replace(/^https?:\/\//, '')}${oldPath}` : oldPath;
+    const fullUrl = buildOldUrl(project, oldPath);
     
     setInspectionUrl(fullUrl);
     setInspectionDialogOpen(true);
@@ -1135,10 +1196,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={generateRedirects}
-              disabled={isGenerating}
+              disabled={isGenerating || dandomanUrls.length === 0}
             >
               {isGenerating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-              {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs` : 'Generer fra uploadede data'}
+              {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs (kun sitemap/fil)` : 'Match URLs (hent sitemap først)'}
             </Button>
 
             <Button
@@ -1147,7 +1208,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               variant="outline"
             >
               <RefreshCw className="w-4 h-4 mr-2" />
-              Generer fra database
+              Generer fra database (ikke anbefalet)
             </Button>
 
             <Button
@@ -1266,10 +1327,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   </span>
                                   {redirect.old_path && (
                                     <a
-                                      href={redirect.old_path.startsWith('http') 
-                                        ? redirect.old_path 
-                                        : `${(project.dandomain_base_url || project.dandomain_shop_url || '').replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? redirect.old_path : `/${redirect.old_path}`}`
-                                      }
+                                      href={buildOldUrl(project, redirect.old_path)}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="h-6 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
@@ -1428,11 +1486,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             <AlertCircle className="w-10 h-10 mx-auto text-muted-foreground mb-4" />
             <h3 className="text-lg font-medium mb-2">Ingen redirects endnu</h3>
             <p className="text-muted-foreground mb-4">
-              Hent DanDomain sitemaps eller upload en Excel-fil med gamle URLs, eller generér redirects fra uploadede data.
+              Hent DanDomain sitemap (eller upload Excel/CSV) for at bruge de faktiske gamle URLs.
             </p>
-            <Button onClick={generateRedirects} disabled={isGenerating}>
-              {isGenerating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-              Generer fra uploadede data
+            <Button
+              onClick={fetchSitemaps}
+              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl)}
+            >
+              {isFetchingSitemaps ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Globe className="w-4 h-4 mr-2" />}
+              Hent sitemaps
             </Button>
           </CardContent>
         </Card>

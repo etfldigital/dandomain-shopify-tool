@@ -40,7 +40,8 @@ function classifyUrl(url: string, sourceType?: 'product' | 'category'): 'product
 function extractPath(url: string): string {
   try {
     const parsed = new URL(url);
-    return parsed.pathname;
+    // Keep query/hash because some platforms encode important routing in them.
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     // If not a valid URL, treat as path
     return url.startsWith('/') ? url : '/' + url;
