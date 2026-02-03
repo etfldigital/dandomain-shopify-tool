@@ -745,17 +745,38 @@ serve(async (req) => {
         
         console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
         
-        // OPTIMIZED BATCH 3: Update primary records using larger sequential chunks
-        // Avoid parallel Promise.all which causes CPU spikes - use sequential with larger batches
-        const PRIMARY_CHUNK_SIZE = 50;
-        for (let i = 0; i < primaryUpdates.length; i += PRIMARY_CHUNK_SIZE) {
-          const chunk = primaryUpdates.slice(i, i + PRIMARY_CHUNK_SIZE);
-          // Sequential updates within chunk to reduce CPU load
-          for (const u of chunk) {
-            await supabase
-              .from('canonical_products')
-              .update({ data: u.data, updated_at: now })
-              .eq('id', u.id);
+        // ============== HIGH-PERFORMANCE BATCH UPDATES ==============
+        // Instead of individual updates (which cause CPU timeout with 4000+ records),
+        // use parallel batches with Promise.allSettled for resilience.
+        // Key insight: The CPU limit is about sustained load, not parallel requests.
+        // Parallel HTTP requests are I/O-bound and actually more efficient.
+        
+        const PARALLEL_BATCH_SIZE = 25; // Smaller parallel batches to avoid overwhelming
+        const updateWithRetry = async (id: string, data: Record<string, unknown>, retries = 2) => {
+          for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+              const { error } = await supabase
+                .from('canonical_products')
+                .update({ data, updated_at: now })
+                .eq('id', id);
+              if (!error) return { success: true, id };
+              if (attempt === retries) return { success: false, id, error: error.message };
+            } catch (e) {
+              if (attempt === retries) return { success: false, id, error: String(e) };
+            }
+          }
+          return { success: false, id };
+        };
+        
+        // Process primary updates in parallel batches
+        let primaryProcessed = 0;
+        for (let i = 0; i < primaryUpdates.length; i += PARALLEL_BATCH_SIZE) {
+          const chunk = primaryUpdates.slice(i, i + PARALLEL_BATCH_SIZE);
+          await Promise.allSettled(chunk.map(u => updateWithRetry(u.id, u.data)));
+          primaryProcessed += chunk.length;
+          // Log progress every 200 records
+          if (primaryProcessed % 200 === 0 || primaryProcessed === primaryUpdates.length) {
+            console.log(`[PREPARE] Primary progress: ${primaryProcessed}/${primaryUpdates.length}`);
           }
         }
         console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
@@ -767,8 +788,8 @@ serve(async (req) => {
         });
 
         // Use larger chunks for IN queries (more efficient)
-        for (let i = 0; i < secondaryIdsToMap.length; i += 1000) {
-          const chunk = secondaryIdsToMap.slice(i, i + 1000);
+        for (let i = 0; i < secondaryIdsToMap.length; i += 500) {
+          const chunk = secondaryIdsToMap.slice(i, i + 500);
           await supabase
             .from('canonical_products')
             .update({ status: 'mapped', updated_at: now })
@@ -776,46 +797,53 @@ serve(async (req) => {
         }
         console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
         
-        // OPTIMIZED BATCH 5: Update secondary records' data sequentially
-        const SECONDARY_CHUNK_SIZE = 50;
-        for (let i = 0; i < secondaryDataUpdates.length; i += SECONDARY_CHUNK_SIZE) {
-          const chunk = secondaryDataUpdates.slice(i, i + SECONDARY_CHUNK_SIZE);
-          for (const u of chunk) {
-            await supabase
+        // Process secondary data updates in parallel batches
+        let secondaryProcessed = 0;
+        for (let i = 0; i < secondaryDataUpdates.length; i += PARALLEL_BATCH_SIZE) {
+          const chunk = secondaryDataUpdates.slice(i, i + PARALLEL_BATCH_SIZE);
+          await Promise.allSettled(chunk.map(u => 
+            supabase
               .from('canonical_products')
               .update({ data: u.data })
-              .eq('id', u.id);
+              .eq('id', u.id)
+          ));
+          secondaryProcessed += chunk.length;
+          if (secondaryProcessed % 500 === 0 || secondaryProcessed === secondaryDataUpdates.length) {
+            console.log(`[PREPARE] Secondary progress: ${secondaryProcessed}/${secondaryDataUpdates.length}`);
           }
         }
         
         console.log(`[PREPARE] Committed grouping to database`);
         
         // FALLBACK: Find any remaining 'pending' records without _isPrimary and mark them
-        // This catches edge cases where records slip through the grouping logic
         const { data: unmarkedRecords } = await supabase
           .from('canonical_products')
           .select('id, data')
           .eq('project_id', projectId)
           .eq('status', 'pending')
-          .is('data->>_isPrimary', null);
+          .is('data->>_isPrimary', null)
+          .limit(500); // Limit to avoid timeout
         
         if (unmarkedRecords && unmarkedRecords.length > 0) {
           console.log(`[PREPARE] FALLBACK: Found ${unmarkedRecords.length} unmarked records, marking as single-variant primaries`);
-          // Process sequentially to avoid CPU spikes
-          for (const r of unmarkedRecords) {
-            await supabase
-              .from('canonical_products')
-              .update({ 
-                data: {
-                  ...(r.data || {}),
-                  _groupKey: (r.data?.title || 'unknown').toLowerCase(),
-                  _isPrimary: true,
-                  _variantCount: 1,
-                  _mergedVariants: [],
-                },
-                updated_at: now,
-              })
-              .eq('id', r.id);
+          // Process in parallel batches
+          for (let i = 0; i < unmarkedRecords.length; i += PARALLEL_BATCH_SIZE) {
+            const chunk = unmarkedRecords.slice(i, i + PARALLEL_BATCH_SIZE);
+            await Promise.allSettled(chunk.map(r =>
+              supabase
+                .from('canonical_products')
+                .update({ 
+                  data: {
+                    ...(r.data || {}),
+                    _groupKey: ((r.data as Record<string, unknown>)?.title as string || 'unknown').toLowerCase(),
+                    _isPrimary: true,
+                    _variantCount: 1,
+                    _mergedVariants: [],
+                  },
+                  updated_at: now,
+                })
+                .eq('id', r.id)
+            ));
           }
         }
         
