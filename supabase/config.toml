@@ -29,3 +29,12 @@ verify_jwt = false
 
 [functions.match-redirects]
 verify_jwt = false
+
+[functions.parse-sitemap]
+verify_jwt = false
+
+[functions.fetch-shopify-sitemap]
+verify_jwt = false
+
+[functions.create-metafield-definition]
+verify_jwt = false
