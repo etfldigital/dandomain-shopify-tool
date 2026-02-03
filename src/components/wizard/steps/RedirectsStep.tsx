@@ -469,12 +469,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const generateFromDatabase = async () => {
     setIsGenerating(true);
     try {
-      // Clear existing pending redirects
+      // Clear existing redirects (not created ones)
       await supabase
         .from('project_redirects')
         .delete()
         .eq('project_id', project.id)
-        .eq('status', 'pending');
+        .neq('status', 'created');
 
       const redirectsToInsert: Array<{
         project_id: string;
@@ -486,91 +486,132 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         matched_by: string;
       }> = [];
 
-      // Products
-      const { data: products } = await supabase
-        .from('canonical_products')
-        .select('id, external_id, data, shopify_id')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
+      // Products - fetch ALL with pagination, only PRIMARY products
+      const pageSize = 1000;
+      let from = 0;
+      let hasMore = true;
 
-      for (const product of products || []) {
-        const data = product.data as Record<string, unknown>;
-        const sourcePath = data?.source_path as string | null;
-        const title = data?.title as string;
-        const storedHandle = data?.shopify_handle as string | null;
-        const handle = storedHandle || generateShopifyHandle(title);
-        
-        if (sourcePath && product.shopify_id) {
-          redirectsToInsert.push({
-            project_id: project.id,
-            entity_type: 'product',
-            entity_id: product.id,
-            old_path: sourcePath,
-            new_path: `/products/${handle}`,
-            confidence_score: 100,
-            matched_by: 'exact',
-          });
+      while (hasMore) {
+        const { data: products, error } = await supabase
+          .from('canonical_products')
+          .select('id, external_id, data, shopify_id')
+          .eq('project_id', project.id)
+          .eq('status', 'uploaded')
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+
+        for (const product of products || []) {
+          const data = product.data as Record<string, unknown>;
+          const isPrimary = data?._isPrimary as boolean;
+          
+          // Only include primary products (the actual Shopify products)
+          if (!isPrimary) continue;
+          
+          const sourcePath = data?.source_path as string | null;
+          const title = data?.title as string;
+          const storedHandle = data?.shopify_handle as string | null;
+          const handle = storedHandle || generateShopifyHandle(title);
+          
+          if (sourcePath && product.shopify_id) {
+            redirectsToInsert.push({
+              project_id: project.id,
+              entity_type: 'product',
+              entity_id: product.id,
+              old_path: sourcePath,
+              new_path: `/products/${handle}`,
+              confidence_score: 100,
+              matched_by: 'exact',
+            });
+          }
         }
+
+        from += pageSize;
+        hasMore = (products?.length || 0) === pageSize;
       }
 
-      // Categories
-      const { data: categories } = await supabase
-        .from('canonical_categories')
-        .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
+      // Categories - with pagination
+      from = 0;
+      hasMore = true;
+      while (hasMore) {
+        const { data: categories, error } = await supabase
+          .from('canonical_categories')
+          .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
+          .eq('project_id', project.id)
+          .eq('status', 'uploaded')
+          .range(from, from + pageSize - 1);
 
-      for (const category of categories || []) {
-        if (category.slug && category.shopify_collection_id) {
-          const handle = category.shopify_tag || generateShopifyHandle(category.name);
-          redirectsToInsert.push({
-            project_id: project.id,
-            entity_type: 'category',
-            entity_id: category.id,
-            old_path: `/shop/${category.slug}/`,
-            new_path: `/collections/${handle}`,
-            confidence_score: 100,
-            matched_by: 'exact',
-          });
+        if (error) throw error;
+
+        for (const category of categories || []) {
+          if (category.slug && category.shopify_collection_id) {
+            const handle = category.shopify_tag || generateShopifyHandle(category.name);
+            redirectsToInsert.push({
+              project_id: project.id,
+              entity_type: 'category',
+              entity_id: category.id,
+              old_path: `/shop/${category.slug}/`,
+              new_path: `/collections/${handle}`,
+              confidence_score: 100,
+              matched_by: 'exact',
+            });
+          }
         }
+
+        from += pageSize;
+        hasMore = (categories?.length || 0) === pageSize;
       }
 
-      // Pages
-      const { data: pages } = await supabase
-        .from('canonical_pages')
-        .select('id, external_id, data, shopify_id')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
+      // Pages - with pagination
+      from = 0;
+      hasMore = true;
+      while (hasMore) {
+        const { data: pages, error } = await supabase
+          .from('canonical_pages')
+          .select('id, external_id, data, shopify_id')
+          .eq('project_id', project.id)
+          .eq('status', 'uploaded')
+          .range(from, from + pageSize - 1);
 
-      for (const page of pages || []) {
-        const data = page.data as Record<string, unknown>;
-        const slug = data?.slug as string;
-        const storedHandle = data?.shopify_handle as string | null;
-        const handle = storedHandle || slug;
-        
-        if (handle && page.shopify_id) {
-          redirectsToInsert.push({
-            project_id: project.id,
-            entity_type: 'page',
-            entity_id: page.id,
-            old_path: `/${slug || handle}`,
-            new_path: `/pages/${handle}`,
-            confidence_score: 100,
-            matched_by: 'exact',
-          });
+        if (error) throw error;
+
+        for (const page of pages || []) {
+          const data = page.data as Record<string, unknown>;
+          const slug = data?.slug as string;
+          const storedHandle = data?.shopify_handle as string | null;
+          const handle = storedHandle || slug;
+          
+          if (handle && page.shopify_id) {
+            redirectsToInsert.push({
+              project_id: project.id,
+              entity_type: 'page',
+              entity_id: page.id,
+              old_path: `/${slug || handle}`,
+              new_path: `/pages/${handle}`,
+              confidence_score: 100,
+              matched_by: 'exact',
+            });
+          }
         }
+
+        from += pageSize;
+        hasMore = (pages?.length || 0) === pageSize;
       }
 
       // Insert in batches
       const batchSize = 100;
+      setProgress({ current: 0, total: redirectsToInsert.length });
+      
       for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
         const batch = redirectsToInsert.slice(i, i + batchSize);
-        await supabase.from('project_redirects').insert(batch);
+        const { error } = await supabase.from('project_redirects').insert(batch);
+        if (error) console.error('Insert error:', error);
+        setProgress({ current: Math.min(i + batchSize, redirectsToInsert.length), total: redirectsToInsert.length });
       }
 
       toast({
         title: 'Redirects genereret',
-        description: `${redirectsToInsert.length} redirects klar baseret på uploadede data`,
+        description: `${redirectsToInsert.length} redirects klar (${redirectsToInsert.filter(r => r.entity_type === 'product').length} produkter, ${redirectsToInsert.filter(r => r.entity_type === 'category').length} kategorier)`,
       });
 
       await loadRedirects();
@@ -583,6 +624,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       });
     } finally {
       setIsGenerating(false);
+      setProgress({ current: 0, total: 0 });
     }
   };
 
