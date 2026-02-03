@@ -389,22 +389,53 @@ async function processProductGroup(
   // ============================================================================
   const lockId = crypto.randomUUID();
   const lockUntil = new Date(Date.now() + LOCK_DURATION_MS);
-  
-  const { data: lockResult, error: lockError } = await supabase
-    .from('canonical_products')
-    .update({ 
-      upload_lock_id: lockId,
-      upload_locked_at: new Date().toISOString(),
-      upload_locked_until: lockUntil.toISOString(),
-      error_message: 'Processing...'
-    })
-    .eq('id', primaryItem.id)
-    .eq('status', 'pending')
-    .is('shopify_id', null)
-    .or(`upload_lock_id.is.null,upload_locked_until.lt.${new Date().toISOString()}`)
-    .select('id');
-  
-  if (lockError || !lockResult || lockResult.length === 0) {
+
+  // IMPORTANT: Avoid PostgREST `.or(...)` with ISO timestamps inside the string.
+  // In practice this can lead to parsing issues and a silent "skip everything" behavior.
+  // We instead do a two-step acquisition:
+  // 1) try claim when unlocked
+  // 2) if that fails, try claim when lock is expired
+  const lockUpdate = {
+    upload_lock_id: lockId,
+    upload_locked_at: new Date().toISOString(),
+    upload_locked_until: lockUntil.toISOString(),
+    error_message: 'Processing...'
+  };
+
+  const tryAcquireLock = async (mode: 'unlocked' | 'expired') => {
+    let q = supabase
+      .from('canonical_products')
+      .update(lockUpdate)
+      .eq('id', primaryItem.id)
+      .eq('status', 'pending')
+      .is('shopify_id', null);
+
+    if (mode === 'unlocked') {
+      q = q.is('upload_lock_id', null);
+    } else {
+      q = q.lt('upload_locked_until', new Date().toISOString());
+    }
+
+    return await q.select('id');
+  };
+
+  let lockResult: any[] | null = null;
+  let lockError: any = null;
+
+  ({ data: lockResult, error: lockError } = await tryAcquireLock('unlocked'));
+
+  // Only try the "expired" path if the first attempt didn't acquire anything.
+  if ((!lockResult || lockResult.length === 0) && !lockError) {
+    ({ data: lockResult, error: lockError } = await tryAcquireLock('expired'));
+  }
+
+  if (lockError) {
+    console.warn(
+      `[PRODUCTS] Lock acquisition error for "${dbGroupKey || title || primaryItem.id}": ${lockError.message || String(lockError)}`
+    );
+  }
+
+  if (!lockResult || lockResult.length === 0) {
     console.log(`[PRODUCTS] Failed to acquire lock for "${dbGroupKey || primaryItem.id}" - another worker owns it`);
     return { skipped: true };
   }
