@@ -19,6 +19,7 @@ export interface Project {
   name: string;
   dandomain_shop_url: string | null;
   dandomain_api_key_encrypted: string | null;
+  dandomain_base_url: string | null;
   shopify_store_domain: string | null;
   shopify_access_token_encrypted: string | null;
   status: ProjectStatus;

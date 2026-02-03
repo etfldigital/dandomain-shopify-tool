@@ -220,6 +220,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 100;
+  
   // Sitemap inputs
   const [productSitemapUrl, setProductSitemapUrl] = useState('');
   const [categorySitemapUrl, setCategorySitemapUrl] = useState('');
@@ -1188,7 +1192,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabType)}>
+            <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v as TabType); setCurrentPage(1); }}>
               <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                 <TabsList>
                   <TabsTrigger value="auto_approved" className="gap-1">
@@ -1211,7 +1215,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                   <Input
                     placeholder="Søg i stier..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
                     className="pl-9"
                   />
                 </div>
@@ -1244,7 +1248,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                           </TableCell>
                         </TableRow>
                       ) : (
-                        filteredRedirects.slice(0, 100).map((redirect) => {
+                        filteredRedirects.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE).map((redirect) => {
                           const statusInfo = getStatusInfo(redirect.status);
                           return (
                             <TableRow key={redirect.id}>
@@ -1260,9 +1264,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   <span className="truncate max-w-[200px]" title={redirect.old_path}>
                                     {redirect.old_path}
                                   </span>
-                                  {project.dandomain_shop_url && redirect.old_path && (
+                                  {redirect.old_path && (
                                     <a
-                                      href={`${project.dandomain_shop_url.replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? '' : '/'}${redirect.old_path}`}
+                                      href={redirect.old_path.startsWith('http') ? redirect.old_path : `${(project.dandomain_base_url || project.dandomain_shop_url || '').replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? '' : '/'}${redirect.old_path}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="h-6 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
@@ -1378,9 +1382,33 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                       )}
                     </TableBody>
                   </Table>
-                  {filteredRedirects.length > 100 && (
-                    <div className="p-3 text-center text-sm text-muted-foreground bg-muted/30">
-                      Viser 100 af {filteredRedirects.length}. Eksportér for fuld liste.
+                  {/* Pagination */}
+                  {filteredRedirects.length > ITEMS_PER_PAGE && (
+                    <div className="p-3 flex items-center justify-between border-t bg-muted/30">
+                      <span className="text-sm text-muted-foreground">
+                        Viser {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredRedirects.length)} af {filteredRedirects.length}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                          disabled={currentPage === 1}
+                        >
+                          Forrige
+                        </Button>
+                        <span className="text-sm px-2">
+                          Side {currentPage} af {Math.ceil(filteredRedirects.length / ITEMS_PER_PAGE)}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(p => Math.min(Math.ceil(filteredRedirects.length / ITEMS_PER_PAGE), p + 1))}
+                          disabled={currentPage >= Math.ceil(filteredRedirects.length / ITEMS_PER_PAGE)}
+                        >
+                          Næste
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
