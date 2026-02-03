@@ -965,15 +965,38 @@ function generateHandle(title: string): string {
 
 function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
   if (!url) return url;
+  
+  // Already absolute URL
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  
+  // Protocol-relative URL
   if (url.startsWith('//')) return 'https:' + url;
+  
+  // Relative URL starting with /
   if (url.startsWith('/')) {
     if (dandomainBaseUrl) {
-      const base = dandomainBaseUrl.replace(/\/$/, '');
-      return `https://${base}${url}`;
+      // dandomainBaseUrl may or may not include https:// - handle both cases
+      let base = dandomainBaseUrl.trim().replace(/\/$/, '');
+      
+      // If base already has https:// or http://, use it as-is
+      if (!base.startsWith('http://') && !base.startsWith('https://')) {
+        base = `https://${base}`;
+      }
+      
+      return `${base}${url}`;
     }
     return url;
   }
+  
+  // Relative URL without leading /
+  if (dandomainBaseUrl) {
+    let base = dandomainBaseUrl.trim().replace(/\/$/, '');
+    if (!base.startsWith('http://') && !base.startsWith('https://')) {
+      base = `https://${base}`;
+    }
+    return `${base}/${url}`;
+  }
+  
   return url;
 }
 
