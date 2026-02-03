@@ -200,6 +200,8 @@ function getStatusInfo(status: RedirectStatus): { label: string; variant: 'defau
 
 export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const { toast } = useToast();
+
+  const persistKey = useMemo(() => `redirectsStep:inputs:${project.id}`, [project.id]);
   
   // Data state
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
@@ -239,6 +241,40 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     loadRedirects();
     loadShopifyUrls();
   }, [project.id]);
+
+  // Persist user inputs (sitemap URLs + uploaded URLs) across step navigation.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(persistKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<{
+        productSitemapUrl: string;
+        categorySitemapUrl: string;
+        dandomainUrls: SitemapUrl[];
+      }>;
+      if (typeof parsed.productSitemapUrl === 'string') setProductSitemapUrl(parsed.productSitemapUrl);
+      if (typeof parsed.categorySitemapUrl === 'string') setCategorySitemapUrl(parsed.categorySitemapUrl);
+      if (Array.isArray(parsed.dandomainUrls)) setDandomainUrls(parsed.dandomainUrls);
+    } catch (e) {
+      console.warn('Could not restore Redirects step inputs from storage', e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        persistKey,
+        JSON.stringify({
+          productSitemapUrl,
+          categorySitemapUrl,
+          dandomainUrls: dandomanUrls,
+        })
+      );
+    } catch (e) {
+      console.warn('Could not persist Redirects step inputs to storage', e);
+    }
+  }, [persistKey, productSitemapUrl, categorySitemapUrl, dandomanUrls]);
 
   const loadRedirects = async () => {
     setIsLoading(true);
@@ -876,6 +912,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     setProductSitemapUrl('');
     setCategorySitemapUrl('');
     setDandomainUrls([]);
+    try {
+      localStorage.removeItem(persistKey);
+    } catch {
+      // ignore
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
     toast({ title: 'Nulstillet', description: 'Sitemap URLs og uploadede filer er blevet fjernet' });
   };
 
@@ -946,6 +988,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       pages: shopifyUrls.filter(u => u.type === 'page').length,
     },
   }), [redirects, dandomanUrls, shopifyUrls]);
+
+  const pageRedirectCount = useMemo(() => {
+    // Not implemented yet, but keep ready for when page redirects are added.
+    return redirects.filter(r => String(r.entity_type) === 'page').length;
+  }, [redirects]);
 
   // ============================================
   // RENDER
@@ -1064,7 +1111,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-xs text-muted-foreground">DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{stats.shopify.pages}</div>
+              <div className="text-2xl font-semibold">{pageRedirectCount}</div>
               <div className="text-xs text-muted-foreground">Sider (redirects)</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
@@ -1091,6 +1138,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
 
             <Button
+              onClick={generateFromDatabase}
+              disabled={isGenerating}
+              variant="outline"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Generer fra database
+            </Button>
+
+            <Button
               onClick={createRedirectsInShopify}
               disabled={isCreating || stats.selected === 0}
             >
@@ -1101,7 +1157,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             <Button
               onClick={handleReset}
               variant="outline"
-              disabled={dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl}
               className="text-destructive hover:text-destructive"
             >
               <X className="w-4 h-4 mr-2" />
