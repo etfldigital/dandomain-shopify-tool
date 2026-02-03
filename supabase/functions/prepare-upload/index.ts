@@ -745,15 +745,18 @@ serve(async (req) => {
         
         console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
         
-        // BATCH 3: Update primary records in parallel chunks
-        for (let i = 0; i < primaryUpdates.length; i += 100) {
-          const chunk = primaryUpdates.slice(i, i + 100);
-          await Promise.all(chunk.map(u =>
-            supabase
+        // OPTIMIZED BATCH 3: Update primary records using larger sequential chunks
+        // Avoid parallel Promise.all which causes CPU spikes - use sequential with larger batches
+        const PRIMARY_CHUNK_SIZE = 50;
+        for (let i = 0; i < primaryUpdates.length; i += PRIMARY_CHUNK_SIZE) {
+          const chunk = primaryUpdates.slice(i, i + PRIMARY_CHUNK_SIZE);
+          // Sequential updates within chunk to reduce CPU load
+          for (const u of chunk) {
+            await supabase
               .from('canonical_products')
               .update({ data: u.data, updated_at: now })
-              .eq('id', u.id)
-          ));
+              .eq('id', u.id);
+          }
         }
         console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
         
@@ -763,8 +766,9 @@ serve(async (req) => {
           return rec?.status !== 'uploaded';
         });
 
-        for (let i = 0; i < secondaryIdsToMap.length; i += 500) {
-          const chunk = secondaryIdsToMap.slice(i, i + 500);
+        // Use larger chunks for IN queries (more efficient)
+        for (let i = 0; i < secondaryIdsToMap.length; i += 1000) {
+          const chunk = secondaryIdsToMap.slice(i, i + 1000);
           await supabase
             .from('canonical_products')
             .update({ status: 'mapped', updated_at: now })
@@ -772,15 +776,16 @@ serve(async (req) => {
         }
         console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
         
-        // BATCH 5: Update secondary records' data in parallel chunks
-        for (let i = 0; i < secondaryDataUpdates.length; i += 100) {
-          const chunk = secondaryDataUpdates.slice(i, i + 100);
-          await Promise.all(chunk.map(u =>
-            supabase
+        // OPTIMIZED BATCH 5: Update secondary records' data sequentially
+        const SECONDARY_CHUNK_SIZE = 50;
+        for (let i = 0; i < secondaryDataUpdates.length; i += SECONDARY_CHUNK_SIZE) {
+          const chunk = secondaryDataUpdates.slice(i, i + SECONDARY_CHUNK_SIZE);
+          for (const u of chunk) {
+            await supabase
               .from('canonical_products')
               .update({ data: u.data })
-              .eq('id', u.id)
-          ));
+              .eq('id', u.id);
+          }
         }
         
         console.log(`[PREPARE] Committed grouping to database`);
@@ -796,23 +801,21 @@ serve(async (req) => {
         
         if (unmarkedRecords && unmarkedRecords.length > 0) {
           console.log(`[PREPARE] FALLBACK: Found ${unmarkedRecords.length} unmarked records, marking as single-variant primaries`);
-          for (let i = 0; i < unmarkedRecords.length; i += 100) {
-            const chunk = unmarkedRecords.slice(i, i + 100);
-            await Promise.all(chunk.map(r =>
-              supabase
-                .from('canonical_products')
-                .update({ 
-                  data: {
-                    ...(r.data || {}),
-                    _groupKey: (r.data?.title || 'unknown').toLowerCase(),
-                    _isPrimary: true,
-                    _variantCount: 1,
-                    _mergedVariants: [],
-                  },
-                  updated_at: now,
-                })
-                .eq('id', r.id)
-            ));
+          // Process sequentially to avoid CPU spikes
+          for (const r of unmarkedRecords) {
+            await supabase
+              .from('canonical_products')
+              .update({ 
+                data: {
+                  ...(r.data || {}),
+                  _groupKey: (r.data?.title || 'unknown').toLowerCase(),
+                  _isPrimary: true,
+                  _variantCount: 1,
+                  _mergedVariants: [],
+                },
+                updated_at: now,
+              })
+              .eq('id', r.id);
           }
         }
         
