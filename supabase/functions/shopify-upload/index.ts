@@ -11,20 +11,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // ============================================================================
 // SHOPIFY RATE LIMITING - SIMPLIFIED & ROBUST
 // ============================================================================
-// Shopify's leaky bucket: 40 requests bucket, 2 requests/second leak rate
-// 
-// Strategy: 
-// 1. Don't preemptively wait - just send requests
-// 2. On 429, return immediately with retry info (don't throw errors)
-// 3. Track bucket via headers and add small delays when getting full
-// ============================================================================
 
 let shopifyBucketUsed = 0;
 let lastBucketUpdate = Date.now();
 
-/**
- * Update bucket state from Shopify response headers.
- */
 function updateBucketFromHeaders(response: Response): void {
   const callLimit = response.headers.get('X-Shopify-Shop-Api-Call-Limit');
   if (callLimit) {
@@ -36,73 +26,44 @@ function updateBucketFromHeaders(response: Response): void {
   }
 }
 
-/**
- * Get estimated current bucket usage (accounting for leak rate)
- */
 function getCurrentBucketUsage(): number {
   const elapsed = (Date.now() - lastBucketUpdate) / 1000;
-  const leaked = Math.floor(elapsed * 2); // 2 requests/second leak
+  const leaked = Math.floor(elapsed * 2);
   return Math.max(0, shopifyBucketUsed - leaked);
 }
 
-/**
- * Check if we should add a small delay before the next request
- * Strategy: Only throttle when bucket is actually filling up.
- * Shopify allows 2 req/sec sustained - we can safely do ~1.5 req/sec baseline.
- */
 function getPreRequestDelay(entityType?: string): number {
   const usage = getCurrentBucketUsage();
-  
-  // Graduated throttling based on bucket usage
-  // Bucket size is 40, leak rate is 2/sec
-  if (usage >= 38) return 1000;  // Almost full - pause 1s
-  if (usage >= 35) return 500;   // Getting full - slow down
-  if (usage >= 30) return 200;   // Moderate usage - small delay
-  
-  // Orders: small baseline delay to smooth out bursts
-  if (entityType === 'orders') {
-    return 100; // 100ms baseline = ~10 req/sec max burst, but bucket limits us to ~2/sec sustained
-  }
-  
+  if (usage >= 38) return 1000;
+  if (usage >= 35) return 500;
+  if (usage >= 30) return 200;
+  if (entityType === 'orders') return 100;
   return 0;
 }
 
-/**
- * Robust fetch wrapper - handles transient errors with retry
- * Returns null on rate limit instead of throwing
- */
 async function shopifyFetch(
   url: string,
   options: RequestInit,
   maxRetries = 3,
   entityType?: string
 ): Promise<{ response: Response; body: string } | { rateLimited: true; retryAfterMs: number }> {
-  
-  // Add delay based on entity type and bucket state
   const preDelay = getPreRequestDelay(entityType);
-  if (preDelay > 0) {
-    await sleep(preDelay);
-  }
+  if (preDelay > 0) await sleep(preDelay);
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const response = await fetch(url, options);
       const body = await response.text();
-      
-      // Update bucket tracking
       updateBucketFromHeaders(response);
       
-      // Handle rate limiting - DON'T throw, return gracefully
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
-        // Use Shopify's suggested retry time, or default to 2s
         const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
         console.log(`[SHOPIFY] Rate limited (429), need to wait ${Math.round(waitMs/1000)}s`);
         return { rateLimited: true, retryAfterMs: waitMs };
       }
       
       return { response, body };
-      
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : '';
       const isTransient = 
@@ -118,11 +79,9 @@ async function shopifyFetch(
         await sleep(waitMs);
         continue;
       }
-      
       throw error;
     }
   }
-  
   throw new Error('Max retries exceeded');
 }
 
@@ -138,7 +97,6 @@ serve(async (req) => {
   }
 
   const requestStartTime = Date.now();
-  // Time budget: leave 10s buffer before platform's 60s limit
   const TIME_BUDGET_MS = 50_000;
 
   try {
@@ -148,17 +106,13 @@ serve(async (req) => {
 
     const { projectId, entityType, batchSize = 10 }: ShopifyUploadRequest = await req.json();
 
-    // Get project with Shopify credentials
     const { data: project, error: projectError } = await supabase
       .from('projects')
       .select('*')
       .eq('id', projectId)
       .single();
 
-    if (projectError || !project) {
-      throw new Error('Project not found');
-    }
-
+    if (projectError || !project) throw new Error('Project not found');
     if (!project.shopify_store_domain || !project.shopify_access_token_encrypted) {
       throw new Error('Shopify credentials not configured');
     }
@@ -168,40 +122,29 @@ serve(async (req) => {
     const dandomainBaseUrl = String(project.dandomain_base_url || project.dandomain_shop_url || '').trim();
     const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
 
-    // Route to appropriate handler
     if (entityType === 'products') {
       const result = await uploadProducts(supabase, projectId, shopifyUrl, shopifyToken, batchSize, dandomainBaseUrl, requestStartTime, TIME_BUDGET_MS);
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      });
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
     if (entityType === 'categories') {
       const result = await uploadCategories(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS);
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      });
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
     if (entityType === 'customers') {
       const result = await uploadCustomers(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS);
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      });
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
     if (entityType === 'orders') {
       const result = await uploadOrders(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS);
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      });
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
     if (entityType === 'pages') {
       const result = await uploadPages(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS);
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      });
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     throw new Error(`Unknown entity type: ${entityType}`);
@@ -209,41 +152,25 @@ serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[SHOPIFY-UPLOAD] Fatal error:', errorMessage);
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage,
-    }), { 
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    return new Response(JSON.stringify({ success: false, error: errorMessage }), { 
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
     });
   }
 });
 
 // ============================================================================
-// PRODUCT UPLOAD - NO PRE-LOADING, JUST CREATE & HANDLE DUPLICATES
+// PRODUCT UPLOAD
 // ============================================================================
 
-// Cache products we've already uploaded in this session (title -> shopify_id)
 const sessionProductCache: Map<string, string> = new Map();
-
-// Cache for category external_id -> shopify_tag mapping
 let categoryTagCache: Map<string, string> = new Map();
-
-// ============================================================================
-// SKU -> SHOPIFY ID TRANSLATION MAP
-// ============================================================================
-// This map is built during product upload and used during order upload
-// to link line items to their actual Shopify products/variants
-// Key: SKU or external_id, Value: { productId, variantId }
 const skuToShopifyMap: Map<string, { productId: string; variantId: string }> = new Map();
 
-/**
- * Load category tags from database for a project.
- * Maps category external_id to shopify_tag for fast lookup.
- */
+// Lock duration: 2 minutes - if a worker crashes, the lock expires and another can take over
+const LOCK_DURATION_MS = 2 * 60 * 1000;
+
 async function loadCategoryTags(supabase: any, projectId: string): Promise<Map<string, string>> {
   const cache = new Map<string, string>();
-  
   const { data: categories, error } = await supabase
     .from('canonical_categories')
     .select('external_id, shopify_tag')
@@ -259,25 +186,16 @@ async function loadCategoryTags(supabase: any, projectId: string): Promise<Map<s
       cache.set(String(cat.external_id), String(cat.shopify_tag));
     }
   }
-  
   console.log(`[PRODUCTS] Loaded ${cache.size} category tags for tag mapping`);
   return cache;
 }
 
-/**
- * Get Shopify tags for a product based on its category_external_ids.
- * Returns an array of shopify_tag values from matching categories.
- */
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
   const tags: string[] = [];
-  
   for (const catId of categoryExternalIds) {
     const shopifyTag = categoryCache.get(String(catId));
-    if (shopifyTag && !tags.includes(shopifyTag)) {
-      tags.push(shopifyTag);
-    }
+    if (shopifyTag && !tags.includes(shopifyTag)) tags.push(shopifyTag);
   }
-  
   return tags;
 }
 
@@ -292,46 +210,49 @@ async function uploadProducts(
   timeBudget: number
 ): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
-  // Load category tags for this project (for mapping category_external_ids to Shopify tags)
   categoryTagCache = await loadCategoryTags(supabase, projectId);
   
-  // Fetch only PRIMARY pending products (those with _isPrimary=true after prepare-upload)
-  // This ensures we only create one Shopify product per group
+  // ============================================================================
+  // STEP 1: Clear expired locks from crashed workers
+  // ============================================================================
+  const now = new Date();
+  await supabase
+    .from('canonical_products')
+    .update({ 
+      upload_lock_id: null, 
+      upload_locked_at: null, 
+      upload_locked_until: null 
+    })
+    .eq('project_id', projectId)
+    .lt('upload_locked_until', now.toISOString());
+
+  // ============================================================================
+  // STEP 2: Fetch unlocked, pending, primary products
+  // ============================================================================
   const { data: pendingProducts, error: fetchError } = await supabase
     .from('canonical_products')
     .select('*')
     .eq('project_id', projectId)
     .eq('status', 'pending')
+    .is('upload_lock_id', null)  // Not locked by another worker
     .order('created_at', { ascending: true })
-    .limit(batchSize * 2); // Fetch a bit extra for processing efficiency
+    .limit(batchSize * 2);
 
-  if (fetchError) {
-    throw new Error(`Failed to fetch products: ${fetchError.message}`);
-  }
-
+  if (fetchError) throw new Error(`Failed to fetch products: ${fetchError.message}`);
   if (!pendingProducts || pendingProducts.length === 0) {
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Filter to ONLY primary products (those explicitly marked by prepare-upload)
-  // CRITICAL: Only _isPrimary === true products should create Shopify products.
-  // Secondary variants (_isPrimary === false) are already embedded in _mergedVariants.
-  // If _isPrimary is undefined/null, the product was never processed by prepare-upload - SKIP IT.
+  // Filter to ONLY primary products
   const primaryProducts = pendingProducts.filter((p: any) => {
     const data = p.data || {};
-    return data._isPrimary === true; // STRICT check - must be explicitly true
+    return data._isPrimary === true;
   });
 
-  // IMPORTANT: Each primary product is its OWN group with pre-merged variants
-  // Do NOT re-group by title - that causes duplicates!
-  // The _mergedVariants array on each primary record contains all its variants.
+  // Each primary product is its OWN group
   const productGroups: Map<string, any[]> = new Map();
-  
   for (const product of primaryProducts) {
-    const data = product.data || {};
-    // Use a unique key per primary record (its ID) to prevent re-grouping
-    const uniqueKey = product.id;
-    productGroups.set(uniqueKey, [product]);
+    productGroups.set(product.id, [product]);
   }
   
   let processed = 0;
@@ -343,13 +264,10 @@ async function uploadProducts(
   let retryAfterSeconds = 0;
 
   for (const [groupKey, items] of productGroups) {
-    // Check time budget
     if (Date.now() - startTime > timeBudget) {
       console.log(`[PRODUCTS] Time budget reached after ${groupsProcessed} groups`);
       break;
     }
-    
-    // Limit groups per batch
     if (groupsProcessed >= batchSize) break;
     groupsProcessed++;
 
@@ -373,16 +291,21 @@ async function uploadProducts(
       } else {
         processed += items.length;
       }
-      
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       console.error(`[PRODUCTS] Error processing "${groupKey}":`, msg);
       
-      // Mark as failed
       const ids = items.map((it: any) => it.id);
       await supabase
         .from('canonical_products')
-        .update({ status: 'failed', error_message: msg, updated_at: new Date().toISOString() })
+        .update({ 
+          status: 'failed', 
+          error_message: msg, 
+          upload_lock_id: null,
+          upload_locked_at: null,
+          upload_locked_until: null,
+          updated_at: new Date().toISOString() 
+        })
         .in('id', ids);
       
       errors += items.length;
@@ -392,7 +315,6 @@ async function uploadProducts(
     }
   }
 
-  // Check for remaining pending items (only pending status, not mapped)
   const { count: remainingCount } = await supabase
     .from('canonical_products')
     .select('*', { count: 'exact', head: true })
@@ -410,9 +332,6 @@ async function uploadProducts(
   };
 }
 
-// REMOVED: loadExistingProducts - we handle duplicates via Shopify's 422 response instead
-// This avoids rate limiting from fetching all products before uploading
-
 function groupProductsByTitle(products: any[]): Map<string, any[]> {
   const groups: Map<string, any[]> = new Map();
   
@@ -421,7 +340,6 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
     const title = String(data._groupTitle || data.title || '').trim();
     const vendor = String(data.vendor || '').trim();
 
-    // Prefer precomputed grouping key from prepare-upload
     const preKey = String(data._groupKey || '').trim();
     if (preKey) {
       const key = preKey.toLowerCase();
@@ -430,20 +348,15 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
       continue;
     }
     
-    // Transform title: remove vendor prefix
     let transformedTitle = title;
     if (vendor && title.toLowerCase().startsWith(vendor.toLowerCase())) {
       transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
     }
     if (!transformedTitle) transformedTitle = title;
-
-    // Normalize whitespace to improve grouping reliability
     transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
     
     const groupKey = transformedTitle.toLowerCase();
-    if (!groups.has(groupKey)) {
-      groups.set(groupKey, []);
-    }
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
     groups.get(groupKey)!.push(product);
   }
   
@@ -463,72 +376,103 @@ async function processProductGroup(
   const data = items[0].data || {};
   const title = String(data._groupTitle || data.title || '').trim();
   const vendor = String(data.vendor || '').trim();
-  const dbGroupKey = String(data._groupKey || '').trim();
+  const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
+  const primaryItem = items[0];
   
   // ============================================================================
-  // IDEMPOTENCY CHECK #1: Database-level group check
-  // Before creating anything in Shopify, check if ANY record with the same 
-  // _groupKey already has a shopify_id. If so, skip this group entirely.
-  // This is the PERSISTENT dedupe mechanism that survives function restarts.
+  // PHASE 1: ATOMIC LOCK ACQUISITION
+  // Generate a unique lock ID and try to claim this product.
+  // This uses a conditional UPDATE that only succeeds if:
+  // 1. Status is still 'pending'
+  // 2. No shopify_id exists
+  // 3. No lock exists OR lock has expired
   // ============================================================================
-  if (dbGroupKey && projectId) {
-    const { data: existingInGroup, error: groupCheckError } = await supabase
+  const lockId = crypto.randomUUID();
+  const lockUntil = new Date(Date.now() + LOCK_DURATION_MS);
+  
+  const { data: lockResult, error: lockError } = await supabase
+    .from('canonical_products')
+    .update({ 
+      upload_lock_id: lockId,
+      upload_locked_at: new Date().toISOString(),
+      upload_locked_until: lockUntil.toISOString(),
+      error_message: 'Processing...'
+    })
+    .eq('id', primaryItem.id)
+    .eq('status', 'pending')
+    .is('shopify_id', null)
+    .or(`upload_lock_id.is.null,upload_locked_until.lt.${new Date().toISOString()}`)
+    .select('id');
+  
+  if (lockError || !lockResult || lockResult.length === 0) {
+    console.log(`[PRODUCTS] Failed to acquire lock for "${dbGroupKey || primaryItem.id}" - another worker owns it`);
+    return { skipped: true };
+  }
+  
+  console.log(`[PRODUCTS] Acquired lock ${lockId} for "${dbGroupKey || title}"`);
+
+  // ============================================================================
+  // PHASE 2: CHECK IF GROUP ALREADY UPLOADED (post-lock)
+  // Now that we own the lock, double-check if any record with same _groupKey
+  // already has a shopify_id. This handles the race where another worker
+  // completed between our fetch and lock acquisition.
+  // ============================================================================
+  if (dbGroupKey) {
+    const { data: groupRecords, error: groupCheckError } = await supabase
       .from('canonical_products')
-      .select('shopify_id')
+      .select('id, shopify_id')
       .eq('project_id', projectId)
-      .eq('data->>_groupKey', dbGroupKey)
       .not('shopify_id', 'is', null)
-      .limit(1);
+      .limit(500);
     
-    if (!groupCheckError && existingInGroup && existingInGroup.length > 0 && existingInGroup[0].shopify_id) {
-      const existingShopifyId = existingInGroup[0].shopify_id;
-      console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, skipping creation`);
+    if (!groupCheckError && groupRecords) {
+      // Filter in JS since JSONB filtering in Supabase can be tricky
+      const matchingWithShopifyId = groupRecords.filter((r: any) => {
+        // We need to check the data column - but we didn't select it
+        // Instead, we'll do a targeted query
+        return false; // Will use a different approach
+      });
+    }
+    
+    // More reliable: Query specifically for this group key
+    const { data: existingInGroup } = await supabase
+      .from('canonical_products')
+      .select('shopify_id, data')
+      .eq('project_id', projectId)
+      .not('shopify_id', 'is', null);
+    
+    if (existingInGroup) {
+      const matchingRecord = existingInGroup.find((r: any) => {
+        const rGroupKey = String(r.data?._groupKey || '').trim().toLowerCase();
+        return rGroupKey === dbGroupKey && r.shopify_id;
+      });
       
-      // Mark all items in this batch as uploaded with the existing Shopify ID
-      const ids = items.map((it) => it.id);
-      await supabase
-        .from('canonical_products')
-        .update({ 
-          status: 'uploaded', 
-          shopify_id: existingShopifyId, 
-          error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
-          updated_at: new Date().toISOString() 
-        })
-        .in('id', ids);
-      
-      // Also update session cache for this invocation
-      const titleLower = title.toLowerCase();
-      sessionProductCache.set(titleLower, existingShopifyId);
-      
-      return { skipped: true };
+      if (matchingRecord?.shopify_id) {
+        const existingShopifyId = matchingRecord.shopify_id;
+        console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
+        
+        // Release lock and mark as uploaded
+        await supabase
+          .from('canonical_products')
+          .update({ 
+            status: 'uploaded', 
+            shopify_id: existingShopifyId, 
+            error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
+            upload_lock_id: null,
+            upload_locked_at: null,
+            upload_locked_until: null,
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', primaryItem.id);
+        
+        return { skipped: true };
+      }
     }
   }
   
   // ============================================================================
-  // IDEMPOTENCY CHECK #2: Atomic status lock
-  // Try to "claim" this product by atomically setting error_message to 'Processing...'
-  // Only proceed if the UPDATE returns count=1 (we successfully locked it).
-  // This prevents race conditions when multiple workers try to process the same product.
+  // PHASE 3: PREPARE PRODUCT DATA
   // ============================================================================
-  const primaryItem = items[0];
-  const { data: lockResult, error: lockError } = await supabase
-    .from('canonical_products')
-    .update({ 
-      error_message: 'Processing...',
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', primaryItem.id)
-    .eq('status', 'pending')  // Only if still pending
-    .is('shopify_id', null)   // Only if not yet uploaded
-    .select('id');
-  
-  if (lockError || !lockResult || lockResult.length === 0) {
-    console.log(`[PRODUCTS] Failed to lock "${dbGroupKey}" - another worker may have claimed it`);
-    return { skipped: true };
-  }
-  
-  // Transform title - fuzzy case-insensitive vendor stripping
-  // Helper to normalize brand names for comparison (remove +, &, extra spaces)
   const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
   
   let transformedTitle = title;
@@ -537,14 +481,12 @@ async function processProductGroup(
     const separators = [' - ', ' – ', ' — ', ': ', ' | '];
     let stripped = false;
     
-    // Try to find separator and compare prefix with fuzzy matching
     for (const sep of separators) {
       const sepIndex = title.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = title.slice(0, sepIndex).trim();
         const normalizedPrefix = normalizeBrand(prefix);
         
-        // Exact match OR vendor starts with the prefix (fuzzy)
         if (normalizedPrefix === normalizedVendor || 
             normalizedVendor.startsWith(normalizedPrefix + ' ') ||
             normalizedVendor.startsWith(normalizedPrefix)) {
@@ -558,35 +500,32 @@ async function processProductGroup(
       }
     }
     
-    // Fallback: simple startsWith with case-insensitive check
     if (!stripped && normalizeBrand(title).startsWith(normalizedVendor)) {
       const rest = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
-      if (rest) {
-        transformedTitle = rest;
-      }
+      if (rest) transformedTitle = rest;
     }
   }
 
   transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
-  
   const titleLower = transformedTitle.toLowerCase();
   
-  // Check session cache (products we've uploaded in this function invocation)
-  // This is a secondary check - the database check above is the primary mechanism
+  // Check session cache (secondary check)
   if (sessionProductCache.has(titleLower)) {
     const existingId = sessionProductCache.get(titleLower)!;
     console.log(`[PRODUCTS] "${transformedTitle}" already in session cache, skipping`);
     
-    const ids = items.map((it) => it.id);
     await supabase
       .from('canonical_products')
       .update({ 
         status: 'uploaded', 
         shopify_id: existingId, 
         error_message: 'Sprunget over: Variant grupperet med andet produkt',
+        upload_lock_id: null,
+        upload_locked_at: null,
+        upload_locked_until: null,
         updated_at: new Date().toISOString() 
       })
-      .in('id', ids);
+      .eq('id', primaryItem.id);
     
     return { skipped: true };
   }
@@ -596,7 +535,6 @@ async function processProductGroup(
   const mergedVariants = Array.isArray(primaryData._mergedVariants) ? primaryData._mergedVariants : null;
   const expectedVariantCount = primaryData._variantCount || 1;
 
-  // SANITY CHECK: Log warning if variant count doesn't match
   if (mergedVariants && mergedVariants.length > 0) {
     if (expectedVariantCount > 1 && mergedVariants.length !== expectedVariantCount) {
       console.error(`[PRODUCTS] VARIANT MISMATCH: "${transformedTitle}" expects ${expectedVariantCount} variants but has ${mergedVariants.length} in _mergedVariants`);
@@ -606,14 +544,14 @@ async function processProductGroup(
   }
 
   type VariantCandidate = {
-    option1: string | null; // null = no variant option (product without variants)
+    option1: string | null;
     sku: string;
     price: string;
     compare_at_price: string | null;
     inventory_quantity: number;
     weight: number;
     barcode?: string;
-    noVariantOption?: boolean; // True if product should have no variant selector
+    noVariantOption?: boolean;
   };
 
   const variantByOption: Map<string, VariantCandidate> = new Map();
@@ -621,11 +559,8 @@ async function processProductGroup(
   if (mergedVariants && mergedVariants.length > 0) {
     for (const mv of mergedVariants) {
       const sku = String(mv?.sku || '').trim();
-      // Check if this is a true no-variant product (should NOT get ONE-SIZE)
       const hasNoVariantOption = mv?.noVariantOption === true;
       const option1 = hasNoVariantOption ? null : normalizeSizeOption(String(mv?.size || ''));
-
-      // Dedupe by option value (keep first) - for no-variant products, use SKU as key
       const dedupeKey = option1 ?? `__no_option_${sku}`;
       if (variantByOption.has(dedupeKey)) continue;
 
@@ -642,7 +577,6 @@ async function processProductGroup(
       variantByOption.set(dedupeKey, v);
     }
   } else {
-    // Fallback: derive variants from raw items (pre-prepare upload)
     for (const item of items) {
       const itemData = item.data || {};
       const sku = String(itemData.sku || '').trim();
@@ -667,7 +601,6 @@ async function processProductGroup(
     }
   }
 
-  // Check if this is a no-variant product (should NOT have option1)
   const hasNoVariantOption = Array.from(variantByOption.values()).some(v => v.noVariantOption === true);
 
   const variants: any[] = Array.from(variantByOption.values()).map((v) => {
@@ -683,7 +616,6 @@ async function processProductGroup(
       ...(v.barcode ? { barcode: v.barcode } : {}),
     };
     
-    // Only add option1 if product has real variant options
     if (!v.noVariantOption && v.option1) {
       variantData.option1 = v.option1;
     }
@@ -691,363 +623,434 @@ async function processProductGroup(
     return variantData;
   });
 
-  // Collect images from the PRIMARY record (which has merged images from prepare-upload)
-  // IMPORTANT: Use primaryData.images or _mergedImages as the primary source
-  // The items array only contains the primary record after prepare-upload, 
-  // so we must use the merged images that were consolidated during grouping
+  // Collect images
   const allImages: string[] = [];
   
-  // First: Use _mergedImages from prepare-upload (explicit merged images)
-  const mergedImages = primaryData._mergedImages || primaryData.images || [];
-  for (const img of mergedImages) {
-    const normalized = normalizeImageUrl(String(img), dandomainBaseUrl);
-    if (normalized && !allImages.includes(normalized)) {
-      allImages.push(normalized);
+  if (Array.isArray(primaryData._mergedImages)) {
+    for (const img of primaryData._mergedImages) {
+      if (img && typeof img === 'string' && !allImages.includes(img)) allImages.push(img);
     }
   }
-  
-  // Fallback: Also check individual items in case prepare-upload wasn't run
+  if (Array.isArray(primaryData.images)) {
+    for (const img of primaryData.images) {
+      if (img && typeof img === 'string' && !allImages.includes(img)) allImages.push(img);
+    }
+  }
   for (const item of items) {
-    const images = item.data?.images || [];
-    for (const img of images) {
-      const normalized = normalizeImageUrl(String(img), dandomainBaseUrl);
-      if (normalized && !allImages.includes(normalized)) {
-        allImages.push(normalized);
-      }
+    const itemImages = item.data?.images || [];
+    for (const img of itemImages) {
+      if (img && typeof img === 'string' && !allImages.includes(img)) allImages.push(img);
     }
   }
-  
+
   console.log(`[PRODUCTS] "${transformedTitle}": Found ${allImages.length} images from merged data`);
 
-  // If this canonical record already has a Shopify product id, don't try to create again.
-  // Instead, ensure images are present on the existing product (useful for repairing products
-  // that were created after an image-related 422 and therefore ended up without images).
-  const existingShopifyIdRaw = items.find((it) => it.shopify_id)?.shopify_id;
-  const existingShopifyId = existingShopifyIdRaw ? String(existingShopifyIdRaw) : '';
-  if (existingShopifyId) {
-    console.log(`[PRODUCTS] "${transformedTitle}" has existing shopify_id=${existingShopifyId}. Ensuring images...`);
-
-    const desiredImages = allImages.slice(0, 10);
-
-    // Fetch current images to avoid creating duplicates
-    const fetchExisting = async () => {
-      let res = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}.json?fields=id,images`, {
-        headers: { 'X-Shopify-Access-Token': token },
-      });
-      if ('rateLimited' in res) {
-        await sleep(res.retryAfterMs);
-        res = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}.json?fields=id,images`, {
-          headers: { 'X-Shopify-Access-Token': token },
-        });
-      }
-      return res;
-    };
-
-    const existingSrcs = new Set<string>();
-    try {
-      const existingResult = await fetchExisting();
-      if (!('rateLimited' in existingResult) && existingResult.response.ok) {
-        const parsed = JSON.parse(existingResult.body);
-        const imgs = parsed?.product?.images || [];
-        for (const img of imgs) {
-          const src = String(img?.src || '').trim();
-          if (src) existingSrcs.add(src);
-        }
-      } else if (!('rateLimited' in existingResult)) {
-        console.log(`[PRODUCTS] Warning: could not fetch existing images for ${existingShopifyId}: ${existingResult.response.status} ${existingResult.body.substring(0, 200)}`);
-      }
-    } catch (e) {
-      console.log(`[PRODUCTS] Warning: failed parsing existing product images for ${existingShopifyId}:`, e);
-    }
-
-    let added = 0;
-    let failed = 0;
-    for (const url of desiredImages) {
-      if (existingSrcs.has(url)) continue;
-
-      let imgRes = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}/images.json`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-        body: JSON.stringify({ image: { src: url } }),
-      });
-      if ('rateLimited' in imgRes) {
-        await sleep(imgRes.retryAfterMs);
-        imgRes = await shopifyFetch(`${shopifyUrl}/products/${existingShopifyId}/images.json`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-          body: JSON.stringify({ image: { src: url } }),
-        });
-      }
-
-      if (!('rateLimited' in imgRes) && imgRes.response.ok) {
-        added++;
-      } else if (!('rateLimited' in imgRes)) {
-        failed++;
-        console.log(`[PRODUCTS] Image upload failed for "${transformedTitle}" (${existingShopifyId}): ${imgRes.response.status} ${imgRes.body.substring(0, 200)}`);
-      }
-    }
-
-    console.log(`[PRODUCTS] "${transformedTitle}": ensured images on existing product. Added=${added}, Failed=${failed}`);
-
-    sessionProductCache.set(titleLower, existingShopifyId);
-    for (const item of items) {
-      const updatedData = { ...item.data };
-      await supabase
-        .from('canonical_products')
-        .update({
-          status: 'uploaded',
-          shopify_id: existingShopifyId,
-          error_message: null,
-          data: updatedData,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', item.id);
-    }
-
-    return {};
+  // Get category tags
+  const categoryExternalIds: string[] = primaryData.category_external_ids || [];
+  const categoryTags = getCategoryTagsForProduct(categoryExternalIds, categoryTagCache);
+  if (categoryTags.length > 0) {
+    console.log(`[PRODUCTS] "${transformedTitle}": Added ${categoryTags.length} category tags: ${categoryTags.join(', ')}`);
   }
 
-  // Sort variants by size (smallest to largest) and set explicit positions
-  const sortedVariants = sortVariantsBySize(variants).map((v, idx) => ({ ...v, position: idx + 1 }));
+  // Build tags
+  const existingTags: string[] = primaryData.tags || [];
+  const allTags = [...new Set([...existingTags, ...categoryTags])];
 
-  // Collect all tags: product tags + category-based tags
-  const productTags: string[] = [...(data.tags || [])];
-  
-  // Add category tags based on category_external_ids
-  const categoryExternalIds = Array.isArray(data.category_external_ids) 
-    ? data.category_external_ids.map(String) 
-    : [];
-  
-  if (categoryExternalIds.length > 0) {
-    const categoryTags = getCategoryTagsForProduct(categoryExternalIds, categoryTagCache);
-    for (const catTag of categoryTags) {
-      if (!productTags.includes(catTag)) {
-        productTags.push(catTag);
-      }
-    }
-    if (categoryTags.length > 0) {
-      console.log(`[PRODUCTS] "${transformedTitle}": Added ${categoryTags.length} category tags: ${categoryTags.join(', ')}`);
-    }
-  }
-
-  // Build product payload
+  // ============================================================================
+  // PHASE 4: CREATE IN SHOPIFY
+  // ============================================================================
+  const hasRealVariantOptions = variants.some(v => v.option1);
   const productPayload: any = {
     product: {
       title: transformedTitle,
-      body_html: data.body_html || '',
-      vendor: vendor,
-      product_type: '',
-      tags: [...new Set(productTags)].join(', '),
-      status: data.active ? 'active' : 'draft',
-      variants: sortedVariants,
-      images: allImages.slice(0, 10).map((url: string) => ({ src: url })), // Limit images
-    }
+      body_html: primaryData.body_html || '',
+      vendor: vendor || undefined,
+      product_type: primaryData.product_type || '',
+      status: 'active',
+      tags: allTags.join(', '),
+      variants: variants,
+    },
   };
 
-  // Only set options if product has real variant options (not for products without variants)
-  if (!hasNoVariantOption) {
-    const sortedOptions = sortedVariants.map(v => v.option1).filter(Boolean);
-    const uniqueOptions = [...new Set(sortedOptions)]; // Preserves order
-    productPayload.product.options = [{ name: 'Størrelse', values: uniqueOptions.length > 0 ? uniqueOptions : ['ONE-SIZE'] }];
+  if (hasRealVariantOptions) {
+    productPayload.product.options = [{ name: 'Size', values: variants.map(v => v.option1).filter(Boolean) }];
   }
-  // If hasNoVariantOption is true, we don't set options - Shopify will use "Default Title" internally
-  // but the product won't show a size/variant dropdown to customers
 
   console.log(`[PRODUCTS] Creating "${transformedTitle}" with ${variants.length} variant(s)`);
 
-  // Create product
-  const initialImageCount = (productPayload?.product?.images || []).length;
-  let imageErrorBody: string | null = null;
-
-  let result = await shopifyFetch(`${shopifyUrl}/products.json`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-    body: JSON.stringify(productPayload),
-  });
-  
-  if ('rateLimited' in result) {
-    return { rateLimited: true, retryAfterMs: result.retryAfterMs };
-  }
-
-  // Retry without images if image error
-  if (!result.response.ok && result.response.status === 422 && result.body.includes('Image')) {
-    imageErrorBody = result.body;
-    console.log(`[PRODUCTS] Image error for "${transformedTitle}" (422): ${result.body.substring(0, 300)}`);
-    console.log(`[PRODUCTS] Retrying "${transformedTitle}" without images`);
-    productPayload.product.images = [];
-    result = await shopifyFetch(`${shopifyUrl}/products.json`, {
+  const createResult = await shopifyFetch(
+    `${shopifyUrl}/products.json`,
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
       body: JSON.stringify(productPayload),
-    });
-    
-    if ('rateLimited' in result) {
-      return { rateLimited: true, retryAfterMs: result.retryAfterMs };
-    }
-  }
-  
-  // Handle "already exists" error
-  if (!result.response.ok && result.response.status === 422 && result.body.includes('already exists')) {
-    console.log(`[PRODUCTS] "${transformedTitle}" already exists, marking as skipped`);
-    
-    const ids = items.map((it) => it.id);
+    },
+    3,
+    'products'
+  );
+
+  if ('rateLimited' in createResult) {
+    // Release lock on rate limit
     await supabase
       .from('canonical_products')
       .update({ 
-        status: 'uploaded', 
-        error_message: 'Sprunget over: Eksisterer allerede i Shopify',
-        updated_at: new Date().toISOString() 
+        upload_lock_id: null,
+        upload_locked_at: null,
+        upload_locked_until: null,
+        error_message: null
       })
-      .in('id', ids);
-    
-    return { skipped: true };
+      .eq('id', primaryItem.id);
+    return createResult;
   }
 
-  if (!result.response.ok) {
-    const errorMsg = `Shopify error ${result.response.status}: ${result.body.substring(0, 200)}`;
+  if (!createResult.response.ok) {
+    const errorBody = createResult.body;
     
-    const ids = items.map((it) => it.id);
+    // Handle "already exists" - try to find existing product
+    if (createResult.response.status === 422 && errorBody.includes('has already been taken')) {
+      console.log(`[PRODUCTS] "${transformedTitle}": Handle already exists, searching for existing product...`);
+      
+      const handle = generateHandle(transformedTitle);
+      const searchResult = await shopifyFetch(
+        `${shopifyUrl}/products.json?handle=${encodeURIComponent(handle)}`,
+        { headers: { 'X-Shopify-Access-Token': token } }
+      );
+      
+      if (!('rateLimited' in searchResult) && searchResult.response.ok) {
+        try {
+          const searchData = JSON.parse(searchResult.body);
+          if (searchData.products && searchData.products.length > 0) {
+            const existingProduct = searchData.products[0];
+            const existingShopifyId = String(existingProduct.id);
+            
+            console.log(`[PRODUCTS] "${transformedTitle}": Found existing product ${existingShopifyId}`);
+            
+            sessionProductCache.set(titleLower, existingShopifyId);
+            
+            // Update all items in this group
+            await supabase
+              .from('canonical_products')
+              .update({ 
+                status: 'uploaded', 
+                shopify_id: existingShopifyId, 
+                error_message: 'Produkt fandtes allerede i Shopify',
+                upload_lock_id: null,
+                upload_locked_at: null,
+                upload_locked_until: null,
+                updated_at: new Date().toISOString() 
+              })
+              .eq('id', primaryItem.id);
+            
+            // Update entire group
+            if (dbGroupKey) {
+              await updateEntireGroup(supabase, projectId, dbGroupKey, existingShopifyId);
+            }
+            
+            return { skipped: true };
+          }
+        } catch (e) { /* ignore parse errors */ }
+      }
+    }
+    
+    const errorMsg = `Shopify API error ${createResult.response.status}: ${errorBody.slice(0, 200)}`;
+    console.error(`[PRODUCTS] "${transformedTitle}": ${errorMsg}`);
+    
     await supabase
       .from('canonical_products')
-      .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
-      .in('id', ids);
+      .update({ 
+        status: 'failed', 
+        error_message: errorMsg,
+        upload_lock_id: null,
+        upload_locked_at: null,
+        upload_locked_until: null,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', primaryItem.id);
     
     return { error: errorMsg };
   }
 
-  // Success!
-  const responseData = JSON.parse(result.body);
+  // ============================================================================
+  // PHASE 5: SUCCESS - UPDATE DATABASE
+  // ============================================================================
+  let responseData: any;
+  try {
+    responseData = JSON.parse(createResult.body);
+  } catch (e) {
+    const errorMsg = 'Failed to parse Shopify response';
+    await supabase
+      .from('canonical_products')
+      .update({ 
+        status: 'failed', 
+        error_message: errorMsg,
+        upload_lock_id: null,
+        upload_locked_at: null,
+        upload_locked_until: null,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', primaryItem.id);
+    return { error: errorMsg };
+  }
+
   const shopifyId = String(responseData.product.id);
+  const shopifyVariants = responseData.product.variants || [];
   const shopifyHandle = responseData.product.handle;
   
   sessionProductCache.set(titleLower, shopifyId);
 
-  // ============================================================================
-  // BUILD SKU -> SHOPIFY ID TRANSLATION MAP
-  // ============================================================================
-  // Map each variant's SKU to its Shopify product/variant IDs
-  // This enables order line items to link correctly to products
-  const shopifyVariants = responseData.product.variants || [];
+  // Map SKUs to Shopify variant IDs
+  const skuMap: Record<string, string> = {};
   for (const sv of shopifyVariants) {
-    const sku = String(sv.sku || '').trim();
-    if (sku) {
-      skuToShopifyMap.set(sku, {
-        productId: shopifyId,
-        variantId: String(sv.id),
-      });
-    }
+    if (sv.sku) skuMap[sv.sku.toLowerCase()] = String(sv.id);
+    skuToShopifyMap.set(sv.sku, { productId: shopifyId, variantId: String(sv.id) });
   }
-  
-  // Also map by external_id for fallback lookup during order import
-  for (const item of items) {
-    const extId = String(item.external_id || '').trim();
-    if (extId && !skuToShopifyMap.has(extId)) {
-      // Find matching variant by SKU
-      const itemSku = String(item.data?.sku || '').trim();
-      const matchingVariant = shopifyVariants.find((sv: any) => 
-        String(sv.sku || '').trim().toLowerCase() === itemSku.toLowerCase()
-      );
-      if (matchingVariant) {
-        skuToShopifyMap.set(extId, {
-          productId: shopifyId,
-          variantId: String(matchingVariant.id),
-        });
-      } else if (shopifyVariants.length > 0) {
-        // Default to first variant if no SKU match
-        skuToShopifyMap.set(extId, {
-          productId: shopifyId,
-          variantId: String(shopifyVariants[0].id),
-        });
-      }
-    }
-  }
-  
-  console.log(`[PRODUCTS] "${transformedTitle}": mapped ${shopifyVariants.length} variant SKUs to Shopify IDs`);
+  console.log(`[PRODUCTS] "${transformedTitle}": mapped ${Object.keys(skuMap).length} variant SKUs to Shopify IDs`);
 
-  // If we had to drop images due to a 422 Image error, try to add them back one-by-one.
-  // This avoids losing ALL images because a single URL was invalid.
-  if (initialImageCount > 0 && (productPayload?.product?.images || []).length === 0 && allImages.length > 0) {
-    console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair. Reason=422 Image, images=${allImages.length}`);
-    if (imageErrorBody) {
-      console.log(`[PRODUCTS] "${transformedTitle}": image error body (trimmed): ${imageErrorBody.substring(0, 300)}`);
-    }
-
+  // Add images
+  if (allImages.length > 0) {
     let added = 0;
     let failed = 0;
-    for (const url of allImages.slice(0, 10)) {
-      let imgRes = await shopifyFetch(`${shopifyUrl}/products/${shopifyId}/images.json`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-        body: JSON.stringify({ image: { src: url } }),
-      });
-
-      if ('rateLimited' in imgRes) {
-        await sleep(imgRes.retryAfterMs);
-        imgRes = await shopifyFetch(`${shopifyUrl}/products/${shopifyId}/images.json`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-          body: JSON.stringify({ image: { src: url } }),
-        });
-      }
-
-      if (!('rateLimited' in imgRes) && imgRes.response.ok) {
-        added++;
-      } else if (!('rateLimited' in imgRes)) {
+    for (const imageUrl of allImages) {
+      try {
+        const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
+        const imgResult = await shopifyFetch(
+          `${shopifyUrl}/products/${shopifyId}/images.json`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+            body: JSON.stringify({ image: { src: normalizedUrl } }),
+          }
+        );
+        if ('rateLimited' in imgResult) {
+          await sleep(imgResult.retryAfterMs);
+          continue;
+        }
+        if (imgResult.response.ok) {
+          added++;
+        } else {
+          failed++;
+        }
+      } catch (e) {
         failed++;
-        console.log(`[PRODUCTS] Post-create image upload failed for "${transformedTitle}" (${shopifyId}): ${imgRes.response.status} ${imgRes.body.substring(0, 200)}`);
       }
     }
-
     console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair done. Added=${added}, Failed=${failed}`);
   }
 
-  // Update all items with Shopify variant IDs for future order linking
-  for (const item of items) {
-    const itemSku = String(item.data?.sku || '').trim();
-    const matchingVariant = shopifyVariants.find((sv: any) => 
-      String(sv.sku || '').trim().toLowerCase() === itemSku.toLowerCase()
-    );
-    const shopifyVariantId = matchingVariant ? String(matchingVariant.id) : (shopifyVariants[0] ? String(shopifyVariants[0].id) : null);
-    
-    const updatedData = { 
-      ...item.data, 
-      shopify_handle: shopifyHandle,
-      _shopify_product_id: shopifyId,
-      _shopify_variant_id: shopifyVariantId,
-    };
-    await supabase
-      .from('canonical_products')
-      .update({ status: 'uploaded', shopify_id: shopifyId, error_message: null, data: updatedData, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
+  // Update primary record
+  const updatedData = { 
+    ...primaryItem.data, 
+    shopify_handle: shopifyHandle,
+    _shopify_product_id: shopifyId,
+  };
+  
+  await supabase
+    .from('canonical_products')
+    .update({ 
+      status: 'uploaded', 
+      shopify_id: shopifyId, 
+      error_message: null, 
+      data: updatedData,
+      upload_lock_id: null,
+      upload_locked_at: null,
+      upload_locked_until: null,
+      updated_at: new Date().toISOString() 
+    })
+    .eq('id', primaryItem.id);
+
+  // ============================================================================
+  // PHASE 6: UPDATE ENTIRE GROUP
+  // Mark ALL records with same _groupKey as uploaded with the new shopify_id
+  // ============================================================================
+  if (dbGroupKey) {
+    await updateEntireGroup(supabase, projectId, dbGroupKey, shopifyId);
   }
   
-  // ============================================================================
-  // CRITICAL: Update ALL secondary records in the same _groupKey with shopify_id
-  // This ensures the entire variant group is marked as uploaded, preventing
-  // any future attempts to re-upload these variants as separate products.
-  // ============================================================================
-  const dbGroupKeyForUpdate = String(data._groupKey || '').trim();
-  if (dbGroupKeyForUpdate && projectId) {
-    const { error: groupUpdateError } = await supabase
-      .from('canonical_products')
-      .update({ 
-        status: 'uploaded', 
-        shopify_id: shopifyId,
-        error_message: 'Variant grupperet med primær produkt',
-        updated_at: new Date().toISOString() 
-      })
-      .eq('project_id', projectId)
-      .eq('data->>_groupKey', dbGroupKeyForUpdate)
-      .is('shopify_id', null); // Only update those not yet marked
-    
-    if (groupUpdateError) {
-      console.warn(`[PRODUCTS] Warning: Failed to update secondary records for group "${dbGroupKeyForUpdate}": ${groupUpdateError.message}`);
-    } else {
-      console.log(`[PRODUCTS] "${transformedTitle}": Updated entire group "${dbGroupKeyForUpdate}" with shopify_id ${shopifyId}`);
-    }
-  }
+  console.log(`[PRODUCTS] "${transformedTitle}": Successfully uploaded as ${shopifyId}`);
 
   return {};
+}
+
+/**
+ * Update all records in the same group with the given shopify_id.
+ * Uses JS filtering since JSONB querying can be unreliable.
+ */
+async function updateEntireGroup(
+  supabase: any, 
+  projectId: string, 
+  groupKey: string, 
+  shopifyId: string
+): Promise<void> {
+  // Fetch all records without shopify_id
+  const { data: allPending } = await supabase
+    .from('canonical_products')
+    .select('id, data')
+    .eq('project_id', projectId)
+    .is('shopify_id', null);
+  
+  if (!allPending || allPending.length === 0) return;
+  
+  // Filter by groupKey in JS
+  const matchingIds = allPending
+    .filter((r: any) => {
+      const rGroupKey = String(r.data?._groupKey || '').trim().toLowerCase();
+      return rGroupKey === groupKey;
+    })
+    .map((r: any) => r.id);
+  
+  if (matchingIds.length === 0) return;
+  
+  const { error } = await supabase
+    .from('canonical_products')
+    .update({ 
+      status: 'uploaded', 
+      shopify_id: shopifyId,
+      error_message: 'Variant grupperet med primær produkt',
+      upload_lock_id: null,
+      upload_locked_at: null,
+      upload_locked_until: null,
+      updated_at: new Date().toISOString() 
+    })
+    .in('id', matchingIds);
+  
+  if (error) {
+    console.warn(`[PRODUCTS] Warning: Failed to update group "${groupKey}": ${error.message}`);
+  } else {
+    console.log(`[PRODUCTS] Updated ${matchingIds.length} records in group "${groupKey}" with shopify_id ${shopifyId}`);
+  }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+function generateHandle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
+  if (!url) return url;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('//')) return 'https:' + url;
+  if (url.startsWith('/')) {
+    if (dandomainBaseUrl) {
+      const base = dandomainBaseUrl.replace(/\/$/, '');
+      return `https://${base}${url}`;
+    }
+    return url;
+  }
+  return url;
+}
+
+const SIZE_PATTERNS = [
+  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
+  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[\/](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
+  /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
+  /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
+  /^\d{2}[-\/]\d{2}$/,
+  /^one[-\s]?size$/i,
+  /^\d{1,2}[.,]5$/,
+];
+
+const VALID_NUMERIC_SIZE_RANGES = [
+  { min: 0, max: 20 },
+  { min: 32, max: 60 },
+  { min: 86, max: 194 },
+];
+
+function isValidNumericSize(num: number): boolean {
+  return VALID_NUMERIC_SIZE_RANGES.some(range => num >= range.min && num <= range.max);
+}
+
+function isValidSizeVariant(option: string): boolean {
+  const trimmed = option.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'default' || trimmed.toLowerCase() === 'default title') return false;
+  if (SIZE_PATTERNS.some(pattern => pattern.test(trimmed))) return true;
+  const numMatch = trimmed.match(/^(\d+)$/);
+  if (numMatch) {
+    const num = parseInt(numMatch[1], 10);
+    if (numMatch[1].length >= 4) return false;
+    return isValidNumericSize(num);
+  }
+  return false;
+}
+
+function extractSizeFromSku(sku: string): string | null {
+  if (!sku) return null;
+  
+  const combinedSizeMatch = sku.match(/-((?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\/(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl))$/i);
+  if (combinedSizeMatch) return combinedSizeMatch[1].toUpperCase();
+  
+  const parts = sku.split('-');
+  
+  if (parts.length >= 2) {
+    const secondLast = parts[parts.length - 2].trim();
+    const lastPart = parts[parts.length - 1].trim();
+    const lastNumericMatch = lastPart.match(/^(\d{2})/);
+    
+    if (/^\d{2}$/.test(secondLast) && lastNumericMatch) {
+      const lastNumeric = lastNumericMatch[1];
+      const nums = [parseInt(secondLast, 10), parseInt(lastNumeric, 10)];
+      if (nums.every(n => isValidNumericSize(n))) return `${secondLast}-${lastNumeric}`;
+    }
+  }
+  
+  if (parts.length >= 2) {
+    const lastTwo = parts.slice(-2).join('-');
+    if (/^\d{2}-\d{2}$/.test(lastTwo)) {
+      const nums = lastTwo.split('-').map(n => parseInt(n, 10));
+      if (nums.every(n => isValidNumericSize(n))) return lastTwo;
+    }
+  }
+  
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i].trim().toUpperCase();
+    if (!part) continue;
+    if (/^\d{3,}$/.test(part) && i < parts.length - 1) continue;
+    if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
+      const num = parseInt(part, 10);
+      if (!isValidNumericSize(num)) continue;
+    }
+    if (isValidSizeVariant(part)) return part;
+  }
+  
+  return null;
+}
+
+const SIZE_ORDER: Record<string, number> = {
+  'XXXS': 1, '3XS': 1, 'XXS': 2, '2XS': 2, 'XS': 3, 'S': 4, 'M': 5, 'L': 6,
+  'XL': 7, 'XXL': 8, '2XL': 8, 'XXXL': 9, '3XL': 9, 'XXXXL': 10, '4XL': 10,
+  'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
+  'XXS/XS': 2.5, 'XS/S': 3.5, 'S/M': 4.5, 'M/L': 5.5, 'L/XL': 6.5, 'XL/XXL': 7.5, 'XXL/XXXL': 8.5,
+};
+
+function getSizeSortPriority(size: string): number {
+  const upper = size.toUpperCase().trim();
+  if (SIZE_ORDER[upper] !== undefined) return SIZE_ORDER[upper];
+  const comboMatch = upper.match(/^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)\/(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)$/);
+  if (comboMatch) {
+    const firstSize = comboMatch[1];
+    const baseOrder = SIZE_ORDER[firstSize] || 5;
+    return baseOrder + 0.5;
+  }
+  const numMatch = upper.match(/^(\d+)$/);
+  if (numMatch) return 1000 + parseInt(numMatch[1], 10);
+  const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
+  if (rangeMatch) return 1000 + parseInt(rangeMatch[1], 10);
+  const halfMatch = upper.match(/^(\d+)[.,]5$/);
+  if (halfMatch) return 1000 + parseInt(halfMatch[1], 10) + 0.5;
+  return 9999;
+}
+
+function normalizeSizeOption(size: string | null): string {
+  if (!size) return 'ONE-SIZE';
+  const s = size.trim().toUpperCase();
+  if (!s || s === 'DEFAULT' || s === 'DEFAULT TITLE') return 'ONE-SIZE';
+  return s;
 }
 
 // ============================================================================
@@ -1077,7 +1080,6 @@ async function uploadCategories(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Load existing collections
   const existingCollections: Map<string, string> = new Map();
   console.log('[CATEGORIES] Fetching existing Shopify collections...');
   
@@ -1098,21 +1100,24 @@ async function uploadCategories(
     
     if (!result.response.ok) break;
     
-    const data = JSON.parse(result.body);
-    for (const c of (data.smart_collections || [])) {
-      existingCollections.set(c.title.toLowerCase(), String(c.id));
-    }
-    
-    const linkHeader = result.response.headers.get('Link');
-    if (linkHeader && linkHeader.includes('rel="next"')) {
-      const match = linkHeader.match(/page_info=([^>&]+).*rel="next"/);
-      pageInfo = match ? match[1] : null;
-      hasMorePages = !!pageInfo;
-    } else {
+    try {
+      const data = JSON.parse(result.body);
+      for (const col of data.smart_collections || []) {
+        existingCollections.set(col.title.toLowerCase(), String(col.id));
+      }
+      
+      const linkHeader = result.response.headers.get('Link');
+      if (linkHeader?.includes('rel="next"')) {
+        const match = linkHeader.match(/page_info=([^>&]+)/);
+        pageInfo = match ? match[1] : null;
+      } else {
+        hasMorePages = false;
+      }
+    } catch {
       hasMorePages = false;
     }
   }
-  
+
   console.log(`[CATEGORIES] Found ${existingCollections.size} existing collections`);
 
   let processed = 0;
@@ -1121,45 +1126,43 @@ async function uploadCategories(
 
   for (const item of items) {
     if (Date.now() - startTime > timeBudget) break;
+
+    const tagName = item.shopify_tag || item.name;
+    const existingId = existingCollections.get(tagName.toLowerCase());
     
-    const title = item.name;
-    const titleLower = title.toLowerCase();
-    
-    // Skip if exists
-    if (existingCollections.has(titleLower)) {
-      const existingId = existingCollections.get(titleLower)!;
+    if (existingId) {
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_collection_id: existingId, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: existingId, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
       continue;
     }
-    
-    // Create collection
-    const payload = {
+
+    const collectionPayload = {
       smart_collection: {
-        title: title,
-        rules: [{ column: 'tag', relation: 'equals', condition: title }]
-      }
+        title: tagName,
+        rules: [{ column: 'tag', relation: 'equals', condition: tagName }],
+        disjunctive: false,
+        published: true,
+      },
     };
-    
-    const result = await shopifyFetch(`${shopifyUrl}/smart_collections.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-      body: JSON.stringify(payload),
-    });
-    
+
+    const result = await shopifyFetch(
+      `${shopifyUrl}/smart_collections.json`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify(collectionPayload),
+      }
+    );
+
     if ('rateLimited' in result) {
-      return { 
-        success: true, processed, errors, hasMore: true, 
-        rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000),
-        errorDetails: errorDetails.length > 0 ? errorDetails : undefined 
-      };
+      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
     }
-    
+
     if (!result.response.ok) {
-      const errorMsg = `Shopify error ${result.response.status}`;
+      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
       await supabase
         .from('canonical_categories')
         .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
@@ -1168,20 +1171,21 @@ async function uploadCategories(
       errorDetails.push({ externalId: item.external_id, message: errorMsg });
       continue;
     }
-    
-    const data = JSON.parse(result.body);
-    const shopifyId = String(data.smart_collection.id);
-    
-    await supabase
-      .from('canonical_categories')
-      .update({ status: 'uploaded', shopify_collection_id: shopifyId, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-    
-    existingCollections.set(titleLower, shopifyId);
-    processed++;
+
+    try {
+      const responseData = JSON.parse(result.body);
+      const collectionId = String(responseData.smart_collection.id);
+      await supabase
+        .from('canonical_categories')
+        .update({ status: 'uploaded', shopify_collection_id: collectionId, error_message: null, updated_at: new Date().toISOString() })
+        .eq('id', item.id);
+      processed++;
+    } catch {
+      errors++;
+    }
   }
 
-  const { count } = await supabase
+  const { count: remainingCount } = await supabase
     .from('canonical_categories')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
@@ -1192,7 +1196,7 @@ async function uploadCategories(
     success: true,
     processed,
     errors,
-    hasMore: (count || 0) > 0,
+    hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
@@ -1209,31 +1213,29 @@ async function uploadCustomers(
   batchSize: number,
   startTime: number,
   timeBudget: number
-): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
+): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_customers')
     .select('*')
     .eq('project_id', projectId)
     .eq('status', 'pending')
-    .order('created_at', { ascending: true })
     .limit(batchSize);
 
   if (fetchError) throw new Error(`Failed to fetch customers: ${fetchError.message}`);
   if (!items || items.length === 0) {
-    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
+    return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
   let processed = 0;
   let errors = 0;
-  let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
   for (const item of items) {
     if (Date.now() - startTime > timeBudget) break;
-    
+
     const data = item.data || {};
-    const email = data.email?.toLowerCase()?.trim();
+    const email = data.email?.trim();
     
     if (!email) {
       await supabase
@@ -1241,82 +1243,66 @@ async function uploadCustomers(
         .update({ status: 'failed', error_message: 'Missing email', updated_at: new Date().toISOString() })
         .eq('id', item.id);
       errors++;
-      errorDetails.push({ externalId: item.external_id, message: 'Missing email' });
       continue;
     }
-    
+
     // Check if customer exists
     const searchResult = await shopifyFetch(
       `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(email)}`,
       { headers: { 'X-Shopify-Access-Token': token } }
     );
-    
+
     if ('rateLimited' in searchResult) {
-      return { 
-        success: true, processed, errors, skipped, hasMore: true,
-        rateLimited: true, retryAfterSeconds: Math.ceil(searchResult.retryAfterMs / 1000),
-        errorDetails: errorDetails.length > 0 ? errorDetails : undefined
-      };
+      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(searchResult.retryAfterMs / 1000) };
     }
-    
+
     if (searchResult.response.ok) {
-      const searchData = JSON.parse(searchResult.body);
-      const existingCustomer = searchData.customers?.find((c: any) => c.email?.toLowerCase() === email);
-      
-      if (existingCustomer) {
-        await supabase
-          .from('canonical_customers')
-          .update({ status: 'uploaded', shopify_id: String(existingCustomer.id), updated_at: new Date().toISOString() })
-          .eq('id', item.id);
-        skipped++;
-        continue;
-      }
+      try {
+        const searchData = JSON.parse(searchResult.body);
+        if (searchData.customers && searchData.customers.length > 0) {
+          const existingCustomer = searchData.customers[0];
+          await supabase
+            .from('canonical_customers')
+            .update({ 
+              status: 'uploaded', 
+              shopify_id: String(existingCustomer.id), 
+              error_message: 'Kunde fandtes allerede',
+              updated_at: new Date().toISOString() 
+            })
+            .eq('id', item.id);
+          processed++;
+          continue;
+        }
+      } catch { /* proceed to create */ }
     }
-    
-    // Create customer
-    // Note: Customer data stores addresses as an array in data.addresses
-    const addresses = Array.isArray(data.addresses) && data.addresses.length > 0
-      ? data.addresses.map((addr: any) => buildAddress(addr))
-      : undefined;
-    
+
     const customerPayload = {
       customer: {
         email: email,
         first_name: data.first_name || '',
         last_name: data.last_name || '',
-        phone: normalizePhone(data.phone || data.addresses?.[0]?.phone),
+        phone: data.phone || undefined,
         verified_email: true,
         send_email_welcome: false,
-        addresses: addresses,
-      }
+        addresses: data.addresses || [],
+      },
     };
-    
-    const createResult = await shopifyFetch(`${shopifyUrl}/customers.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-      body: JSON.stringify(customerPayload),
-    });
-    
-    if ('rateLimited' in createResult) {
-      return { 
-        success: true, processed, errors, skipped, hasMore: true,
-        rateLimited: true, retryAfterSeconds: Math.ceil(createResult.retryAfterMs / 1000),
-        errorDetails: errorDetails.length > 0 ? errorDetails : undefined
-      };
-    }
-    
-    if (!createResult.response.ok) {
-      // Check if it's a duplicate error
-      if (createResult.body.includes('already') || createResult.body.includes('taken')) {
-        await supabase
-          .from('canonical_customers')
-          .update({ status: 'uploaded', updated_at: new Date().toISOString() })
-          .eq('id', item.id);
-        skipped++;
-        continue;
+
+    const result = await shopifyFetch(
+      `${shopifyUrl}/customers.json`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify(customerPayload),
       }
-      
-      const errorMsg = `Shopify error ${createResult.response.status}: ${createResult.body.substring(0, 100)}`;
+    );
+
+    if ('rateLimited' in result) {
+      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
+    }
+
+    if (!result.response.ok) {
+      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
       await supabase
         .from('canonical_customers')
         .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
@@ -1325,19 +1311,21 @@ async function uploadCustomers(
       errorDetails.push({ externalId: item.external_id, message: errorMsg });
       continue;
     }
-    
-    const responseData = JSON.parse(createResult.body);
-    const shopifyId = String(responseData.customer.id);
-    
-    await supabase
-      .from('canonical_customers')
-      .update({ status: 'uploaded', shopify_id: shopifyId, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-    
-    processed++;
+
+    try {
+      const responseData = JSON.parse(result.body);
+      const customerId = String(responseData.customer.id);
+      await supabase
+        .from('canonical_customers')
+        .update({ status: 'uploaded', shopify_id: customerId, error_message: null, updated_at: new Date().toISOString() })
+        .eq('id', item.id);
+      processed++;
+    } catch {
+      errors++;
+    }
   }
 
-  const { count } = await supabase
+  const { count: remainingCount } = await supabase
     .from('canonical_customers')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
@@ -1347,8 +1335,7 @@ async function uploadCustomers(
     success: true,
     processed,
     errors,
-    skipped,
-    hasMore: (count || 0) > 0,
+    hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
@@ -1356,63 +1343,6 @@ async function uploadCustomers(
 // ============================================================================
 // ORDERS UPLOAD
 // ============================================================================
-
-const orderCustomerCache: Map<string, string> = new Map();
-
-// Cache for SKU/external_id -> {productId, variantId} loaded from DB
-const orderProductCache: Map<string, { productId: string; variantId: string }> = new Map();
-
-async function loadProductMappingForOrders(supabase: any, projectId: string): Promise<void> {
-  // Load all uploaded products with their Shopify IDs
-  // We need to map SKUs to Shopify product/variant IDs for order line items
-  if (orderProductCache.size > 0) return; // Already loaded
-  
-  console.log('[ORDERS] Loading product SKU -> Shopify ID mapping...');
-  
-  let page = 0;
-  const pageSize = 1000;
-  let totalLoaded = 0;
-  
-  while (true) {
-    const { data: products, error } = await supabase
-      .from('canonical_products')
-      .select('external_id, shopify_id, data')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded')
-      .range(page * pageSize, (page + 1) * pageSize - 1);
-    
-    if (error) {
-      console.error('[ORDERS] Error loading product mapping:', error.message);
-      break;
-    }
-    
-    if (!products || products.length === 0) break;
-    
-    for (const p of products) {
-      const shopifyProductId = p.shopify_id ? String(p.shopify_id) : null;
-      const shopifyVariantId = p.data?._shopify_variant_id ? String(p.data._shopify_variant_id) : null;
-      const sku = String(p.data?.sku || '').trim();
-      const extId = String(p.external_id || '').trim();
-      
-      if (shopifyProductId && shopifyVariantId) {
-        // Map by SKU
-        if (sku) {
-          orderProductCache.set(sku.toLowerCase(), { productId: shopifyProductId, variantId: shopifyVariantId });
-        }
-        // Map by external_id
-        if (extId) {
-          orderProductCache.set(extId.toLowerCase(), { productId: shopifyProductId, variantId: shopifyVariantId });
-        }
-      }
-    }
-    
-    totalLoaded += products.length;
-    if (products.length < pageSize) break;
-    page++;
-  }
-  
-  console.log(`[ORDERS] Loaded ${orderProductCache.size} SKU/ID mappings from ${totalLoaded} products`);
-}
 
 async function uploadOrders(
   supabase: any,
@@ -1424,15 +1354,11 @@ async function uploadOrders(
   timeBudget: number
 ): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
-  // Load product mapping for line item linking
-  await loadProductMappingForOrders(supabase, projectId);
-  
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
     .select('*')
     .eq('project_id', projectId)
     .eq('status', 'pending')
-    .order('created_at', { ascending: true })
     .limit(batchSize);
 
   if (fetchError) throw new Error(`Failed to fetch orders: ${fetchError.message}`);
@@ -1440,125 +1366,110 @@ async function uploadOrders(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Pre-load customer mapping from DB
-  const customerExternalIds = items
-    .map((o: any) => o.data?.customer_external_id)
-    .filter(Boolean);
-  
-  if (customerExternalIds.length > 0) {
-    const { data: customers } = await supabase
-      .from('canonical_customers')
-      .select('external_id, shopify_id')
-      .eq('project_id', projectId)
-      .in('external_id', customerExternalIds);
-    
-    for (const c of (customers || [])) {
-      if (c.shopify_id) {
-        orderCustomerCache.set(c.external_id, c.shopify_id);
-      }
+  // Build product lookup
+  const { data: uploadedProducts } = await supabase
+    .from('canonical_products')
+    .select('external_id, data, shopify_id')
+    .eq('project_id', projectId)
+    .eq('status', 'uploaded');
+
+  const productLookup: Map<string, { shopifyProductId: string; shopifyVariantId: string }> = new Map();
+  for (const p of (uploadedProducts || [])) {
+    const variantId = p.data?._shopify_variant_id || '';
+    const productId = p.shopify_id || p.data?._shopify_product_id || '';
+    if (productId) {
+      productLookup.set(p.external_id, { shopifyProductId: productId, shopifyVariantId: variantId });
+    }
+  }
+
+  // Build customer lookup
+  const { data: uploadedCustomers } = await supabase
+    .from('canonical_customers')
+    .select('external_id, shopify_id, data')
+    .eq('project_id', projectId)
+    .eq('status', 'uploaded');
+
+  const customerLookup: Map<string, string> = new Map();
+  for (const c of (uploadedCustomers || [])) {
+    if (c.shopify_id) {
+      customerLookup.set(c.external_id, c.shopify_id);
+      if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
     }
   }
 
   let processed = 0;
   let errors = 0;
-  let linkedLineItems = 0;
-  let unlinkedLineItems = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
   for (const item of items) {
     if (Date.now() - startTime > timeBudget) break;
-    
+
     const data = item.data || {};
-    
-    // Find customer Shopify ID
-    let customerId: string | null = null;
-    const customerExtId = data.customer_external_id;
-    
-    if (customerExtId && orderCustomerCache.has(customerExtId)) {
-      customerId = orderCustomerCache.get(customerExtId)!;
-    }
-    
-    // Build order payload with product linking
-    const lineItems = (data.line_items || []).map((li: any) => {
-      const lineItem: any = {
-        title: li.title || 'Product',
-        quantity: li.quantity || 1,
-        price: String(li.price || '0'),
-      };
+    const lineItems = data.line_items || [];
+
+    // Map line items to Shopify products
+    const shopifyLineItems: any[] = [];
+    let unmappedItems = 0;
+
+    for (const li of lineItems) {
+      const sku = li.sku || li.product_id || '';
+      const productInfo = productLookup.get(sku);
       
-      // Try to link to actual Shopify product/variant
-      // Priority: 1) SKU, 2) product_external_id
-      const sku = String(li.sku || '').trim().toLowerCase();
-      const productExtId = String(li.product_external_id || '').trim().toLowerCase();
-      
-      let mapping = null;
-      if (sku && orderProductCache.has(sku)) {
-        mapping = orderProductCache.get(sku);
-      } else if (productExtId && orderProductCache.has(productExtId)) {
-        mapping = orderProductCache.get(productExtId);
-      }
-      
-      if (mapping) {
-        // Set explicit product_id and variant_id for proper linking
-        lineItem.product_id = parseInt(mapping.productId, 10);
-        lineItem.variant_id = parseInt(mapping.variantId, 10);
-        linkedLineItems++;
+      if (productInfo?.shopifyVariantId) {
+        shopifyLineItems.push({
+          variant_id: parseInt(productInfo.shopifyVariantId),
+          quantity: li.quantity || 1,
+          price: li.price || '0',
+        });
       } else {
-        unlinkedLineItems++;
+        unmappedItems++;
+        shopifyLineItems.push({
+          title: li.title || li.name || sku || 'Unknown product',
+          quantity: li.quantity || 1,
+          price: li.price || '0',
+        });
       }
-      
-      return lineItem;
-    });
-    
-    if (lineItems.length === 0) {
-      lineItems.push({ title: 'Order Item', quantity: 1, price: '0' });
-      unlinkedLineItems++;
     }
-    
+
+    // Find customer
+    const customerEmail = data.customer_email || data.email;
+    const customerId = data.customer_id;
+    let shopifyCustomerId = customerLookup.get(customerId) || 
+                           (customerEmail ? customerLookup.get(customerEmail.toLowerCase()) : undefined);
+
     const orderPayload: any = {
       order: {
-        line_items: lineItems,
-        financial_status: mapFinancialStatus(data.financial_status),
-        fulfillment_status: mapFulfillmentStatus(data.fulfillment_status),
+        line_items: shopifyLineItems,
+        financial_status: 'paid',
+        fulfillment_status: null,
         send_receipt: false,
         send_fulfillment_receipt: false,
-      }
+        inventory_behaviour: 'bypass',
+        ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {}),
+        ...(data.shipping_address ? { shipping_address: data.shipping_address } : {}),
+        ...(data.billing_address ? { billing_address: data.billing_address } : {}),
+        ...(data.created_at ? { created_at: data.created_at } : {}),
+        ...(data.note ? { note: data.note } : {}),
+      },
     };
-    
-    if (customerId) {
-      orderPayload.order.customer = { id: parseInt(customerId, 10) };
-    }
-    
-    if (data.created_at) {
-      orderPayload.order.created_at = data.created_at;
-    }
-    
-    if (data.shipping_address) {
-      orderPayload.order.shipping_address = buildAddress(data.shipping_address);
-    }
-    
-    if (data.billing_address) {
-      orderPayload.order.billing_address = buildAddress(data.billing_address);
-    }
-    
-    // Create order - pass 'orders' to enable proactive throttling
-    const result = await shopifyFetch(`${shopifyUrl}/orders.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-      body: JSON.stringify(orderPayload),
-    }, 3, 'orders');
-    
+
+    const result = await shopifyFetch(
+      `${shopifyUrl}/orders.json`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify(orderPayload),
+      },
+      3,
+      'orders'
+    );
+
     if ('rateLimited' in result) {
-      console.log(`[ORDERS] Batch complete before rate limit. Linked=${linkedLineItems}, Unlinked=${unlinkedLineItems}`);
-      return {
-        success: true, processed, errors, hasMore: true,
-        rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000),
-        errorDetails: errorDetails.length > 0 ? errorDetails : undefined
-      };
+      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
     }
-    
+
     if (!result.response.ok) {
-      const errorMsg = `Shopify error ${result.response.status}: ${result.body.substring(0, 100)}`;
+      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
       await supabase
         .from('canonical_orders')
         .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
@@ -1567,21 +1478,26 @@ async function uploadOrders(
       errorDetails.push({ externalId: item.external_id, message: errorMsg });
       continue;
     }
-    
-    const responseData = JSON.parse(result.body);
-    const shopifyId = String(responseData.order.id);
-    
-    await supabase
-      .from('canonical_orders')
-      .update({ status: 'uploaded', shopify_id: shopifyId, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-    
-    processed++;
+
+    try {
+      const responseData = JSON.parse(result.body);
+      const orderId = String(responseData.order.id);
+      await supabase
+        .from('canonical_orders')
+        .update({ 
+          status: 'uploaded', 
+          shopify_id: orderId, 
+          error_message: unmappedItems > 0 ? `${unmappedItems} produkter ikke fundet` : null,
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', item.id);
+      processed++;
+    } catch {
+      errors++;
+    }
   }
 
-  console.log(`[ORDERS] Batch complete. Processed=${processed}, Errors=${errors}, Linked=${linkedLineItems}, Unlinked=${unlinkedLineItems}`);
-
-  const { count } = await supabase
+  const { count: remainingCount } = await supabase
     .from('canonical_orders')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
@@ -1591,7 +1507,7 @@ async function uploadOrders(
     success: true,
     processed,
     errors,
-    hasMore: (count || 0) > 0,
+    hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
@@ -1628,33 +1544,32 @@ async function uploadPages(
 
   for (const item of items) {
     if (Date.now() - startTime > timeBudget) break;
-    
+
     const data = item.data || {};
     
     const pagePayload = {
       page: {
         title: data.title || 'Untitled',
         body_html: data.body_html || '',
-        published: data.published !== false,
-      }
+        published: true,
+      },
     };
-    
-    const result = await shopifyFetch(`${shopifyUrl}/pages.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-      body: JSON.stringify(pagePayload),
-    });
-    
+
+    const result = await shopifyFetch(
+      `${shopifyUrl}/pages.json`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+        body: JSON.stringify(pagePayload),
+      }
+    );
+
     if ('rateLimited' in result) {
-      return {
-        success: true, processed, errors, hasMore: true,
-        rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000),
-        errorDetails: errorDetails.length > 0 ? errorDetails : undefined
-      };
+      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
     }
-    
+
     if (!result.response.ok) {
-      const errorMsg = `Shopify error ${result.response.status}`;
+      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
       await supabase
         .from('canonical_pages')
         .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
@@ -1663,21 +1578,21 @@ async function uploadPages(
       errorDetails.push({ externalId: item.external_id, message: errorMsg });
       continue;
     }
-    
-    const responseData = JSON.parse(result.body);
-    const shopifyId = String(responseData.page.id);
-    const shopifyHandle = responseData.page.handle;
-    
-    const updatedData = { ...data, shopify_handle: shopifyHandle };
-    await supabase
-      .from('canonical_pages')
-      .update({ status: 'uploaded', shopify_id: shopifyId, data: updatedData, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-    
-    processed++;
+
+    try {
+      const responseData = JSON.parse(result.body);
+      const pageId = String(responseData.page.id);
+      await supabase
+        .from('canonical_pages')
+        .update({ status: 'uploaded', shopify_id: pageId, error_message: null, updated_at: new Date().toISOString() })
+        .eq('id', item.id);
+      processed++;
+    } catch {
+      errors++;
+    }
   }
 
-  const { count } = await supabase
+  const { count: remainingCount } = await supabase
     .from('canonical_pages')
     .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
@@ -1687,273 +1602,7 @@ async function uploadPages(
     success: true,
     processed,
     errors,
-    hasMore: (count || 0) > 0,
+    hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
-}
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-// ==========================================================================
-// SIZE PARSING & VALIDATION (to avoid creating "Default" variants)
-// ==========================================================================
-
-const SIZE_PATTERNS = [
-  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
-  /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
-  /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
-  /^\d{2}[-\/]\d{2}$/,
-  /^one[-\s]?size$/i,
-  /^\d{1,2}[.,]5$/,
-];
-
-const VALID_NUMERIC_SIZE_RANGES = [
-  { min: 0, max: 20 },
-  { min: 32, max: 60 },
-  { min: 86, max: 194 },
-];
-
-const COLOR_PATTERNS = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL|MULCH|MELANGE|STRIPE)$/i;
-
-function isValidNumericSize(num: number): boolean {
-  return VALID_NUMERIC_SIZE_RANGES.some((r) => num >= r.min && num <= r.max);
-}
-
-function isValidSizeVariant(option: string): boolean {
-  const trimmed = option.trim();
-  if (!trimmed) return false;
-  const lower = trimmed.toLowerCase();
-  if (lower === 'default' || lower === 'default title') return false;
-  if (SIZE_PATTERNS.some((p) => p.test(trimmed))) return true;
-  const numMatch = trimmed.match(/^(\d+)$/);
-  if (numMatch) return isValidNumericSize(parseInt(numMatch[1], 10));
-  return false;
-}
-
-function extractSizeFromSku(sku: string): string | null {
-  const clean = String(sku || '').trim();
-  if (!clean) return null;
-  const parts = clean.split('-');
-
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const part = parts[i].trim().toUpperCase();
-    if (!part) continue;
-    if (COLOR_PATTERNS.test(part)) continue;
-
-    // Skip middle product codes (3+ digits)
-    if (i < parts.length - 1 && /^\d{3,}$/.test(part)) continue;
-
-    // For last part: only accept 3+ digits if in valid size range
-    if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
-      const num = parseInt(part, 10);
-      if (!isValidNumericSize(num)) continue;
-    }
-
-    if (isValidSizeVariant(part)) return part;
-  }
-
-  // Special: last two parts as range, e.g. 35-38
-  if (parts.length >= 2) {
-    const lastTwo = parts.slice(-2).join('-');
-    if (/^\d{2}-\d{2}$/.test(lastTwo)) {
-      const nums = lastTwo.split('-').map((n) => parseInt(n, 10));
-      if (nums.every((n) => isValidNumericSize(n))) return lastTwo;
-    }
-  }
-
-  return null;
-}
-
-function normalizeSizeOption(sizeRaw: string): string {
-  const s = String(sizeRaw || '').trim();
-  if (!s) return 'ONE-SIZE';
-  if (!isValidSizeVariant(s)) return 'ONE-SIZE';
-  const upper = s.toUpperCase();
-  if (upper === 'ONESIZE') return 'ONE-SIZE';
-  if (upper === 'ONE SIZE') return 'ONE-SIZE';
-  return upper;
-}
-
-// Size order for sorting variants from smallest to largest
-const SIZE_ORDER: Record<string, number> = {
-  'XXXS': 1, '3XS': 1,
-  'XXS': 2, '2XS': 2,
-  'XS': 3,
-  'S': 4,
-  'M': 5,
-  'L': 6,
-  'XL': 7,
-  'XXL': 8, '2XL': 8,
-  'XXXL': 9, '3XL': 9,
-  'XXXXL': 10, '4XL': 10,
-  'XXXXXL': 11, '5XL': 11,
-  'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
-};
-
-/**
- * Get sort priority for a size string.
- * Lower number = smaller size = comes first.
- */
-function getSizeSortPriority(size: string): number {
-  const upper = size.toUpperCase().trim();
-  
-  // Check direct match
-  if (SIZE_ORDER[upper] !== undefined) {
-    return SIZE_ORDER[upper];
-  }
-  
-  // Check if it's a numeric size (e.g., 36, 38, 40, 128)
-  const numMatch = upper.match(/^(\d+)$/);
-  if (numMatch) {
-    return 1000 + parseInt(numMatch[1], 10); // Numeric sizes sorted numerically
-  }
-  
-  // Check for range sizes (e.g., 35-38, 128/134)
-  const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
-  if (rangeMatch) {
-    return 1000 + parseInt(rangeMatch[1], 10); // Sort by first number
-  }
-  
-  // Check for half sizes (e.g., 7.5, 42,5)
-  const halfMatch = upper.match(/^(\d+)[.,]5$/);
-  if (halfMatch) {
-    return 1000 + parseInt(halfMatch[1], 10) + 0.5;
-  }
-  
-  // Unknown size - put at end
-  return 9999;
-}
-
-/**
- * Sort variants by size from smallest to largest.
- */
-function sortVariantsBySize<T extends { option1?: string }>(variants: T[]): T[] {
-  return [...variants].sort((a, b) => {
-    const priorityA = getSizeSortPriority(a.option1 || 'ONE-SIZE');
-    const priorityB = getSizeSortPriority(b.option1 || 'ONE-SIZE');
-    return priorityA - priorityB;
-  });
-}
-
-function extractBaseSku(sku: string): string {
-  if (!sku) return '';
-  
-  const rangeMatch = sku.match(/^(.+)-(\d{2})-(\d{2})$/);
-  if (rangeMatch) return rangeMatch[1];
-  
-  if (sku.endsWith('-ONE-SIZE') || sku.endsWith('-one-size')) {
-    const base = sku.slice(0, sku.lastIndexOf('-ONE-SIZE'));
-    return base.endsWith('-') ? base.slice(0, -1) : base;
-  }
-  
-  const variantSuffixes = [
-    '-XXS', '-XS', '-S', '-M', '-L', '-XL', '-XXL', '-XXXL', '-2XL', '-3XL',
-    '-xxs', '-xs', '-s', '-m', '-l', '-xl', '-xxl', '-xxxl', '-2xl', '-3xl',
-    '-35', '-36', '-37', '-38', '-39', '-40', '-41', '-42', '-43', '-44', '-45', '-46',
-  ];
-  
-  for (const suffix of variantSuffixes) {
-    if (sku.endsWith(suffix)) return sku.slice(0, -suffix.length);
-  }
-  
-  const lastDash = sku.lastIndexOf('-');
-  if (lastDash > 0) {
-    const suffix = sku.substring(lastDash + 1);
-    if (suffix.length <= 4 && /^[A-Z0-9]+$/i.test(suffix)) {
-      return sku.substring(0, lastDash);
-    }
-  }
-  
-  return sku;
-}
-
-function normalizeImageUrl(url: string, baseUrl: string): string {
-  if (!url) return '';
-  let trimmed = url.trim();
-  
-  // Build full URL if relative
-  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-    if (baseUrl) {
-      const cleanBase = baseUrl.replace(/\/$/, '');
-      const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-      trimmed = `${cleanBase}${cleanPath}`;
-    } else {
-      return ''; // Cannot use relative URL without base
-    }
-  }
-  
-  // Ensure https
-  if (trimmed.startsWith('http://')) {
-    trimmed = trimmed.replace('http://', 'https://');
-  }
-  
-  // URI-encode the path portion to handle special characters (æ, ø, å, spaces, etc.)
-  // Shopify rejects URLs with unencoded special characters
-  try {
-    const urlObj = new URL(trimmed);
-    // encodeURI handles the full path but preserves /, :, etc.
-    // We need to re-encode the pathname specifically
-    urlObj.pathname = urlObj.pathname
-      .split('/')
-      .map(segment => encodeURIComponent(decodeURIComponent(segment)))
-      .join('/');
-    return urlObj.toString();
-  } catch {
-    // Fallback: simple encodeURI on the whole thing
-    return encodeURI(trimmed);
-  }
-}
-
-function normalizePhone(phone: string | undefined): string | undefined {
-  if (!phone) return undefined;
-  const cleaned = phone.replace(/[^\d+]/g, '');
-  if (!cleaned || cleaned.length < 8) return undefined;
-  if (!cleaned.startsWith('+')) {
-    return `+45${cleaned}`;
-  }
-  return cleaned;
-}
-
-function buildAddress(addr: any): any {
-  if (!addr) return {};
-  return {
-    first_name: addr.first_name || '',
-    last_name: addr.last_name || '',
-    address1: addr.address1 || addr.street || '',
-    address2: addr.address2 || '',
-    city: addr.city || '',
-    province: addr.province || addr.state || '',
-    zip: addr.zip || addr.postal_code || '',
-    country: normalizeCountry(addr.country),
-    phone: normalizePhone(addr.phone),
-  };
-}
-
-function normalizeCountry(country: string | undefined): string {
-  if (!country) return 'DK';
-  const c = country.toLowerCase().trim();
-  if (c === 'danmark' || c === 'denmark' || c === 'dk') return 'DK';
-  if (c === 'sverige' || c === 'sweden' || c === 'se') return 'SE';
-  if (c === 'norge' || c === 'norway' || c === 'no') return 'NO';
-  if (c === 'tyskland' || c === 'germany' || c === 'de') return 'DE';
-  return country.substring(0, 2).toUpperCase();
-}
-
-function mapFinancialStatus(status: string | undefined): string {
-  if (!status) return 'paid';
-  const s = status.toLowerCase();
-  if (s.includes('paid') || s.includes('betalt')) return 'paid';
-  if (s.includes('pending') || s.includes('afvent')) return 'pending';
-  if (s.includes('refund')) return 'refunded';
-  return 'paid';
-}
-
-function mapFulfillmentStatus(status: string | undefined): string | null {
-  if (!status) return 'fulfilled';
-  const s = status.toLowerCase();
-  if (s.includes('fulfilled') || s.includes('sendt') || s.includes('shipped')) return 'fulfilled';
-  if (s.includes('partial')) return 'partial';
-  return null; // unfulfilled
 }

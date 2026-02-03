@@ -216,6 +216,9 @@ export type Database = {
           shopify_id: string | null
           status: Database["public"]["Enums"]["canonical_status"]
           updated_at: string
+          upload_lock_id: string | null
+          upload_locked_at: string | null
+          upload_locked_until: string | null
         }
         Insert: {
           created_at?: string
@@ -227,6 +230,9 @@ export type Database = {
           shopify_id?: string | null
           status?: Database["public"]["Enums"]["canonical_status"]
           updated_at?: string
+          upload_lock_id?: string | null
+          upload_locked_at?: string | null
+          upload_locked_until?: string | null
         }
         Update: {
           created_at?: string
@@ -238,6 +244,9 @@ export type Database = {
           shopify_id?: string | null
           status?: Database["public"]["Enums"]["canonical_status"]
           updated_at?: string
+          upload_lock_id?: string | null
+          upload_locked_at?: string | null
+          upload_locked_until?: string | null
         }
         Relationships: [
           {
