@@ -1266,7 +1266,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   </span>
                                   {redirect.old_path && (
                                     <a
-                                      href={redirect.old_path.startsWith('http') ? redirect.old_path : `${(project.dandomain_base_url || project.dandomain_shop_url || '').replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? '' : '/'}${redirect.old_path}`}
+                                      href={redirect.old_path.startsWith('http') 
+                                        ? redirect.old_path 
+                                        : `${(project.dandomain_base_url || project.dandomain_shop_url || '').replace(/\/$/, '')}${redirect.old_path.startsWith('/') ? redirect.old_path : `/${redirect.old_path}`}`
+                                      }
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="h-6 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
