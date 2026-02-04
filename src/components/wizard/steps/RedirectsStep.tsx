@@ -527,8 +527,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           .neq('status', 'created');
       }
 
-      // Call match-redirects edge function in batches
-      const BATCH_SIZE = 100;
+      // Call match-redirects backend function in batches.
+      // Bigger batches = fewer roundtrips (the function loads uploaded entities each call).
+      const BATCH_SIZE = 500;
       let totalMatched = 0;
       let totalUnmatched = 0;
 
@@ -539,6 +540,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           body: {
             projectId: project.id,
             oldPaths: batch,
+            useAi: false,
           },
         });
 
@@ -762,6 +764,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           body: {
             projectId: project.id,
             oldPaths: paths,
+            useAi: true,
           },
         });
 
@@ -1050,7 +1053,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   }, [redirects, activeTab, searchQuery]);
 
   const stats = useMemo(() => ({
-    total: redirects.length,
+    // If redirects aren't generated yet, show how many URLs we have from sitemap/file
+    total: redirects.length > 0 ? redirects.length : dandomanUrls.length,
     autoApproved: redirects.filter(r => r.status === 'auto_approved').length,
     needsReview: redirects.filter(r => r.status === 'needs_review').length,
     noMatch: redirects.filter(r => r.status === 'no_match').length,
