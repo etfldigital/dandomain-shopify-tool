@@ -8,6 +8,7 @@ const corsHeaders = {
 interface MatchRequest {
   projectId: string;
   oldPaths: string[];
+  useAi?: boolean;
 }
 
 interface MatchedRedirect {
@@ -225,7 +226,8 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, oldPaths } = (await req.json()) as MatchRequest;
+    const { projectId, oldPaths, useAi } = (await req.json()) as MatchRequest;
+    const shouldUseAi = useAi === true;
 
     if (!projectId || !oldPaths || !Array.isArray(oldPaths)) {
       return new Response(
@@ -234,7 +236,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Matching ${oldPaths.length} URLs for project ${projectId}`);
+    console.log(`Matching ${oldPaths.length} URLs for project ${projectId} (useAi=${shouldUseAi})`);
 
     // Fetch all uploaded entities
     const entities: UploadedEntity[] = [];
@@ -475,60 +477,68 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`Direct matching: ${matchedRedirects.length} matched, ${urlsForAiMatching.length} need AI`);
+    console.log(`Direct matching: ${matchedRedirects.length} matched, ${urlsForAiMatching.length} unmatched after deterministic strategies`);
 
-    // AI matching for unmatched URLs (in batches to avoid rate limits)
-    const AI_BATCH_SIZE = 10;
-    const candidates = entities.map(e => ({
-      id: e.id,
-      title: e.title,
-      handle: e.shopify_handle,
-      type: e.entity_type,
-    }));
+    if (shouldUseAi) {
+      // AI matching for unmatched URLs (in batches to avoid rate limits)
+      const AI_BATCH_SIZE = 10;
+      const candidates = entities.map(e => ({
+        id: e.id,
+        title: e.title,
+        handle: e.shopify_handle,
+        type: e.entity_type,
+      }));
 
-    for (let i = 0; i < urlsForAiMatching.length; i += AI_BATCH_SIZE) {
-      const batch = urlsForAiMatching.slice(i, i + AI_BATCH_SIZE);
-      
-      for (const { path, extractedName } of batch) {
-        const aiSuggestions = await callAiForMatching(path, extractedName, candidates);
-        
-        if (aiSuggestions.length > 0 && aiSuggestions[0].score >= 70) {
-          // Best AI match with high confidence
-          const best = aiSuggestions[0];
-          const entity = entities.find(e => e.id === best.entity_id);
-          
-          if (entity) {
-            matchedRedirects.push({
-              old_path: path,
-              entity_type: entity.entity_type,
-              entity_id: entity.id,
-              new_path: entity.shopify_handle,
-              confidence_score: best.score,
-              matched_by: 'ai',
-              ai_suggestions: aiSuggestions.slice(1), // Store alternatives
-            });
+      for (let i = 0; i < urlsForAiMatching.length; i += AI_BATCH_SIZE) {
+        const batch = urlsForAiMatching.slice(i, i + AI_BATCH_SIZE);
+
+        for (const { path, extractedName } of batch) {
+          const aiSuggestions = await callAiForMatching(path, extractedName, candidates);
+
+          if (aiSuggestions.length > 0 && aiSuggestions[0].score >= 70) {
+            // Best AI match with high confidence
+            const best = aiSuggestions[0];
+            const entity = entities.find(e => e.id === best.entity_id);
+
+            if (entity) {
+              matchedRedirects.push({
+                old_path: path,
+                entity_type: entity.entity_type,
+                entity_id: entity.id,
+                new_path: entity.shopify_handle,
+                confidence_score: best.score,
+                matched_by: 'ai',
+                ai_suggestions: aiSuggestions.slice(1), // Store alternatives
+              });
+            } else {
+              unmatchedUrls.push({
+                old_path: path,
+                ai_suggestions: aiSuggestions,
+              });
+            }
           } else {
+            // No confident match - store as unmatched with suggestions
             unmatchedUrls.push({
               old_path: path,
               ai_suggestions: aiSuggestions,
             });
           }
-        } else {
-          // No confident match - store as unmatched with suggestions
-          unmatchedUrls.push({
-            old_path: path,
-            ai_suggestions: aiSuggestions,
-          });
+        }
+
+        // Small delay between batches to avoid rate limits
+        if (i + AI_BATCH_SIZE < urlsForAiMatching.length) {
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
 
-      // Small delay between batches to avoid rate limits
-      if (i + AI_BATCH_SIZE < urlsForAiMatching.length) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+      console.log(`After AI: ${matchedRedirects.length} matched, ${unmatchedUrls.length} unmatched`);
+    } else {
+      // No AI: store all remaining as unmatched without suggestions
+      for (const u of urlsForAiMatching) {
+        unmatchedUrls.push({ old_path: u.path, ai_suggestions: [] });
       }
+      console.log(`AI disabled: ${matchedRedirects.length} matched, ${unmatchedUrls.length} unmatched`);
     }
-
-    console.log(`After AI: ${matchedRedirects.length} matched, ${unmatchedUrls.length} unmatched`);
 
     // Store results in database
     if (matchedRedirects.length > 0) {
@@ -573,7 +583,7 @@ Deno.serve(async (req) => {
               old_path: u.old_path,
               new_path: u.ai_suggestions[0]?.new_path || '/not-found',
               confidence_score: u.ai_suggestions[0]?.score || 0,
-              matched_by: 'ai',
+              matched_by: shouldUseAi ? 'ai' : 'none',
               ai_suggestions: u.ai_suggestions,
               status: 'pending',
             })),
