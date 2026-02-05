@@ -355,10 +355,15 @@ serve(async (req) => {
         if (jobError || !job) throw new Error('Job not found');
 
         // ================= SEQUENCING GATE =================
-        // Never allow a later entity to run while an earlier one still has pending work.
-        // IMPORTANT: In test mode, we must sequence based on the *test jobs* (3 stk each),
-        // not based on remaining DB pending counts (otherwise we'd never reach products).
+        // IMPORTANT: Sequencing only applies when MULTIPLE entities are being uploaded together.
+        // If the user clicks "Test 3 stk" on a SINGLE entity type (e.g. just products),
+        // we should NOT block waiting for other entities that weren't requested.
+        // 
+        // For test mode: Only enforce sequencing between jobs that were actually created together.
+        // For full mode: Enforce sequencing based on pending database counts (existing behavior).
+        
         const getEarliestIncompleteTestEntity = async (pid: string): Promise<SequencedEntity | null> => {
+          // Only look at jobs from the SAME test run (created within a short window)
           const { data } = await supabase
             .from('upload_jobs')
             .select('entity_type')
@@ -369,6 +374,9 @@ serve(async (req) => {
           if (!data || data.length === 0) return null;
 
           const set = new Set<string>(data.map((d: any) => String(d.entity_type)));
+          
+          // Only return an entity if it's ACTUALLY in the pending job set
+          // This prevents blocking products when categories wasn't even requested
           for (const ent of ENTITY_SEQUENCE) {
             if (set.has(ent)) return ent;
           }
@@ -426,11 +434,16 @@ serve(async (req) => {
         };
 
         if (isSequencedEntity(job.entity_type)) {
+          // For test mode: Only enforce sequencing if the earlier entity type has an active test job
+          // This allows single-entity test runs to proceed independently
           const earliest = job.is_test_mode
             ? await getEarliestIncompleteTestEntity(job.project_id)
             : await getEarliestIncompleteEntity(job.project_id);
 
-          if (earliest && seqIndex(job.entity_type) > seqIndex(earliest)) {
+          // Block only if:
+          // 1. There IS an earlier entity with pending work, AND
+          // 2. The current job depends on it (seqIndex comparison)
+          if (earliest && earliest !== job.entity_type && seqIndex(job.entity_type) > seqIndex(earliest)) {
             console.log(`[WORKER] Sequencing gate: blocking ${job.entity_type} until ${earliest} is complete`);
 
             // Put this job back to pending so it won't keep running.
