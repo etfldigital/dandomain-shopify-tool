@@ -439,6 +439,30 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Internal upload starter (used after prepare or for non-product entities)
   const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
+    // Check if there's anything to upload BEFORE starting
+    const freshCounts = await fetchStatusCounts();
+    
+    // If a specific entity type, check that entity's pending count
+    if (singleEntityType) {
+      const pendingCount = freshCounts[singleEntityType]?.pending ?? 0;
+      if (pendingCount === 0) {
+        const entityLabel = ENTITY_CONFIG.find(e => e.type === singleEntityType)?.label || singleEntityType;
+        toast.warning(`Ingen ${entityLabel.toLowerCase()} at uploade`, {
+          description: 'Upload eller importer data først i de tidligere trin.',
+        });
+        return;
+      }
+    } else {
+      // For full upload, check if ANY entity has pending items
+      const totalPending = Object.values(freshCounts).reduce((sum, c) => sum + c.pending, 0);
+      if (totalPending === 0) {
+        toast.warning('Ingen data at uploade', {
+          description: 'Upload eller importer data først i de tidligere trin.',
+        });
+        return;
+      }
+    }
+    
     setIsStarting(true);
     try {
       const body: {
