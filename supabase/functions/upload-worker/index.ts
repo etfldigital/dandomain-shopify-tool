@@ -548,55 +548,17 @@ serve(async (req) => {
           .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
           .eq('id', jobId);
 
-        // One-time product preparation (grouping/variant extraction) before first product batch.
-        // CRITICAL: We must not re-run prepare-upload on every watchdog retrigger.
-        // We use current_batch as a durable marker:
-        // - current_batch === 0  => not prepared yet
-        // - current_batch >= 1   => prepared (or UI chose to skip prepare)
+        // Product preparation is now done inline inside shopify-upload.
+        // Mark the job as "prepared" immediately so we proceed to upload.
         let effectiveCurrentBatch = typeof job.current_batch === 'number' ? job.current_batch : 0;
-
         if (job.entity_type === 'products' && effectiveCurrentBatch === 0) {
-          console.log('[WORKER] Running product prepare step before upload...');
-
-          const prepRes = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-            body: JSON.stringify({
-              projectId: job.project_id,
-              entityType: 'products',
-              previewOnly: false,
-            }),
-          });
-
-          const prepText = await prepRes.text();
-          if (!prepText || !prepText.trim()) {
-            throw new Error(`prepare-upload returned empty response (status ${prepRes.status})`);
-          }
-          let prepJson: any;
-          try {
-            prepJson = JSON.parse(prepText);
-          } catch {
-            throw new Error(`prepare-upload invalid JSON: ${prepText.substring(0, 120)}`);
-          }
-          if (!prepRes.ok || prepJson?.success === false) {
-            throw new Error(prepJson?.error || `prepare-upload failed (status ${prepRes.status})`);
-          }
-
-          console.log(
-            `[WORKER] prepare-upload committed: groups=${prepJson?.stats?.groupsCreated ?? '?'}, variants=${prepJson?.stats?.variantsTotal ?? '?'}, rejected=${prepJson?.stats?.recordsRejected ?? '?'}`
-          );
-
-          // Mark job as prepared immediately so a watchdog retrigger does NOT re-run prepare.
-          // Use a conditional update to reduce chances of concurrent invocations flipping it back/forth.
+          console.log('[WORKER] Skipping prepare-upload (inline prepare in shopify-upload)');
           await supabase
             .from('upload_jobs')
             .update({ current_batch: 1, last_heartbeat_at: new Date().toISOString() })
             .eq('id', jobId)
             .eq('current_batch', 0);
-
           effectiveCurrentBatch = 1;
-        } else if (job.entity_type === 'products' && effectiveCurrentBatch >= 1) {
-          console.log('[WORKER] Skipping prepare-upload (already prepared)');
         }
 
         // Call shopify-upload

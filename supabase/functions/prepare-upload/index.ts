@@ -7,15 +7,19 @@ const corsHeaders = {
 };
 
 /**
- * PRE-UPLOAD GROUPING & VALIDATION
- * 
+ * PRE-UPLOAD GROUPING & VALIDATION (RESUMABLE)
+ *
  * This function prepares products for upload by:
  * 1. Grouping product records by normalized title (Parent Grouping Key)
  * 2. Extracting and validating variant options (sizes)
  * 3. Merging fields using best-non-empty logic
  * 4. Rejecting invalid records (no valid variants, missing required data)
  * 5. Returning a dedupe report for UI display
- * 
+ *
+ * CRITICAL: This is a resumable function. It reads `prepare_offset` from the
+ * upload_jobs row and writes a limited number of records per invocation,
+ * then returns `{ continue: true }` so the caller can re-invoke.
+ *
  * NO Shopify writes occur here - this is purely preparation.
  */
 
@@ -25,7 +29,6 @@ const corsHeaders = {
 
 const SIZE_PATTERNS = [
   /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
-  // Combined letter sizes like XS/S, S/M, M/L, L/XL etc.
   /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[\/](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
   /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
   /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
@@ -35,39 +38,33 @@ const SIZE_PATTERNS = [
 ];
 
 const VALID_NUMERIC_SIZE_RANGES = [
-  { min: 0, max: 20 },    // US/UK shoe sizes, baby sizes
-  { min: 32, max: 60 },   // European clothing sizes
-  { min: 86, max: 194 },  // Kids clothing sizes (height-based)
+  { min: 0, max: 20 },
+  { min: 32, max: 60 },
+  { min: 86, max: 194 },
 ];
 
 const COLOR_PATTERNS = /^(BLACK|WHITE|GREY|GRAY|BLUE|RED|GREEN|YELLOW|PINK|BROWN|BEIGE|NAVY|SAND|CREAM|ROSE|ORANGE|PURPLE|TAN|OLIVE|MINT|CORAL|CAMEL|COGNAC|NUDE|SILVER|GOLD|STONE|DARK|LIGHT|NATURAL|MULCH|MELANGE|STRIPE)$/i;
 
-// Product codes that should NOT be treated as sizes
 const PRODUCT_CODE_PATTERNS = [
-  /^601$/,  // Known product code
-  /^12$/,   // Known product code
-  /^7\d{4}$/, // 5-digit codes starting with 7
-  /^0\d{3}$/, // 4-digit codes starting with 0 (e.g., 0156)
-  /^\d{4,}$/, // Any 4+ digit number is likely a product code, not a size
+  /^601$/,
+  /^12$/,
+  /^7\d{4}$/,
+  /^0\d{3}$/,
+  /^\d{4,}$/,
 ];
 
 function isLikelyProductCode(segment: string, position: number, totalParts: number): boolean {
-  // Check if it matches known product code patterns
-  if (PRODUCT_CODE_PATTERNS.some(pattern => pattern.test(segment))) {
+  if (PRODUCT_CODE_PATTERNS.some((pattern) => pattern.test(segment))) {
     return true;
   }
-  
-  // Early segments (first 2-3 positions) with 2+ digit numbers are likely product codes
-  // unless they're the ONLY segment or the LAST segment
   if (position < Math.min(2, totalParts - 1) && /^\d{2,}$/.test(segment)) {
     return true;
   }
-  
   return false;
 }
 
 function isValidNumericSize(num: number): boolean {
-  return VALID_NUMERIC_SIZE_RANGES.some(range => num >= range.min && num <= range.max);
+  return VALID_NUMERIC_SIZE_RANGES.some((range) => num >= range.min && num <= range.max);
 }
 
 function isValidSizeVariant(option: string): boolean {
@@ -75,17 +72,15 @@ function isValidSizeVariant(option: string): boolean {
   if (!trimmed || trimmed.toLowerCase() === 'default' || trimmed.toLowerCase() === 'default title') {
     return false;
   }
-  // Never treat known product codes as sizes (even if they look like valid numeric sizes)
-  if (PRODUCT_CODE_PATTERNS.some(pattern => pattern.test(trimmed))) {
+  if (PRODUCT_CODE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
     return false;
   }
-  if (SIZE_PATTERNS.some(pattern => pattern.test(trimmed))) {
+  if (SIZE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
     return true;
   }
   const numMatch = trimmed.match(/^(\d+)$/);
   if (numMatch) {
     const num = parseInt(numMatch[1], 10);
-    // 4+ digit numbers are never valid sizes (these are product codes)
     if (numMatch[1].length >= 4) {
       return false;
     }
@@ -96,73 +91,56 @@ function isValidSizeVariant(option: string): boolean {
 
 function extractSizeFromSku(sku: string): string | null {
   if (!sku) return null;
-  
-  // PRIORITY 0: Check for combined letter sizes at the very END of SKU
-  // e.g., "40977-camo-L/XL" -> "L/XL", "12345-XS/S" -> "XS/S"
-  // This must come BEFORE splitting on "-" because we don't want to break "L/XL" apart
+
   const combinedSizeMatch = sku.match(/-((?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\/(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl))$/i);
   if (combinedSizeMatch) {
     return combinedSizeMatch[1].toUpperCase();
   }
-  
+
   const parts = sku.split('-');
-  
-  // PRIORITY 1: Check for size ranges in LAST TWO parts (e.g., "37-39", "40-42 ny")
-  // This finds patterns like "12-59537-491-40-42 ny" -> "40-42"
+
   if (parts.length >= 2) {
-    // Get last two parts, clean trailing text from last part
     const secondLast = parts[parts.length - 2].trim();
     const lastPart = parts[parts.length - 1].trim();
-    
-    // Extract numeric portion from last part (handles "42 ny" -> "42")
     const lastNumericMatch = lastPart.match(/^(\d{2})/);
-    
+
     if (/^\d{2}$/.test(secondLast) && lastNumericMatch) {
       const lastNumeric = lastNumericMatch[1];
       const nums = [parseInt(secondLast, 10), parseInt(lastNumeric, 10)];
-      if (nums.every(n => isValidNumericSize(n))) {
+      if (nums.every((n) => isValidNumericSize(n))) {
         return `${secondLast}-${lastNumeric}`;
       }
     }
   }
-  
-  // PRIORITY 2: Check for clean size ranges at the end of parts
+
   if (parts.length >= 2) {
     const lastTwo = parts.slice(-2).join('-');
     if (/^\d{2}-\d{2}$/.test(lastTwo)) {
-      const nums = lastTwo.split('-').map(n => parseInt(n, 10));
-      if (nums.every(n => isValidNumericSize(n))) {
+      const nums = lastTwo.split('-').map((n) => parseInt(n, 10));
+      if (nums.every((n) => isValidNumericSize(n))) {
         return lastTwo;
       }
     }
   }
-  
-  // PRIORITY 3: Look for valid size patterns, skipping product codes
+
   for (let i = parts.length - 1; i >= 0; i--) {
     const part = parts[i].trim().toUpperCase();
     if (!part || part.length === 0) continue;
-    
-    // Skip color patterns
+
     if (COLOR_PATTERNS.test(part)) continue;
-    
-    // Skip likely product codes
     if (isLikelyProductCode(part, i, parts.length)) continue;
-    
-    // Skip 3+ digit numbers that aren't in the last position
     if (i < parts.length - 1 && /^\d{3,}$/.test(part)) continue;
-    
-    // For last position, validate 3+ digit numbers
+
     if (i === parts.length - 1 && /^\d{3,}$/.test(part)) {
       const num = parseInt(part, 10);
       if (!isValidNumericSize(num)) continue;
     }
-    
-    // Check if this is a valid size variant
+
     if (isValidSizeVariant(part)) {
       return part;
     }
   }
-  
+
   return null;
 }
 
@@ -171,39 +149,31 @@ function extractSizeFromSku(sku: string): string | null {
 // ============================================================================
 
 const SIZE_ORDER: Record<string, number> = {
-  'XXXS': 1, '3XS': 1,
-  'XXS': 2, '2XS': 2,
-  'XS': 3,
-  'S': 4,
-  'M': 5,
-  'L': 6,
-  'XL': 7,
-  'XXL': 8, '2XL': 8,
-  'XXXL': 9, '3XL': 9,
-  'XXXXL': 10, '4XL': 10,
-  'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
-  // Combined letter sizes (sorted by first size in the combo)
-  'XXS/XS': 2.5,
-  'XS/S': 3.5,
-  'S/M': 4.5,
-  'M/L': 5.5,
-  'L/XL': 6.5,
-  'XL/XXL': 7.5,
-  'XXL/XXXL': 8.5,
+  XXXS: 1, '3XS': 1,
+  XXS: 2, '2XS': 2,
+  XS: 3,
+  S: 4,
+  M: 5,
+  L: 6,
+  XL: 7,
+  XXL: 8, '2XL': 8,
+  XXXL: 9, '3XL': 9,
+  XXXXL: 10, '4XL': 10,
+  'ONE-SIZE': 100, ONESIZE: 100, 'ONE SIZE': 100,
+  'XXS/XS': 2.5, 'XS/S': 3.5, 'S/M': 4.5, 'M/L': 5.5, 'L/XL': 6.5, 'XL/XXL': 7.5, 'XXL/XXXL': 8.5,
 };
 
 function getSizeSortPriority(size: string): number {
   const upper = size.toUpperCase().trim();
   if (SIZE_ORDER[upper] !== undefined) return SIZE_ORDER[upper];
-  
-  // Check for combined letter sizes not in the map (e.g., custom combos)
+
   const comboMatch = upper.match(/^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)\/(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)$/);
   if (comboMatch) {
     const firstSize = comboMatch[1];
     const baseOrder = SIZE_ORDER[firstSize] || 5;
-    return baseOrder + 0.5; // Place between first and second size
+    return baseOrder + 0.5;
   }
-  
+
   const numMatch = upper.match(/^(\d+)$/);
   if (numMatch) return 1000 + parseInt(numMatch[1], 10);
   const rangeMatch = upper.match(/^(\d+)[-\/](\d+)$/);
@@ -234,12 +204,12 @@ interface ValidatedVariant {
   stockQuantity: number;
   weight: number;
   barcode: string | null;
-  noVariantOption?: boolean; // True if product has no real variant options (should not get ONE-SIZE)
+  noVariantOption?: boolean;
 }
 
 interface ProductGroup {
-  key: string;           // Normalized title (lowercase)
-  title: string;         // Display title
+  key: string;
+  title: string;
   vendor: string;
   bodyHtml: string;
   tags: string[];
@@ -268,7 +238,6 @@ interface PrepareResult {
   };
 }
 
-// Helper to normalize brand names for comparison (remove +, &, extra spaces)
 function normalizeBrand(s: string): string {
   return s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -278,41 +247,33 @@ function normalizeTitle(title: string, vendor: string): string {
   const normalizedVendor = normalizeBrand(vendor);
   const separators = [' - ', ' – ', ' — ', ': ', ' | '];
 
-  // 1) Preferred: Find separator and compare prefix with fuzzy matching
   if (normalizedVendor) {
     for (const sep of separators) {
       const sepIndex = normalized.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = normalized.slice(0, sepIndex).trim();
         const normalizedPrefix = normalizeBrand(prefix);
-        
-        // Exact match OR vendor starts with the prefix (fuzzy)
-        // e.g. "moshi moshi" matches "Moshi Moshi Mind"
-        // e.g. "gai + lisva" matches "gai lisva"
-        if (normalizedPrefix === normalizedVendor || 
-            normalizedVendor.startsWith(normalizedPrefix + ' ') ||
-            normalizedVendor.startsWith(normalizedPrefix)) {
+        if (
+          normalizedPrefix === normalizedVendor ||
+          normalizedVendor.startsWith(normalizedPrefix + ' ') ||
+          normalizedVendor.startsWith(normalizedPrefix)
+        ) {
           const rest = normalized.slice(sepIndex + sep.length).trim();
           if (rest) return rest;
         }
       }
     }
-    
-    // Fallback: simple startsWith with case-insensitive check
     if (normalizeBrand(normalized).startsWith(normalizedVendor)) {
       const rest = normalized.substring(vendor.length).replace(/^[\s\-–—:|]+/, '').trim();
       if (rest) return rest;
     }
   }
 
-  // 2) If vendor is empty, try to strip the first segment before a common separator
-  // This prevents splitting groups when only some variants have vendor populated.
   for (const sep of separators) {
     const idx = normalized.indexOf(sep);
     if (idx > 0 && idx < 50) {
       const prefix = normalized.slice(0, idx).trim();
       const rest = normalized.slice(idx + sep.length).trim();
-      // Only strip if the prefix looks like a brand-ish token
       if (prefix.length >= 2 && prefix.length <= 40 && rest.length >= 3) {
         return rest;
       }
@@ -331,57 +292,33 @@ function mergeText(a: string | undefined, b: string | undefined): string {
 function groupProducts(products: ProductRecord[]): PrepareResult {
   const groups: Map<string, ProductGroup> = new Map();
   const rejected: RejectedRecord[] = [];
-  
+
   for (const product of products) {
     const data = product.data || {};
     const title = String(data.title || '').trim();
     const vendor = String(data.vendor || '').trim();
     const sku = String(data.sku || '').trim();
-    
-    // Validate required fields
+
     if (!title) {
-      rejected.push({
-        recordId: product.id,
-        externalId: product.external_id,
-        reason: 'Mangler titel',
-      });
+      rejected.push({ recordId: product.id, externalId: product.external_id, reason: 'Mangler titel' });
       continue;
     }
-    
-    // Determine variant size
-    let variantSize: string | null = null;
 
-    // Always try SKU extraction first so ranges like "37-39" / "40-42" win over any noisy variant_option
+    let variantSize: string | null = null;
     const skuSize = sku ? extractSizeFromSku(sku) : null;
     const skuIsRange = !!(skuSize && /^\d+[-\/]\d+$/.test(skuSize));
-    
-    // First check if there's an explicit variant field
+
     if (skuIsRange) {
       variantSize = skuSize;
-    }
-    else if (data.variant_option && isValidSizeVariant(String(data.variant_option))) {
+    } else if (data.variant_option && isValidSizeVariant(String(data.variant_option))) {
       variantSize = String(data.variant_option).trim().toUpperCase();
-    }
-    // Then try to extract from SKU
-    else if (skuSize) {
+    } else if (skuSize) {
       variantSize = skuSize;
     }
-    
-    // If no valid size found, this could be:
-    // 1. A single-variant product (no size variants exist)
-    // 2. A "base" SKU record that contains product metadata but isn't a variant itself
-    // 3. Invalid data
-    // We'll determine this after grouping
-    
-    // Create group key
+
     const normalizedTitle = normalizeTitle(title, vendor);
     const groupKey = normalizedTitle.toLowerCase();
-    
-    // Check if this might be a "base" SKU (parent record without size suffix)
-    // These typically have a shorter SKU that is a prefix of the sized variants
-    const isLikelyBaseSku = !variantSize && sku && sku.length > 0;
-    
-    // Get or create group
+
     if (!groups.has(groupKey)) {
       groups.set(groupKey, {
         key: groupKey,
@@ -396,33 +333,27 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
         warnings: [],
       });
     }
-    
+
     const group = groups.get(groupKey)!;
-    
-    // Merge fields (longest wins)
     group.bodyHtml = mergeText(group.bodyHtml, data.body_html);
     group.vendor = mergeText(group.vendor, vendor);
-    
-    // Merge tags
+
     const productTags = data.tags || [];
     for (const tag of productTags) {
       if (tag && !group.tags.includes(tag)) {
         group.tags.push(tag);
       }
     }
-    
-    // Merge images
+
     const productImages = data.images || [];
     for (const img of productImages) {
       if (img && !group.images.includes(img)) {
         group.images.push(img);
       }
     }
-    
-    // Add variant
+
     if (variantSize) {
-      // Check for duplicate size in group
-      const existingVariant = group.variants.find(v => v.size.toUpperCase() === variantSize!.toUpperCase());
+      const existingVariant = group.variants.find((v) => v.size.toUpperCase() === variantSize!.toUpperCase());
       if (existingVariant) {
         group.warnings.push(`Duplikat størrelse ${variantSize} (SKU: ${sku}) - bruger eksisterende`);
       } else {
@@ -439,98 +370,70 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
         });
       }
     } else {
-      // No valid size - this could be:
-      // 1. A single-variant product (first item, no other sized variants exist yet)
-      // 2. A "base" SKU record - the parent product that contains metadata but isn't a variant
-      // 3. An invalid record that should be rejected
-      
       if (group.variants.length === 0) {
-        // First item in group with no size - tentatively add as single variant
-        // We might remove this later if sized variants are added
-        // Mark this as a true no-variant product (not ONE-SIZE)
         group.variants.push({
           recordId: product.id,
           externalId: product.external_id,
           sku: sku,
-          size: '', // Empty = no size option, will NOT become ONE-SIZE
+          size: '',
           price: String(data.price || '0'),
           compareAtPrice: data.compare_at_price ? String(data.compare_at_price) : null,
           stockQuantity: parseInt(String(data.stock_quantity || 0), 10),
           weight: data.weight ? parseFloat(String(data.weight)) : 0,
           barcode: data.barcode || null,
-          noVariantOption: true, // Flag: this product has no real variant options
+          noVariantOption: true,
         });
-      } else if (group.variants.some(v => v.size)) {
-        // Group already has sized variants, this one has no size
-        // Check if this is a "base" SKU (parent record) - SKU that is a prefix of sized variant SKUs
-        const isBaseSku = group.variants.some(v => v.size && v.sku.startsWith(sku + '-'));
-        
+      } else if (group.variants.some((v) => v.size)) {
+        const isBaseSku = group.variants.some((v) => v.size && v.sku.startsWith(sku + '-'));
         if (isBaseSku) {
-          // This is a base/parent SKU - use its data for the product but don't create as variant
-          // Just merge the data and track the record, don't add to variants
           group.warnings.push(`Base-SKU ${sku} bruges til produkt-metadata (ikke som variant)`);
-          // Data already merged above via mergeText - just track the record
         } else {
-          // Not a base SKU, but still no valid size - skip it silently with warning
           group.warnings.push(`Produkt uden størrelse (SKU: ${sku}) springes over - gruppe har størrelsesvarianter`);
-          // Don't reject - just don't add as variant, but still track the record for metadata
         }
       }
     }
-    
+
     group.recordIds.push(product.id);
     group.externalIds.push(product.external_id);
   }
-  
-  // Post-process: Handle groups where base SKU came BEFORE sized variants
-  // If a group has both a no-size variant AND sized variants, remove the no-size one
-  // (it was tentatively added as first item, but now we know there are real size variants)
+
   for (const group of groups.values()) {
-    const sizedVariants = group.variants.filter(v => v.size && v.size.trim() !== '');
-    const unsizedVariants = group.variants.filter(v => !v.size || v.size.trim() === '');
-    
+    const sizedVariants = group.variants.filter((v) => v.size && v.size.trim() !== '');
+    const unsizedVariants = group.variants.filter((v) => !v.size || v.size.trim() === '');
+
     if (sizedVariants.length > 0 && unsizedVariants.length > 0) {
-      // We have both - check if unsized is a base SKU (prefix of sized)
       for (const unsized of unsizedVariants) {
-        const isBaseSku = sizedVariants.some(v => v.sku.startsWith(unsized.sku + '-'));
+        const isBaseSku = sizedVariants.some((v) => v.sku.startsWith(unsized.sku + '-'));
         if (isBaseSku) {
           group.warnings.push(`Base-SKU ${unsized.sku} fjernet fra varianter (bruges kun til metadata)`);
         } else {
           group.warnings.push(`Variant uden størrelse (${unsized.sku}) fjernet - gruppe har størrelsesvarianter`);
         }
       }
-      // Keep only sized variants
       group.variants = sizedVariants;
     }
   }
-  
-  // Sort variants within each group
+
   for (const group of groups.values()) {
-    if (group.variants.length > 1 && group.variants.every(v => v.size)) {
+    if (group.variants.length > 1 && group.variants.every((v) => v.size)) {
       group.variants.sort((a, b) => getSizeSortPriority(a.size) - getSizeSortPriority(b.size));
     }
   }
-  
-  // Final validation - reject groups with no valid variants
+
   const validGroups: ProductGroup[] = [];
   for (const group of groups.values()) {
     if (group.variants.length === 0) {
       for (const recordId of group.recordIds) {
         const externalId = group.externalIds[group.recordIds.indexOf(recordId)];
-        rejected.push({
-          recordId,
-          externalId,
-          reason: 'Ingen gyldige varianter efter gruppering',
-        });
+        rejected.push({ recordId, externalId, reason: 'Ingen gyldige varianter efter gruppering' });
       }
     } else {
       validGroups.push(group);
     }
   }
-  
-  // Calculate stats
+
   const totalVariants = validGroups.reduce((sum, g) => sum + g.variants.length, 0);
-  
+
   return {
     success: true,
     groups: validGroups,
@@ -545,7 +448,7 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
 }
 
 // ============================================================================
-// MAIN HANDLER
+// MAIN HANDLER (RESUMABLE)
 // ============================================================================
 
 serve(async (req) => {
@@ -558,125 +461,104 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, entityType, previewOnly = true, includeGroups = false }: { 
-      projectId: string; 
+    const {
+      projectId,
+      entityType,
+      previewOnly = true,
+      includeGroups = false,
+      jobId,
+    }: {
+      projectId: string;
       entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
       previewOnly?: boolean;
       includeGroups?: boolean;
+      jobId?: string;
     } = await req.json();
 
     console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType}`);
 
-      if (entityType === 'products') {
-      // Fetch products for (re)grouping.
-      // CRITICAL: We must include ALL non-uploaded records:
-      //  - pending records (new products not yet processed)
-      //  - mapped records (both primary AND secondary from previous runs)
-      // This ensures that:
-      // 1. Previously marked primaries are RE-EVALUATED with full group data
-      // 2. All variants are correctly unified under a SINGLE primary
-      // 3. Running prepare-upload multiple times is idempotent
+    if (entityType === 'products') {
+      // Fetch ALL products for grouping (in-memory)
       let allProducts: ProductRecord[] = [];
       let page = 0;
       const pageSize = 1000;
-      
+
       while (true) {
         const { data, error } = await supabase
           .from('canonical_products')
           .select('id, external_id, data, status')
           .eq('project_id', projectId)
-          // Include uploaded too so we can fix historic grouping/preview issues without changing upload state
           .in('status', ['pending', 'mapped', 'uploaded'])
           .range(page * pageSize, (page + 1) * pageSize - 1);
-        
+
         if (error) throw error;
         if (!data || data.length === 0) break;
-        
+
         allProducts = [...allProducts, ...data];
         if (data.length < pageSize) break;
         page++;
       }
-      
-      const pendingCount = allProducts.filter(p => p.status === 'pending').length;
-      const mappedSecondaryCount = allProducts.length - pendingCount;
-      console.log(`[PREPARE] Fetched ${allProducts.length} products for regrouping (pending=${pendingCount}, mappedSecondaries=${mappedSecondaryCount})`);
-      
-      // Group and validate
+
+      const pendingCount = allProducts.filter((p) => p.status === 'pending').length;
+      console.log(`[PREPARE] Fetched ${allProducts.length} products for regrouping (pending=${pendingCount})`);
+
       const result = groupProducts(allProducts);
-      
+
       console.log(`[PREPARE] Created ${result.stats.groupsCreated} groups with ${result.stats.variantsTotal} variants`);
       console.log(`[PREPARE] Rejected ${result.stats.recordsRejected} records`);
-      
-      // If not preview only, update the database with grouped data
+
       if (!previewOnly) {
         const now = new Date().toISOString();
 
-        // Chunk sizes tuned to avoid compute spikes on large datasets
-        const PARALLEL_BATCH_SIZE = 25;
-
-        // PERFORMANCE NOTE:
-        // We intentionally skip the previous “reset all grouping flags” pass.
-        // That pass required ~N extra DB updates (N=allProducts) and can hit CPU limits on large datasets.
-        // Instead we overwrite grouping fields directly for every record we touch (primaries + secondaries).
-        console.log(`[PREPARE] Applying new grouping (no reset pass)...`);
-        
-        // BATCH 1: Mark rejected records as 'mapped' with rejection reason
-        // Store the reason in error_message so users can see WHY it was skipped
-        for (const rejected of result.rejected) {
-          const rejectedRecord = allProducts.find(p => p.id === rejected.recordId);
-          // Never downgrade already uploaded records
-          if (rejectedRecord?.status === 'uploaded') continue;
-          await supabase
-            .from('canonical_products')
-            .update({ 
-              status: 'mapped',
-              error_message: `Afvist: ${rejected.reason}`,
-              updated_at: now,
-            })
-            .eq('id', rejected.recordId);
+        // ==================== RESUMABLE WRITE ====================
+        // Get current offset from the job (if provided)
+        let offset = 0;
+        if (jobId) {
+          const { data: jobRow } = await supabase
+            .from('upload_jobs')
+            .select('prepare_offset')
+            .eq('id', jobId)
+            .single();
+          offset = jobRow?.prepare_offset || 0;
         }
-        console.log(`[PREPARE] Marked ${result.rejected.length} records as rejected with reasons`);
-        
-        // BATCH 2: Collect all record updates
-        // IMPORTANT: ALL records must get _isPrimary set, including single-variant products
-        const secondaryIds: string[] = [];
-        const primaryUpdates: Array<{ id: string; data: any }> = [];
-        const secondaryDataUpdates: Array<{ id: string; data: any }> = [];
-        
+
+        // Collect all updates
+        const allUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+
+        // Rejected records
+        for (const rejected of result.rejected) {
+          const rejectedRecord = allProducts.find((p) => p.id === rejected.recordId);
+          if (rejectedRecord?.status === 'uploaded') continue;
+          allUpdates.push({
+            id: rejected.recordId,
+            patch: { status: 'mapped', error_message: `Afvist: ${rejected.reason}`, updated_at: now },
+          });
+        }
+
+        // Primary + secondary updates
         for (const group of result.groups) {
           if (group.recordIds.length === 0) continue;
-          
-          // Choose primary record: prefer the FIRST variant with valid size data
-          // This ensures the record that actually has variant info gets _mergedVariants
-          let primaryId: string;
-          // If anything in the group is already uploaded, keep an uploaded record as primary
-          const uploadedInGroup = group.recordIds
-            .map(id => allProducts.find(p => p.id === id))
-            .find(p => p?.status === 'uploaded');
 
+          const uploadedInGroup = group.recordIds
+            .map((id) => allProducts.find((p) => p.id === id))
+            .find((p) => p?.status === 'uploaded');
+
+          let primaryId: string;
           if (uploadedInGroup) {
             primaryId = uploadedInGroup.id;
           } else {
-            const firstSizedVariant = group.variants.find(v => v.size && v.size.trim() !== '');
+            const firstSizedVariant = group.variants.find((v) => v.size && v.size.trim() !== '');
             if (firstSizedVariant) {
               primaryId = firstSizedVariant.recordId;
             } else if (group.variants.length > 0) {
-              // Fallback to first variant record
               primaryId = group.variants[0].recordId;
             } else {
-              // No variants at all - use first record in group
               primaryId = group.recordIds[0];
             }
           }
-          const primaryRecord = allProducts.find(p => p.id === primaryId);
+          const primaryRecord = allProducts.find((p) => p.id === primaryId);
 
-          // Some DanDomain fields (e.g. FIELD_1/2/3/9) can be present only on ONE record in the group
-          // (often the base SKU without size), while the chosen primary might be a size-variant record.
-          // To ensure previews/uploads see these fields, copy “best non-empty” values from ANY record
-          // in the group onto the primary.
-          const groupRecords = group.recordIds
-            .map(id => allProducts.find(p => p.id === id))
-            .filter(Boolean) as any[];
+          const groupRecords = group.recordIds.map((id) => allProducts.find((p) => p.id === id)).filter(Boolean) as any[];
 
           const pickBestNonEmpty = (key: string) => {
             for (const r of groupRecords) {
@@ -684,233 +566,176 @@ serve(async (req) => {
               if (typeof v === 'string') {
                 const t = v.trim();
                 if (t !== '') return t;
-                continue;
               }
               if (v !== null && v !== undefined) return v;
             }
             return undefined;
           };
-          
-          // Primary record update data - MERGE all group fields into primary
-          // This ensures images, body_html, tags, vendor from ALL variants are preserved
-          // CRITICAL: This runs for ALL groups, including single-variant products
-          primaryUpdates.push({
+
+          // Primary update
+          allUpdates.push({
             id: primaryId,
-            data: {
-              ...(primaryRecord?.data || {}),
-              // Merged fields from group (best-non-empty wins)
-              body_html: group.bodyHtml || primaryRecord?.data?.body_html || '',
-              vendor: group.vendor || primaryRecord?.data?.vendor || '',
-              tags: group.tags.length > 0 ? group.tags : (primaryRecord?.data?.tags || []),
-              images: group.images.length > 0 ? group.images : (primaryRecord?.data?.images || []),
-
-              // Copy custom fields + SEO from any record in the group (best non-empty wins)
-              field_1: pickBestNonEmpty('field_1') ?? primaryRecord?.data?.field_1 ?? null,
-              field_2: pickBestNonEmpty('field_2') ?? primaryRecord?.data?.field_2 ?? null,
-              field_3: pickBestNonEmpty('field_3') ?? primaryRecord?.data?.field_3 ?? null,
-              field_9: pickBestNonEmpty('field_9') ?? primaryRecord?.data?.field_9 ?? null,
-              meta_title: pickBestNonEmpty('meta_title') ?? primaryRecord?.data?.meta_title ?? null,
-              meta_description: pickBestNonEmpty('meta_description') ?? primaryRecord?.data?.meta_description ?? null,
-              source_path: pickBestNonEmpty('source_path') ?? primaryRecord?.data?.source_path ?? null,
-
-              // Group metadata - SET FOR ALL PRODUCTS (single or multi-variant)
-              _groupKey: group.key,
-              _groupTitle: group.title,
-              _variantCount: group.variants.length,
-              _isPrimary: true,
-              _mergedVariants: group.variants,
-              _mergedImages: group.images, // Explicit backup for debugging
-            }
-          });
-          
-          // Secondary records: EVERYTHING except the chosen primaryId.
-          // IMPORTANT: Do NOT assume recordIds[0] is primary.
-          // If we mark the chosen primary as secondary, the upload step will only see 1 variant.
-          for (const secId of group.recordIds) {
-            if (secId === primaryId) continue;
-            secondaryIds.push(secId);
-            const secRecord = allProducts.find(p => p.id === secId);
-            secondaryDataUpdates.push({
-              id: secId,
+            patch: {
               data: {
-                ...(secRecord?.data || {}),
+                ...(primaryRecord?.data || {}),
+                body_html: group.bodyHtml || primaryRecord?.data?.body_html || '',
+                vendor: group.vendor || primaryRecord?.data?.vendor || '',
+                tags: group.tags.length > 0 ? group.tags : primaryRecord?.data?.tags || [],
+                images: group.images.length > 0 ? group.images : primaryRecord?.data?.images || [],
+                field_1: pickBestNonEmpty('field_1') ?? primaryRecord?.data?.field_1 ?? null,
+                field_2: pickBestNonEmpty('field_2') ?? primaryRecord?.data?.field_2 ?? null,
+                field_3: pickBestNonEmpty('field_3') ?? primaryRecord?.data?.field_3 ?? null,
+                field_9: pickBestNonEmpty('field_9') ?? primaryRecord?.data?.field_9 ?? null,
+                meta_title: pickBestNonEmpty('meta_title') ?? primaryRecord?.data?.meta_title ?? null,
+                meta_description: pickBestNonEmpty('meta_description') ?? primaryRecord?.data?.meta_description ?? null,
+                source_path: pickBestNonEmpty('source_path') ?? primaryRecord?.data?.source_path ?? null,
                 _groupKey: group.key,
                 _groupTitle: group.title,
-                _isPrimary: false,
-                _primaryRecordId: primaryId,
-                // Ensure stale primary-only fields don't linger on secondaries
-                _variantCount: null,
-                _mergedVariants: null,
-                _mergedImages: null,
-              }
+                _variantCount: group.variants.length,
+                _isPrimary: true,
+                _mergedVariants: group.variants,
+                _mergedImages: group.images,
+              },
+              updated_at: now,
+            },
+          });
+
+          // Secondary updates
+          for (const secId of group.recordIds) {
+            if (secId === primaryId) continue;
+            const secRecord = allProducts.find((p) => p.id === secId);
+            const isUploaded = secRecord?.status === 'uploaded';
+            allUpdates.push({
+              id: secId,
+              patch: {
+                data: {
+                  ...(secRecord?.data || {}),
+                  _groupKey: group.key,
+                  _groupTitle: group.title,
+                  _isPrimary: false,
+                  _primaryRecordId: primaryId,
+                  _variantCount: null,
+                  _mergedVariants: null,
+                  _mergedImages: null,
+                },
+                ...(isUploaded ? {} : { status: 'mapped' }),
+                updated_at: now,
+              },
             });
           }
         }
-        
-        console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
-        
-        // ============== BATCH UPDATES (FAST + LOW CPU) ==============
-        // Supabase JS upsert needs ALL non-null columns, which is impractical when we only want
-        // to patch `data`. Instead we do individual updates in small parallel batches.
-        // This is still faster than sequential and doesn't hit compute limits.
-        
-        const BATCH_SIZE = 30; // Small parallel batches to stay under CPU limits
-        
-        // Helper: run updates in parallel batches with throttling
-        const runBatchedUpdates = async (
-          updates: Array<{ id: string; patch: Record<string, unknown> }>,
-          label: string
-        ) => {
-          let processed = 0;
-          for (let i = 0; i < updates.length; i += BATCH_SIZE) {
-            const batch = updates.slice(i, i + BATCH_SIZE);
-            await Promise.all(
-              batch.map(({ id, patch }) =>
-                supabase.from('canonical_products').update(patch).eq('id', id)
-              )
-            );
-            processed += batch.length;
-            if (processed % 300 === 0 || processed === updates.length) {
-              console.log(`[PREPARE] ${label} progress: ${processed}/${updates.length}`);
-            }
-          }
-        };
 
-        // Process primary updates
-        await runBatchedUpdates(
-          primaryUpdates.map(u => ({ id: u.id, patch: { data: u.data, updated_at: now } })),
-          'Primary'
-        );
-        console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
+        console.log(`[PREPARE] Total updates: ${allUpdates.length}, starting from offset ${offset}`);
 
-        // BATCH 4: Bulk update secondary records' status to 'mapped'
-        const secondaryIdsToMap = secondaryIds.filter(id => {
-          const rec = allProducts.find(p => p.id === id);
-          return rec?.status !== 'uploaded';
-        });
+        // Process a chunk this invocation
+        const CHUNK_SIZE = 200;
+        const chunk = allUpdates.slice(offset, offset + CHUNK_SIZE);
 
-        // Use larger chunks for IN queries (more efficient)
-        for (let i = 0; i < secondaryIdsToMap.length; i += 500) {
-          const chunk = secondaryIdsToMap.slice(i, i + 500);
-          await supabase
-            .from('canonical_products')
-            .update({ status: 'mapped', updated_at: now })
-            .in('id', chunk);
-        }
-        console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
-        
-        // Process secondary data updates
-        await runBatchedUpdates(
-          secondaryDataUpdates.map(u => ({ id: u.id, patch: { data: u.data, updated_at: now } })),
-          'Secondary'
-        );
-        console.log(`[PREPARE] Committed grouping to database`);
-        
-        // FALLBACK: Find any remaining 'pending' records without _isPrimary and mark them
-        const { data: unmarkedRecords } = await supabase
-          .from('canonical_products')
-          .select('id, data')
-          .eq('project_id', projectId)
-          .eq('status', 'pending')
-          .is('data->>_isPrimary', null)
-          .limit(500); // Limit to avoid timeout
-        
-        if (unmarkedRecords && unmarkedRecords.length > 0) {
-          console.log(`[PREPARE] FALLBACK: Found ${unmarkedRecords.length} unmarked records, marking as single-variant primaries`);
-          // Process in parallel batches
-          for (let i = 0; i < unmarkedRecords.length; i += PARALLEL_BATCH_SIZE) {
-            const chunk = unmarkedRecords.slice(i, i + PARALLEL_BATCH_SIZE);
-            await Promise.allSettled(chunk.map(r =>
-              supabase
-                .from('canonical_products')
-                .update({ 
-                  data: {
-                    ...(r.data || {}),
-                    _groupKey: ((r.data as Record<string, unknown>)?.title as string || 'unknown').toLowerCase(),
-                    _isPrimary: true,
-                    _variantCount: 1,
-                    _mergedVariants: [],
-                  },
-                  updated_at: now,
-                })
-                .eq('id', r.id)
-            ));
+        if (chunk.length > 0) {
+          const BATCH_SIZE = 20;
+          for (let i = 0; i < chunk.length; i += BATCH_SIZE) {
+            const batch = chunk.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(({ id, patch }) => supabase.from('canonical_products').update(patch).eq('id', id)));
           }
         }
-        
-        // After commit, get TOTAL counts across all records (not just newly processed)
+
+        const newOffset = offset + chunk.length;
+
+        // Update job offset
+        if (jobId) {
+          await supabase.from('upload_jobs').update({ prepare_offset: newOffset }).eq('id', jobId);
+        }
+
+        // Did we finish?
+        const done = newOffset >= allUpdates.length;
+        console.log(`[PREPARE] Processed ${chunk.length} updates (${newOffset}/${allUpdates.length}), done=${done}`);
+
+        if (!done) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              continue: true,
+              progress: newOffset,
+              total: allUpdates.length,
+            }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        // Final counts
         const { count: totalRecords } = await supabase
           .from('canonical_products')
           .select('*', { count: 'exact', head: true })
           .eq('project_id', projectId);
-        
+
         const { count: primaryCount } = await supabase
           .from('canonical_products')
           .select('*', { count: 'exact', head: true })
           .eq('project_id', projectId)
           .filter('data->>_isPrimary', 'eq', 'true');
-        
+
         const { count: secondaryCount } = await supabase
           .from('canonical_products')
           .select('*', { count: 'exact', head: true })
           .eq('project_id', projectId)
           .filter('data->>_isPrimary', 'eq', 'false');
-        
-        // Calculate totals: primary = shopify products, primary + secondary = total variants
+
         const shopifyProducts = primaryCount || 0;
         const totalVariants = (primaryCount || 0) + (secondaryCount || 0);
-        
-        return new Response(JSON.stringify({
-          success: true,
-          groups: includeGroups ? result.groups : [],
-          rejected: includeGroups ? result.rejected : [],
-          stats: {
-            totalRecords: totalRecords || 0,
-            groupsCreated: shopifyProducts,
-            variantsTotal: totalVariants,
-            recordsRejected: result.stats.recordsRejected,
-          },
-        }), { 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        });
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            continue: false,
+            groups: includeGroups ? result.groups : [],
+            rejected: includeGroups ? result.rejected : [],
+            stats: {
+              totalRecords: totalRecords || 0,
+              groupsCreated: shopifyProducts,
+              variantsTotal: totalVariants,
+              recordsRejected: result.stats.recordsRejected,
+            },
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
-      
-      return new Response(JSON.stringify(result), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-    
-    // For other entity types, return simple stats (no grouping needed)
+
+    // For other entity types, return simple stats
     const tableName = `canonical_${entityType}` as const;
     const { count } = await supabase
       .from(tableName)
       .select('*', { count: 'exact', head: true })
       .eq('project_id', projectId)
       .eq('status', 'pending');
-    
-    return new Response(JSON.stringify({
-      success: true,
-      groups: [],
-      rejected: [],
-      stats: {
-        totalRecords: count || 0,
-        groupsCreated: count || 0,
-        variantsTotal: count || 0,
-        recordsRejected: 0,
-      },
-    }), { 
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-    });
 
+    return new Response(
+      JSON.stringify({
+        success: true,
+        groups: [],
+        rejected: [],
+        stats: {
+          totalRecords: count || 0,
+          groupsCreated: count || 0,
+          variantsTotal: count || 0,
+          recordsRejected: 0,
+        },
+      }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[PREPARE] Error:', errorMessage);
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage,
-    }), { 
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-    });
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: errorMessage,
+      }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   }
 });
