@@ -69,6 +69,7 @@ serve(async (req) => {
 
     // Reliable count helper for canonical_* tables.
     // IMPORTANT: For products we ONLY count primary records to match what actually uploads.
+    // Each primary record = one Shopify product (with all variants from _mergedVariants).
     const countCanonicalStatus = async (entityType: string, status: string): Promise<number> => {
       const tableName = `canonical_${entityType}`;
 
@@ -84,8 +85,8 @@ serve(async (req) => {
       }
 
       // Products: ONLY count records explicitly marked as primary.
-      // Records with _isPrimary=null have NOT been processed by prepare-upload yet
-      // and should NOT be counted as uploadable products.
+      // Each primary = 1 Shopify product (secondary variants don't count as separate products).
+      // Records with _isPrimary=null have NOT been processed by prepare-upload yet.
       if (entityType === 'products') {
         query = query.eq('data->>_isPrimary', 'true');
       }
@@ -112,7 +113,7 @@ serve(async (req) => {
         scan = scan.eq('exclude', false);
       }
 
-      // Products: ONLY count records explicitly marked as primary (matches the query filter above)
+      // Products: ONLY count primary records (each primary = 1 Shopify product)
       if (entityType === 'products') {
         scan = scan.eq('data->>_isPrimary', 'true');
       }
@@ -548,11 +549,64 @@ serve(async (req) => {
           .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
           .eq('id', jobId);
 
-        // Product preparation is now done inline inside shopify-upload.
-        // Mark the job as "prepared" immediately so we proceed to upload.
+        // ==================== PRODUCT PREPARATION ====================
+        // CRITICAL: Products MUST be prepared (grouped with variants) before upload.
+        // prepare-upload groups products by title and marks one as primary per group.
+        // Without this, each record would be uploaded as a separate Shopify product.
         let effectiveCurrentBatch = typeof job.current_batch === 'number' ? job.current_batch : 0;
         if (job.entity_type === 'products' && effectiveCurrentBatch === 0) {
-          console.log('[WORKER] Skipping prepare-upload (inline prepare in shopify-upload)');
+          console.log('[WORKER] Running prepare-upload for product grouping...');
+          
+          // Call prepare-upload (resumable - may need multiple calls)
+          let prepareDone = false;
+          let prepareAttempts = 0;
+          const MAX_PREPARE_ATTEMPTS = 100; // Safety limit
+          
+          while (!prepareDone && prepareAttempts < MAX_PREPARE_ATTEMPTS) {
+            prepareAttempts++;
+            
+            try {
+              const prepResponse = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+                body: JSON.stringify({
+                  projectId: job.project_id,
+                  entityType: 'products',
+                  previewOnly: false,
+                  jobId: jobId,
+                }),
+              });
+              
+              if (!prepResponse.ok) {
+                const errText = await prepResponse.text();
+                throw new Error(`prepare-upload failed: ${errText}`);
+              }
+              
+              const prepResult = await prepResponse.json();
+              console.log(`[WORKER] prepare-upload progress: ${prepResult.progress || 'done'}/${prepResult.total || '?'}`);
+              
+              if (prepResult.continue === true) {
+                // Need to call again
+                await sleep(100);
+                continue;
+              }
+              
+              // Preparation complete
+              prepareDone = true;
+              console.log(`[WORKER] prepare-upload complete. Groups: ${prepResult.stats?.groupsCreated || 'N/A'}`);
+              
+            } catch (prepError) {
+              const msg = prepError instanceof Error ? prepError.message : 'Unknown error';
+              console.error(`[WORKER] prepare-upload error (attempt ${prepareAttempts}): ${msg}`);
+              
+              if (prepareAttempts >= 3) {
+                throw new Error(`prepare-upload failed after ${prepareAttempts} attempts: ${msg}`);
+              }
+              await sleep(1000);
+            }
+          }
+          
+          // Mark preparation as done
           await supabase
             .from('upload_jobs')
             .update({ current_batch: 1, last_heartbeat_at: new Date().toISOString() })
@@ -560,6 +614,7 @@ serve(async (req) => {
             .eq('current_batch', 0);
           effectiveCurrentBatch = 1;
         }
+        // ==============================================================
 
         // Call shopify-upload
         const startTime = Date.now();
