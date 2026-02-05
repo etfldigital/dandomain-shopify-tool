@@ -243,11 +243,35 @@ async function uploadProducts(
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Filter to ONLY primary products
-  const primaryProducts = pendingProducts.filter((p: any) => {
+  // Filter: primary products OR products that haven't been grouped yet (_isPrimary is null).
+  // If _isPrimary is null, treat the product as a single-variant product and mark inline.
+  const primaryProducts: any[] = [];
+  for (const p of pendingProducts) {
     const data = p.data || {};
-    return data._isPrimary === true;
-  });
+    if (data._isPrimary === true) {
+      primaryProducts.push(p);
+    } else if (data._isPrimary === undefined || data._isPrimary === null) {
+      // Inline preparation: mark as primary, single-variant
+      const now = new Date().toISOString();
+      const groupKey = String(data.title || 'untitled').toLowerCase();
+      const patchedData = {
+        ...data,
+        _isPrimary: true,
+        _groupKey: groupKey,
+        _groupTitle: String(data.title || 'Untitled'),
+        _variantCount: 1,
+        _mergedVariants: [],
+      };
+      // Write to DB immediately so subsequent fetches see the flag
+      await supabase
+        .from('canonical_products')
+        .update({ data: patchedData, updated_at: now })
+        .eq('id', p.id);
+      // Use the patched version
+      primaryProducts.push({ ...p, data: patchedData });
+    }
+    // Else _isPrimary === false => secondary, skip
+  }
 
   // Each primary product is its OWN group
   const productGroups: Map<string, any[]> = new Map();
