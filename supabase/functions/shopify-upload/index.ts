@@ -243,37 +243,26 @@ async function uploadProducts(
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
-  // Filter: primary products OR products that haven't been grouped yet (_isPrimary is null).
-  // If _isPrimary is null, treat the product as a single-variant product and mark inline.
+  // CRITICAL: Only process products that have been through prepare-upload.
+  // Products must have _isPrimary === true to be uploaded.
+  // Products with _isPrimary === null/undefined have NOT been prepared yet and should be skipped.
+  // This ensures proper variant grouping where one primary product = one Shopify product with all variants.
   const primaryProducts: any[] = [];
   for (const p of pendingProducts) {
     const data = p.data || {};
     if (data._isPrimary === true) {
       primaryProducts.push(p);
-    } else if (data._isPrimary === undefined || data._isPrimary === null) {
-      // Inline preparation: mark as primary, single-variant
-      const now = new Date().toISOString();
-      const groupKey = String(data.title || 'untitled').toLowerCase();
-      const patchedData = {
-        ...data,
-        _isPrimary: true,
-        _groupKey: groupKey,
-        _groupTitle: String(data.title || 'Untitled'),
-        _variantCount: 1,
-        _mergedVariants: [],
-      };
-      // Write to DB immediately so subsequent fetches see the flag
-      await supabase
-        .from('canonical_products')
-        .update({ data: patchedData, updated_at: now })
-        .eq('id', p.id);
-      // Use the patched version
-      primaryProducts.push({ ...p, data: patchedData });
     }
-    // Else _isPrimary === false => secondary, skip
+    // _isPrimary === false => secondary variant, already grouped with primary - skip
+    // _isPrimary === null/undefined => not prepared yet - skip (will be processed after prepare-upload runs)
   }
 
-  // Each primary product is its OWN group
+  if (primaryProducts.length === 0) {
+    console.log('[PRODUCTS] No prepared primary products found - prepare-upload needs to run first');
+    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: true };
+  }
+
+  // Each primary product is its OWN group (variants are in _mergedVariants)
   const productGroups: Map<string, any[]> = new Map();
   for (const product of primaryProducts) {
     productGroups.set(product.id, [product]);
