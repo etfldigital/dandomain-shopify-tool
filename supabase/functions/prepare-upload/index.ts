@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2.90.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -558,10 +558,11 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, entityType, previewOnly = true }: { 
+    const { projectId, entityType, previewOnly = true, includeGroups = false }: { 
       projectId: string; 
       entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
       previewOnly?: boolean;
+      includeGroups?: boolean;
     } = await req.json();
 
     console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType}`);
@@ -609,6 +610,10 @@ serve(async (req) => {
       // If not preview only, update the database with grouped data
       if (!previewOnly) {
         const now = new Date().toISOString();
+
+        // Chunk sizes tuned to avoid compute spikes on large datasets
+        const UPSERT_CHUNK_SIZE = 250;
+        const PARALLEL_BATCH_SIZE = 25;
 
         // PERFORMANCE NOTE:
         // We intentionally skip the previous “reset all grouping flags” pass.
@@ -745,42 +750,28 @@ serve(async (req) => {
         
         console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
         
-        // ============== HIGH-PERFORMANCE BATCH UPDATES ==============
-        // Instead of individual updates (which cause CPU timeout with 4000+ records),
-        // use parallel batches with Promise.allSettled for resilience.
-        // Key insight: The CPU limit is about sustained load, not parallel requests.
-        // Parallel HTTP requests are I/O-bound and actually more efficient.
-        
-        const PARALLEL_BATCH_SIZE = 25; // Smaller parallel batches to avoid overwhelming
-        const updateWithRetry = async (id: string, data: Record<string, unknown>, retries = 2) => {
-          for (let attempt = 0; attempt <= retries; attempt++) {
-            try {
-              const { error } = await supabase
-                .from('canonical_products')
-                .update({ data, updated_at: now })
-                .eq('id', id);
-              if (!error) return { success: true, id };
-              if (attempt === retries) return { success: false, id, error: error.message };
-            } catch (e) {
-              if (attempt === retries) return { success: false, id, error: String(e) };
-            }
-          }
-          return { success: false, id };
-        };
-        
-        // Process primary updates in parallel batches
-        let primaryProcessed = 0;
-        for (let i = 0; i < primaryUpdates.length; i += PARALLEL_BATCH_SIZE) {
-          const chunk = primaryUpdates.slice(i, i + PARALLEL_BATCH_SIZE);
-          await Promise.allSettled(chunk.map(u => updateWithRetry(u.id, u.data)));
-          primaryProcessed += chunk.length;
-          // Log progress every 200 records
-          if (primaryProcessed % 200 === 0 || primaryProcessed === primaryUpdates.length) {
-            console.log(`[PREPARE] Primary progress: ${primaryProcessed}/${primaryUpdates.length}`);
+        // ============== BULK UPSERTS (FAST + LOW CPU) ==============
+        // Avoid thousands of per-row updates (can hit runtime compute limits on large datasets).
+        const primaryRows = primaryUpdates.map(u => ({
+          id: u.id,
+          data: u.data,
+          updated_at: now,
+        }));
+
+        for (let i = 0; i < primaryRows.length; i += UPSERT_CHUNK_SIZE) {
+          const chunk = primaryRows.slice(i, i + UPSERT_CHUNK_SIZE);
+          const { error } = await supabase
+            .from('canonical_products')
+            .upsert(chunk, { onConflict: 'id' });
+          if (error) throw error;
+
+          const processed = Math.min(i + chunk.length, primaryRows.length);
+          if (processed % 500 === 0 || processed === primaryRows.length) {
+            console.log(`[PREPARE] Primary progress: ${processed}/${primaryRows.length}`);
           }
         }
-        console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
-        
+
+        console.log(`[PREPARE] Updated ${primaryRows.length} primary records`);
         // BATCH 4: Bulk update secondary records' status to 'mapped'
         const secondaryIdsToMap = secondaryIds.filter(id => {
           const rec = allProducts.find(p => p.id === id);
@@ -797,22 +788,25 @@ serve(async (req) => {
         }
         console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
         
-        // Process secondary data updates in parallel batches
-        let secondaryProcessed = 0;
-        for (let i = 0; i < secondaryDataUpdates.length; i += PARALLEL_BATCH_SIZE) {
-          const chunk = secondaryDataUpdates.slice(i, i + PARALLEL_BATCH_SIZE);
-          await Promise.allSettled(chunk.map(u => 
-            supabase
-              .from('canonical_products')
-              .update({ data: u.data })
-              .eq('id', u.id)
-          ));
-          secondaryProcessed += chunk.length;
-          if (secondaryProcessed % 500 === 0 || secondaryProcessed === secondaryDataUpdates.length) {
-            console.log(`[PREPARE] Secondary progress: ${secondaryProcessed}/${secondaryDataUpdates.length}`);
+        // Process secondary data updates in bulk upsert chunks
+        const secondaryRows = secondaryDataUpdates.map(u => ({
+          id: u.id,
+          data: u.data,
+          updated_at: now,
+        }));
+
+        for (let i = 0; i < secondaryRows.length; i += UPSERT_CHUNK_SIZE) {
+          const chunk = secondaryRows.slice(i, i + UPSERT_CHUNK_SIZE);
+          const { error } = await supabase
+            .from('canonical_products')
+            .upsert(chunk, { onConflict: 'id' });
+          if (error) throw error;
+
+          const processed = Math.min(i + chunk.length, secondaryRows.length);
+          if (processed % 1000 === 0 || processed === secondaryRows.length) {
+            console.log(`[PREPARE] Secondary progress: ${processed}/${secondaryRows.length}`);
           }
         }
-        
         console.log(`[PREPARE] Committed grouping to database`);
         
         // FALLBACK: Find any remaining 'pending' records without _isPrimary and mark them
@@ -871,8 +865,8 @@ serve(async (req) => {
         
         return new Response(JSON.stringify({
           success: true,
-          groups: result.groups,
-          rejected: result.rejected,
+          groups: includeGroups ? result.groups : [],
+          rejected: includeGroups ? result.rejected : [],
           stats: {
             totalRecords: totalRecords || 0,
             groupsCreated: shopifyProducts,
