@@ -576,11 +576,24 @@ serve(async (req) => {
         const actualTotal = actualPending + actualUploaded + actualFailed;
         const actualProcessed = actualUploaded + actualFailed;
 
-        // Prepare update
+        // For test mode: track how many items we've uploaded in this job specifically
+        // Test mode should ONLY upload up to 3 items total, then stop
+        const testModeItemsUploaded = job.is_test_mode 
+          ? (job.processed_count || 0) + itemsProcessed 
+          : 0;
+        const testModeLimitReached = job.is_test_mode && testModeItemsUploaded >= 3;
+
+        // Prepare update - IMPORTANT: In test mode, keep original total_count (which is capped at 3)
         const updateData: Record<string, any> = {
-          processed_count: actualProcessed,
-          total_count: actualTotal,
-          error_count: actualFailed || 0,
+          // In test mode: track items processed in THIS job (not total DB counts)
+          // In normal mode: use actual DB counts
+          processed_count: job.is_test_mode 
+            ? Math.min(testModeItemsUploaded, job.total_count)
+            : actualProcessed,
+          // In test mode: keep the original total_count (capped at 3)
+          // In normal mode: update to actual total
+          total_count: job.is_test_mode ? job.total_count : actualTotal,
+          error_count: job.is_test_mode ? (job.error_count || 0) + (result.errors || 0) : (actualFailed || 0),
           skipped_count: job.skipped_count + (result.skipped || 0),
           items_per_minute: itemsPerMinute > 0 ? itemsPerMinute : null,
           last_batch_speed: batchSpeed > 0 ? batchSpeed : null,
@@ -610,11 +623,18 @@ serve(async (req) => {
         );
         updateData.error_details = [...existingErrors, ...newErrors].slice(-100);
 
-        // Check if job is complete
-        const hasMore = (actualPending || 0) > 0 && !job.is_test_mode;
+        // Check if job is complete:
+        // - Normal mode: complete when no pending items remain
+        // - Test mode: complete after processing up to 3 items (one batch with batchSize=3)
+        const hasMore = job.is_test_mode 
+          ? !testModeLimitReached && (actualPending || 0) > 0
+          : (actualPending || 0) > 0;
         
         if (!hasMore) {
-          console.log(`[WORKER] Job ${jobId} complete (pending=0)`);
+          const reason = job.is_test_mode 
+            ? `test mode limit reached (${testModeItemsUploaded} items)` 
+            : 'pending=0';
+          console.log(`[WORKER] Job ${jobId} complete (${reason})`);
           updateData.status = 'completed';
           updateData.completed_at = new Date().toISOString();
         }
