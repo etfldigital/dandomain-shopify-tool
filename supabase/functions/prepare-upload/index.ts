@@ -612,7 +612,6 @@ serve(async (req) => {
         const now = new Date().toISOString();
 
         // Chunk sizes tuned to avoid compute spikes on large datasets
-        const UPSERT_CHUNK_SIZE = 250;
         const PARALLEL_BATCH_SIZE = 25;
 
         // PERFORMANCE NOTE:
@@ -750,28 +749,40 @@ serve(async (req) => {
         
         console.log(`[PREPARE] Preparing ${primaryUpdates.length} primary records (incl. single-variant) and ${secondaryIds.length} secondary records`);
         
-        // ============== BULK UPSERTS (FAST + LOW CPU) ==============
-        // Avoid thousands of per-row updates (can hit runtime compute limits on large datasets).
-        const primaryRows = primaryUpdates.map(u => ({
-          id: u.id,
-          data: u.data,
-          updated_at: now,
-        }));
-
-        for (let i = 0; i < primaryRows.length; i += UPSERT_CHUNK_SIZE) {
-          const chunk = primaryRows.slice(i, i + UPSERT_CHUNK_SIZE);
-          const { error } = await supabase
-            .from('canonical_products')
-            .upsert(chunk, { onConflict: 'id' });
-          if (error) throw error;
-
-          const processed = Math.min(i + chunk.length, primaryRows.length);
-          if (processed % 500 === 0 || processed === primaryRows.length) {
-            console.log(`[PREPARE] Primary progress: ${processed}/${primaryRows.length}`);
+        // ============== BATCH UPDATES (FAST + LOW CPU) ==============
+        // Supabase JS upsert needs ALL non-null columns, which is impractical when we only want
+        // to patch `data`. Instead we do individual updates in small parallel batches.
+        // This is still faster than sequential and doesn't hit compute limits.
+        
+        const BATCH_SIZE = 30; // Small parallel batches to stay under CPU limits
+        
+        // Helper: run updates in parallel batches with throttling
+        const runBatchedUpdates = async (
+          updates: Array<{ id: string; patch: Record<string, unknown> }>,
+          label: string
+        ) => {
+          let processed = 0;
+          for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+            const batch = updates.slice(i, i + BATCH_SIZE);
+            await Promise.all(
+              batch.map(({ id, patch }) =>
+                supabase.from('canonical_products').update(patch).eq('id', id)
+              )
+            );
+            processed += batch.length;
+            if (processed % 300 === 0 || processed === updates.length) {
+              console.log(`[PREPARE] ${label} progress: ${processed}/${updates.length}`);
+            }
           }
-        }
+        };
 
-        console.log(`[PREPARE] Updated ${primaryRows.length} primary records`);
+        // Process primary updates
+        await runBatchedUpdates(
+          primaryUpdates.map(u => ({ id: u.id, patch: { data: u.data, updated_at: now } })),
+          'Primary'
+        );
+        console.log(`[PREPARE] Updated ${primaryUpdates.length} primary records`);
+
         // BATCH 4: Bulk update secondary records' status to 'mapped'
         const secondaryIdsToMap = secondaryIds.filter(id => {
           const rec = allProducts.find(p => p.id === id);
@@ -788,25 +799,11 @@ serve(async (req) => {
         }
         console.log(`[PREPARE] Set ${secondaryIdsToMap.length} secondary records to mapped`);
         
-        // Process secondary data updates in bulk upsert chunks
-        const secondaryRows = secondaryDataUpdates.map(u => ({
-          id: u.id,
-          data: u.data,
-          updated_at: now,
-        }));
-
-        for (let i = 0; i < secondaryRows.length; i += UPSERT_CHUNK_SIZE) {
-          const chunk = secondaryRows.slice(i, i + UPSERT_CHUNK_SIZE);
-          const { error } = await supabase
-            .from('canonical_products')
-            .upsert(chunk, { onConflict: 'id' });
-          if (error) throw error;
-
-          const processed = Math.min(i + chunk.length, secondaryRows.length);
-          if (processed % 1000 === 0 || processed === secondaryRows.length) {
-            console.log(`[PREPARE] Secondary progress: ${processed}/${secondaryRows.length}`);
-          }
-        }
+        // Process secondary data updates
+        await runBatchedUpdates(
+          secondaryDataUpdates.map(u => ({ id: u.id, patch: { data: u.data, updated_at: now } })),
+          'Secondary'
+        );
         console.log(`[PREPARE] Committed grouping to database`);
         
         // FALLBACK: Find any remaining 'pending' records without _isPrimary and mark them
