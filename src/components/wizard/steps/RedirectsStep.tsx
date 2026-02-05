@@ -464,6 +464,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       if (data.error) throw new Error(data.error);
 
       setDandomainUrls(data.urls || []);
+
+      // As soon as the user provides a new source-of-truth (sitemap), we clear any existing
+      // non-created redirects so we don't keep showing / matching old generated URLs.
+      await supabase
+        .from('project_redirects')
+        .delete()
+        .eq('project_id', project.id)
+        .neq('status', 'created');
+      setRedirects([]);
       
       toast({
         title: 'Sitemaps hentet',
@@ -504,28 +513,22 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     setProgress({ current: 0, total: urlsToMatch.length });
 
     try {
-      // Remove previously generated/incorrect redirects for the entity types we are importing.
-      // (Keep already created redirects.)
-      const hasProducts = dandomanUrls.some(u => u.type === 'product');
-      const hasCategories = dandomanUrls.some(u => u.type === 'category');
+      // CRITICAL: delete all non-created redirects first.
+      // This ensures we fully forget any previously generated (hallucinated) old URLs.
+      await supabase
+        .from('project_redirects')
+        .delete()
+        .eq('project_id', project.id)
+        .neq('status', 'created');
 
-      if (hasProducts) {
-        await supabase
-          .from('project_redirects')
-          .delete()
-          .eq('project_id', project.id)
-          .eq('entity_type', 'product')
-          .neq('status', 'created');
-      }
-
-      if (hasCategories) {
-        await supabase
-          .from('project_redirects')
-          .delete()
-          .eq('project_id', project.id)
-          .eq('entity_type', 'category')
-          .neq('status', 'created');
-      }
+      const withTimeout = async <T,>(promise: Promise<T>, ms: number) => {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Timeout efter ${Math.round(ms / 1000)}s`)), ms)
+          ),
+        ]);
+      };
 
       // Call match-redirects backend function in batches.
       // Bigger batches = fewer roundtrips (the function loads uploaded entities each call).
@@ -535,16 +538,20 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       for (let i = 0; i < urlsToMatch.length; i += BATCH_SIZE) {
         const batch = urlsToMatch.slice(i, i + BATCH_SIZE);
-        
-        const { data, error } = await supabase.functions.invoke('match-redirects', {
-          body: {
-            projectId: project.id,
-            oldPaths: batch,
-            useAi: false,
-          },
-        });
+
+        const { data, error } = await withTimeout(
+          supabase.functions.invoke('match-redirects', {
+            body: {
+              projectId: project.id,
+              oldPaths: batch,
+              useAi: false,
+            },
+          }),
+          120_000
+        );
 
         if (error) throw error;
+        if (data?.error) throw new Error(data.error);
 
         totalMatched += data.matched || 0;
         totalUnmatched += data.unmatched || 0;
@@ -561,169 +568,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       console.error('Error generating redirects:', err);
       toast({
         title: 'Fejl',
-        description: 'Kunne ikke generere redirects',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsGenerating(false);
-      setProgress({ current: 0, total: 0 });
-    }
-  };
-
-  const generateFromDatabase = async () => {
-    setIsGenerating(true);
-    try {
-      // Clear existing redirects (not created ones)
-      await supabase
-        .from('project_redirects')
-        .delete()
-        .eq('project_id', project.id)
-        .neq('status', 'created');
-
-      const redirectsToInsert: Array<{
-        project_id: string;
-        entity_type: string;
-        entity_id: string;
-        old_path: string;
-        new_path: string;
-        confidence_score: number;
-        matched_by: string;
-      }> = [];
-
-      // Products - fetch ALL with pagination, only PRIMARY products
-      const pageSize = 1000;
-      let from = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        const { data: products, error } = await supabase
-          .from('canonical_products')
-          .select('id, external_id, data, shopify_id')
-          .eq('project_id', project.id)
-          .eq('status', 'uploaded')
-          .range(from, from + pageSize - 1);
-
-        if (error) throw error;
-
-        for (const product of products || []) {
-          const data = product.data as Record<string, unknown>;
-          const isPrimary = data?._isPrimary as boolean;
-          
-          // Only include primary products (the actual Shopify products)
-          if (!isPrimary) continue;
-          
-          const sourcePath = data?.source_path as string | null;
-          const title = data?.title as string;
-          const storedHandle = data?.shopify_handle as string | null;
-          const handle = storedHandle || generateShopifyHandle(title);
-          
-          if (sourcePath && product.shopify_id) {
-            redirectsToInsert.push({
-              project_id: project.id,
-              entity_type: 'product',
-              entity_id: product.id,
-              old_path: sourcePath,
-              new_path: `/products/${handle}`,
-              confidence_score: 100,
-              matched_by: 'exact',
-            });
-          }
-        }
-
-        from += pageSize;
-        hasMore = (products?.length || 0) === pageSize;
-      }
-
-      // Categories - with pagination
-      from = 0;
-      hasMore = true;
-      while (hasMore) {
-        const { data: categories, error } = await supabase
-          .from('canonical_categories')
-          .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
-          .eq('project_id', project.id)
-          .eq('status', 'uploaded')
-          .range(from, from + pageSize - 1);
-
-        if (error) throw error;
-
-        for (const category of categories || []) {
-          if (category.slug && category.shopify_collection_id) {
-            const handle = category.shopify_tag || generateShopifyHandle(category.name);
-            redirectsToInsert.push({
-              project_id: project.id,
-              entity_type: 'category',
-              entity_id: category.id,
-              old_path: `/shop/${category.slug}/`,
-              new_path: `/collections/${handle}`,
-              confidence_score: 100,
-              matched_by: 'exact',
-            });
-          }
-        }
-
-        from += pageSize;
-        hasMore = (categories?.length || 0) === pageSize;
-      }
-
-      // Pages - with pagination
-      from = 0;
-      hasMore = true;
-      while (hasMore) {
-        const { data: pages, error } = await supabase
-          .from('canonical_pages')
-          .select('id, external_id, data, shopify_id')
-          .eq('project_id', project.id)
-          .eq('status', 'uploaded')
-          .range(from, from + pageSize - 1);
-
-        if (error) throw error;
-
-        for (const page of pages || []) {
-          const data = page.data as Record<string, unknown>;
-          const slug = data?.slug as string;
-          const storedHandle = data?.shopify_handle as string | null;
-          const handle = storedHandle || slug;
-          
-          if (handle && page.shopify_id) {
-            redirectsToInsert.push({
-              project_id: project.id,
-              entity_type: 'page',
-              entity_id: page.id,
-              old_path: `/${slug || handle}`,
-              new_path: `/pages/${handle}`,
-              confidence_score: 100,
-              matched_by: 'exact',
-            });
-          }
-        }
-
-        from += pageSize;
-        hasMore = (pages?.length || 0) === pageSize;
-      }
-
-      // Insert in batches
-      const batchSize = 100;
-      setProgress({ current: 0, total: redirectsToInsert.length });
-      
-      for (let i = 0; i < redirectsToInsert.length; i += batchSize) {
-        const batch = redirectsToInsert.slice(i, i + batchSize);
-        const { error } = await supabase.from('project_redirects').insert(batch);
-        if (error) console.error('Insert error:', error);
-        setProgress({ current: Math.min(i + batchSize, redirectsToInsert.length), total: redirectsToInsert.length });
-      }
-
-      toast({
-        title: 'Redirects genereret',
-        description: `${redirectsToInsert.length} redirects klar (${redirectsToInsert.filter(r => r.entity_type === 'product').length} produkter, ${redirectsToInsert.filter(r => r.entity_type === 'category').length} kategorier)`,
-      });
-
-      await loadRedirects();
-    } catch (err) {
-      console.error('Error generating redirects:', err);
-      toast({
-        title: 'Fejl',
-        description: 'Kunne ikke generere redirects',
+        description: err instanceof Error ? err.message : 'Kunne ikke generere redirects',
         variant: 'destructive',
       });
     } finally {
@@ -875,6 +720,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       }
 
       setDandomainUrls(urls);
+
+      // New source-of-truth (file) => clear any existing non-created redirects immediately.
+      await supabase
+        .from('project_redirects')
+        .delete()
+        .eq('project_id', project.id)
+        .neq('status', 'created');
+      setRedirects([]);
+
       toast({
         title: 'Fil importeret',
         description: `${urls.length} URLs indlæst`,
@@ -1219,15 +1073,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             >
               {isGenerating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
               {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs (kun sitemap/fil)` : 'Match URLs (hent sitemap først)'}
-            </Button>
-
-            <Button
-              onClick={generateFromDatabase}
-              disabled={isGenerating}
-              variant="outline"
-            >
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Generer fra database (ikke anbefalet)
             </Button>
 
             <Button
