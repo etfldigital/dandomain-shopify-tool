@@ -35,6 +35,11 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
 const ENTITY_SEQUENCE = ['categories', 'products', 'customers', 'orders'] as const;
 type SequencedEntity = (typeof ENTITY_SEQUENCE)[number];
 
+// Full job order used for "test upload (3 stk)" runs.
+// Pages are independent, but keeping a deterministic order makes the UX clearer.
+const TEST_ENTITY_SEQUENCE = ['pages', ...ENTITY_SEQUENCE] as const;
+type TestEntity = (typeof TEST_ENTITY_SEQUENCE)[number];
+
 interface WorkerRequest {
   jobId?: string;
   projectId?: string;
@@ -248,9 +253,28 @@ serve(async (req) => {
           // Use robust counting to avoid accidentally skipping an entity (which breaks sequencing)
           projectIdForCounts = projectId;
 
-          const pendingCount = await countCanonicalStatus(entityType, 'pending');
+          let pendingCount = await countCanonicalStatus(entityType, 'pending');
           const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
           const failedCount = await countCanonicalStatus(entityType, 'failed');
+
+          // TEST MODE + PRODUCTS:
+          // If products haven't been prepared yet, primary-only counting returns 0.
+          // In test mode we still want to create a products job so the worker can run prepare-upload.
+          if (entityType === 'products' && isTestMode && !skipPrepare && (!pendingCount || pendingCount <= 0)) {
+            const { data: probe, error: probeError } = await supabase
+              .from('canonical_products')
+              .select('id')
+              .eq('project_id', projectId)
+              .eq('status', 'pending')
+              .limit(3);
+
+            if (probeError) throw probeError;
+            if (probe && probe.length > 0) {
+              // We don't need the full count here; we just need to know there is work.
+              // Use up to 3 so job.total_count can still be capped correctly.
+              pendingCount = Math.min(3, probe.length);
+            }
+          }
 
           const totalCount = pendingCount + uploadedCount + failedCount;
           const alreadyProcessedCount = uploadedCount + failedCount;
@@ -271,7 +295,7 @@ serve(async (req) => {
                 project_id: projectId,
                 entity_type: entityType,
                 status: 'pending',
-                total_count: isTestMode ? Math.min(pendingCount, 3) : totalCount,
+                total_count: isTestMode ? Math.min(Math.max(pendingCount, 1), 3) : totalCount,
                 processed_count: isTestMode ? 0 : alreadyProcessedCount,
                 batch_size: batchSize,
                 is_test_mode: isTestMode || false,
@@ -332,8 +356,80 @@ serve(async (req) => {
 
         // ================= SEQUENCING GATE =================
         // Never allow a later entity to run while an earlier one still has pending work.
+        // IMPORTANT: In test mode, we must sequence based on the *test jobs* (3 stk each),
+        // not based on remaining DB pending counts (otherwise we'd never reach products).
+        const getEarliestIncompleteTestEntity = async (pid: string): Promise<SequencedEntity | null> => {
+          const { data } = await supabase
+            .from('upload_jobs')
+            .select('entity_type')
+            .eq('project_id', pid)
+            .eq('is_test_mode', true)
+            .in('status', ['pending', 'running', 'paused']);
+
+          if (!data || data.length === 0) return null;
+
+          const set = new Set<string>(data.map((d: any) => String(d.entity_type)));
+          for (const ent of ENTITY_SEQUENCE) {
+            if (set.has(ent)) return ent;
+          }
+          return null;
+        };
+
+        const ensureTestEntityJobRunning = async (pid: string, entity: SequencedEntity) => {
+          // Prefer already running
+          const { data: running } = await supabase
+            .from('upload_jobs')
+            .select('*')
+            .eq('project_id', pid)
+            .eq('entity_type', entity)
+            .eq('is_test_mode', true)
+            .eq('status', 'running')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (running?.[0]) {
+            runInBackground(
+              fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+                body: JSON.stringify({ jobId: running[0].id, action: 'process' }),
+              })
+            );
+            return;
+          }
+
+          // Then pending/paused
+          const { data: candidate } = await supabase
+            .from('upload_jobs')
+            .select('*')
+            .eq('project_id', pid)
+            .eq('entity_type', entity)
+            .eq('is_test_mode', true)
+            .in('status', ['paused', 'pending'])
+            .order('created_at', { ascending: true })
+            .limit(1);
+
+          if (!candidate?.[0]) return;
+
+          await supabase
+            .from('upload_jobs')
+            .update({ status: 'running', started_at: candidate[0].started_at || nowIso(), last_heartbeat_at: nowIso(), next_attempt_at: null })
+            .eq('id', candidate[0].id);
+
+          runInBackground(
+            fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+              body: JSON.stringify({ jobId: candidate[0].id, action: 'process' }),
+            })
+          );
+        };
+
         if (isSequencedEntity(job.entity_type)) {
-          const earliest = await getEarliestIncompleteEntity(job.project_id);
+          const earliest = job.is_test_mode
+            ? await getEarliestIncompleteTestEntity(job.project_id)
+            : await getEarliestIncompleteEntity(job.project_id);
+
           if (earliest && seqIndex(job.entity_type) > seqIndex(earliest)) {
             console.log(`[WORKER] Sequencing gate: blocking ${job.entity_type} until ${earliest} is complete`);
 
@@ -344,7 +440,11 @@ serve(async (req) => {
               .eq('id', jobId);
 
             // Ensure the correct (earliest incomplete) entity is running.
-            await ensureEntityJobRunning(job.project_id, earliest);
+            if (job.is_test_mode) {
+              await ensureTestEntityJobRunning(job.project_id, earliest);
+            } else {
+              await ensureEntityJobRunning(job.project_id, earliest);
+            }
 
             return new Response(JSON.stringify({
               success: true,
@@ -659,15 +759,55 @@ serve(async (req) => {
             });
           })());
         } else {
-          // Start next pending job
-          // Always pick the earliest incomplete entity in our dependency chain.
-          const earliest = await getEarliestIncompleteEntity(job.project_id);
+          if (job.is_test_mode) {
+            // In test mode: continue with the next *test* job (3 stk each).
+            // Never start a real (non-test) job automatically.
+            const { data: pendingTests, error: nextErr } = await supabase
+              .from('upload_jobs')
+              .select('*')
+              .eq('project_id', job.project_id)
+              .eq('is_test_mode', true)
+              .in('status', ['pending', 'paused']);
 
-          if (earliest) {
-            await ensureEntityJobRunning(job.project_id, earliest);
+            if (nextErr) throw nextErr;
+
+            const idx = (t: string) => {
+              const i = (TEST_ENTITY_SEQUENCE as readonly string[]).indexOf(t);
+              return i >= 0 ? i : 999;
+            };
+
+            const next = (pendingTests || [])
+              .slice()
+              .sort((a: any, b: any) => idx(String(a.entity_type)) - idx(String(b.entity_type)))
+              .at(0);
+
+            if (next) {
+              await supabase
+                .from('upload_jobs')
+                .update({ status: 'running', started_at: next.started_at || nowIso(), last_heartbeat_at: nowIso(), next_attempt_at: null })
+                .eq('id', next.id);
+
+              runInBackground(
+                fetch(`${supabaseUrl}/functions/v1/upload-worker`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+                  body: JSON.stringify({ jobId: next.id, action: 'process' }),
+                })
+              );
+            } else {
+              console.log(`[WORKER] Test run complete for project ${job.project_id}`);
+            }
           } else {
-            // All done
-            console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+            // Start next pending job
+            // Always pick the earliest incomplete entity in our dependency chain.
+            const earliest = await getEarliestIncompleteEntity(job.project_id);
+
+            if (earliest) {
+              await ensureEntityJobRunning(job.project_id, earliest);
+            } else {
+              // All done
+              console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+            }
           }
         }
 
