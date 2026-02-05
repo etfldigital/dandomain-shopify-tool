@@ -481,13 +481,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       };
       
       // If a single entity type is specified, only upload that type
-      // NOTE: When testing products, we also run a small collections batch first (dependency)
       if (singleEntityType) {
-        if (isTestMode && singleEntityType === 'products') {
-          body.entityTypes = ['categories', 'products'];
-        } else {
-          body.entityTypes = [singleEntityType];
-        }
+        body.entityTypes = [singleEntityType];
       }
       
       const response = await supabase.functions.invoke('upload-worker', {
