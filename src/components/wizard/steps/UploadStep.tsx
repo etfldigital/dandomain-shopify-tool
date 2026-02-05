@@ -465,6 +465,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     
     setIsStarting(true);
     try {
+      const shouldSkipPrepare = !isTestMode; // In test mode, let the worker run prepare-upload for products
+
       const body: {
         projectId: string;
         action: string;
@@ -475,12 +477,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         projectId: project.id,
         action: 'start',
         isTestMode,
-        skipPrepare: true, // Products already prepared
+        skipPrepare: shouldSkipPrepare,
       };
       
       // If a single entity type is specified, only upload that type
+      // NOTE: When testing products, we also run a small collections batch first (dependency)
       if (singleEntityType) {
-        body.entityTypes = [singleEntityType];
+        if (isTestMode && singleEntityType === 'products') {
+          body.entityTypes = ['categories', 'products'];
+        } else {
+          body.entityTypes = [singleEntityType];
+        }
       }
       
       const response = await supabase.functions.invoke('upload-worker', {
