@@ -50,8 +50,8 @@ export const BASE_SHOPIFY_FIELDS = [
 // For backwards compatibility
 export const SHOPIFY_PRODUCT_FIELDS = BASE_SHOPIFY_FIELDS;
 
-// Known source fields from DanDomain XML exports
-export const KNOWN_SOURCE_FIELDS = [
+// Known source fields from DanDomain XML exports (base fields only, custom fields are dynamic)
+export const BASE_SOURCE_FIELDS = [
   // GENERAL section
   'PROD_NUM',
   'PROD_NAME',
@@ -85,12 +85,13 @@ export const KNOWN_SOURCE_FIELDS = [
   'TITLE',
   // MANUFACTURERS
   'MANUFAC_ID',
-  // CUSTOM FIELDS (kun de anvendte)
-  'FIELD_1',  // Materiale
-  'FIELD_2',  // Farve
-  'FIELD_3',  // Pasform
-  'FIELD_9',  // Vaskeanvisning
 ];
+
+// All possible custom fields (FIELD_1 through FIELD_9)
+const ALL_CUSTOM_FIELDS = ['FIELD_1', 'FIELD_2', 'FIELD_3', 'FIELD_4', 'FIELD_5', 'FIELD_6', 'FIELD_7', 'FIELD_8', 'FIELD_9'];
+
+// For backwards compatibility
+export const KNOWN_SOURCE_FIELDS = BASE_SOURCE_FIELDS;
 
 interface ShopifyMetafield {
   namespace: string;
@@ -108,6 +109,9 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
   const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
   
+  // Dynamic source fields (base + custom fields with data)
+  const [availableSourceFields, setAvailableSourceFields] = useState<string[]>(BASE_SOURCE_FIELDS);
+  
   // Create metafields dialog state
   const [showCreateMetafieldsDialog, setShowCreateMetafieldsDialog] = useState(false);
   const [pendingNewMetafields, setPendingNewMetafields] = useState<{ sourceField: string; targetField: string }[]>([]);
@@ -124,6 +128,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
 
   useEffect(() => {
     loadFieldMappings();
+    loadCustomFieldsWithData();
   }, [projectId]);
 
   // Auto-fetch metafields on mount
@@ -132,6 +137,47 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
       fetchShopifyMetafields(true);
     }
   }, [projectId, metafieldsLoaded]);
+
+  // Check which custom fields (FIELD_1-9) actually have data in canonical_products
+  const loadCustomFieldsWithData = async () => {
+    try {
+      // Fetch a sample of products to check which custom fields have data
+      const { data: products } = await supabase
+        .from('canonical_products')
+        .select('data')
+        .eq('project_id', projectId)
+        .limit(100);
+
+      if (!products || products.length === 0) {
+        setAvailableSourceFields(BASE_SOURCE_FIELDS);
+        return;
+      }
+
+      // Check which custom fields have non-empty data
+      const customFieldsWithData = new Set<string>();
+      
+      for (const product of products) {
+        const data = product.data as Record<string, any>;
+        if (!data) continue;
+        
+        for (const field of ALL_CUSTOM_FIELDS) {
+          const value = data[field];
+          // Check if field has a non-empty value
+          if (value !== undefined && value !== null && value !== '') {
+            customFieldsWithData.add(field);
+          }
+        }
+      }
+
+      // Combine base fields with custom fields that have data
+      const allFields = [...BASE_SOURCE_FIELDS, ...Array.from(customFieldsWithData).sort()];
+      setAvailableSourceFields(allFields);
+    } catch (error) {
+      console.error('Error loading custom fields with data:', error);
+      // Fallback to base fields only
+      setAvailableSourceFields(BASE_SOURCE_FIELDS);
+    }
+  };
 
   const loadFieldMappings = async () => {
     setLoading(true);
@@ -380,7 +426,7 @@ export function FieldMappingEditor({ projectId, showSaveButton = false, onSave }
                 <SelectValue placeholder="Vælg kilde felt..." />
               </SelectTrigger>
               <SelectContent>
-                {KNOWN_SOURCE_FIELDS.map(field => (
+                {availableSourceFields.map(field => (
                   <SelectItem key={field} value={field}>
                     {field}
                   </SelectItem>
