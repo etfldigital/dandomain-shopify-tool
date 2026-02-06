@@ -563,8 +563,14 @@ Deno.serve(async (req) => {
           
           while (!prepareDone && prepareAttempts < MAX_PREPARE_ATTEMPTS) {
             prepareAttempts++;
-            
+
             try {
+              const isTestMode = job.is_test_mode || false;
+              // In test mode, we want to prepare enough pending rows to reliably produce
+              // at least `job.batch_size` primary products (each primary => 1 Shopify product).
+              // prepare-upload itself will cap work to a safe subset.
+              const testLimit = job.batch_size || 3;
+
               const prepResponse = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
@@ -573,31 +579,32 @@ Deno.serve(async (req) => {
                   entityType: 'products',
                   previewOnly: false,
                   jobId: jobId,
+                  isTestMode,
+                  testLimit,
                 }),
               });
-              
+
               if (!prepResponse.ok) {
                 const errText = await prepResponse.text();
                 throw new Error(`prepare-upload failed: ${errText}`);
               }
-              
+
               const prepResult = await prepResponse.json();
               console.log(`[WORKER] prepare-upload progress: ${prepResult.progress || 'done'}/${prepResult.total || '?'}`);
-              
+
               if (prepResult.continue === true) {
                 // Need to call again
                 await sleep(100);
                 continue;
               }
-              
+
               // Preparation complete
               prepareDone = true;
               console.log(`[WORKER] prepare-upload complete. Groups: ${prepResult.stats?.groupsCreated || 'N/A'}`);
-              
             } catch (prepError) {
               const msg = prepError instanceof Error ? prepError.message : 'Unknown error';
               console.error(`[WORKER] prepare-upload error (attempt ${prepareAttempts}): ${msg}`);
-              
+
               if (prepareAttempts >= 3) {
                 throw new Error(`prepare-upload failed after ${prepareAttempts} attempts: ${msg}`);
               }

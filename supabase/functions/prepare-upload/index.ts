@@ -466,40 +466,59 @@ Deno.serve(async (req) => {
       previewOnly = true,
       includeGroups = false,
       jobId,
+      isTestMode = false,
+      testLimit = 3,
     }: {
       projectId: string;
       entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
       previewOnly?: boolean;
       includeGroups?: boolean;
       jobId?: string;
+      isTestMode?: boolean;
+      testLimit?: number;
     } = await req.json();
 
-    console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType}`);
+    console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType} (testMode=${isTestMode}, limit=${testLimit})`);
 
     if (entityType === 'products') {
-      // Fetch ALL products for grouping (in-memory)
+      // CRITICAL FIX: For test mode, do NOT fetch the entire catalogue.
+      // We only need a safe subset of pending rows to generate the primaries the test-run will upload.
       let allProducts: ProductRecord[] = [];
       let page = 0;
-      const pageSize = 1000;
 
-      while (true) {
-        const { data, error } = await supabase
+      const testFetchMax = Math.min(5000, Math.max(1500, testLimit * 800));
+      const pageSize = isTestMode ? 500 : 1000;
+      const maxProducts = isTestMode ? testFetchMax : Infinity;
+
+      while (allProducts.length < maxProducts) {
+        let query = supabase
           .from('canonical_products')
           .select('id, external_id, data, status')
           .eq('project_id', projectId)
-          .in('status', ['pending', 'mapped', 'uploaded'])
+          .order('id', { ascending: true })
           .range(page * pageSize, (page + 1) * pageSize - 1);
 
+        if (isTestMode) {
+          // Test uploads only care about uploadable (pending) items.
+          query = query.eq('status', 'pending');
+        } else {
+          query = query.in('status', ['pending', 'mapped', 'uploaded']);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
         if (!data || data.length === 0) break;
 
         allProducts = [...allProducts, ...data];
+
         if (data.length < pageSize) break;
         page++;
       }
 
       const pendingCount = allProducts.filter((p) => p.status === 'pending').length;
-      console.log(`[PREPARE] Fetched ${allProducts.length} products for regrouping (pending=${pendingCount})`);
+      console.log(
+        `[PREPARE] Fetched ${allProducts.length} products for ${isTestMode ? 'TEST' : 'FULL'} regrouping (pending=${pendingCount}) (testFetchMax=${isTestMode ? testFetchMax : 'n/a'})`
+      );
 
       const result = groupProducts(allProducts);
 
