@@ -553,72 +553,91 @@ Deno.serve(async (req) => {
         // prepare-upload groups products by title and marks one as primary per group.
         // Without this, each record would be uploaded as a separate Shopify product.
         let effectiveCurrentBatch = typeof job.current_batch === 'number' ? job.current_batch : 0;
+
         if (job.entity_type === 'products' && effectiveCurrentBatch === 0) {
-          console.log('[WORKER] Running prepare-upload for product grouping...');
-          
-          // Call prepare-upload (resumable - may need multiple calls)
-          let prepareDone = false;
-          let prepareAttempts = 0;
-          const MAX_PREPARE_ATTEMPTS = 100; // Safety limit
-          
-          while (!prepareDone && prepareAttempts < MAX_PREPARE_ATTEMPTS) {
-            prepareAttempts++;
+          const neededPrimaries = Math.min(job.batch_size || 3, 3);
+          const nowIso = () => new Date().toISOString();
 
-            try {
-              const isTestMode = job.is_test_mode || false;
-              // In test mode, we want to prepare enough pending rows to reliably produce
-              // at least `job.batch_size` primary products (each primary => 1 Shopify product).
-              // prepare-upload itself will cap work to a safe subset.
-              const testLimit = job.batch_size || 3;
+          // Fast path: if we already have enough prepared primary products pending, skip prepare-upload.
+          // This is common when the user has already run prepare previously.
+          const { count: preparedPrimariesCount, error: preparedCountError } = await supabase
+            .from('canonical_products')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', job.project_id)
+            .eq('status', 'pending')
+            .eq('data->>_isPrimary', 'true');
 
-              const prepResponse = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-                body: JSON.stringify({
-                  projectId: job.project_id,
-                  entityType: 'products',
-                  previewOnly: false,
-                  jobId: jobId,
-                  isTestMode,
-                  testLimit,
-                }),
-              });
+          if (!preparedCountError && (preparedPrimariesCount ?? 0) >= neededPrimaries) {
+            console.log(`[WORKER] Skipping prepare-upload (already have ${preparedPrimariesCount} pending primaries, need ${neededPrimaries})`);
 
-              if (!prepResponse.ok) {
-                const errText = await prepResponse.text();
-                throw new Error(`prepare-upload failed: ${errText}`);
-              }
+            await supabase
+              .from('upload_jobs')
+              .update({ current_batch: 1, last_heartbeat_at: nowIso() })
+              .eq('id', jobId)
+              .eq('current_batch', 0);
 
-              const prepResult = await prepResponse.json();
-              console.log(`[WORKER] prepare-upload progress: ${prepResult.progress || 'done'}/${prepResult.total || '?'}`);
+            effectiveCurrentBatch = 1;
+          } else {
+            console.log('[WORKER] Running prepare-upload for product grouping...');
 
-              if (prepResult.continue === true) {
-                // Need to call again
-                await sleep(100);
-                continue;
-              }
+            const isTestMode = job.is_test_mode || false;
+            const testLimit = neededPrimaries;
 
-              // Preparation complete
-              prepareDone = true;
-              console.log(`[WORKER] prepare-upload complete. Groups: ${prepResult.stats?.groupsCreated || 'N/A'}`);
-            } catch (prepError) {
-              const msg = prepError instanceof Error ? prepError.message : 'Unknown error';
-              console.error(`[WORKER] prepare-upload error (attempt ${prepareAttempts}): ${msg}`);
+            const prepResponse = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+              body: JSON.stringify({
+                projectId: job.project_id,
+                entityType: 'products',
+                previewOnly: false,
+                jobId,
+                isTestMode,
+                testLimit,
+              }),
+            });
 
-              if (prepareAttempts >= 3) {
-                throw new Error(`prepare-upload failed after ${prepareAttempts} attempts: ${msg}`);
-              }
-              await sleep(1000);
+            if (!prepResponse.ok) {
+              const errText = await prepResponse.text();
+              throw new Error(`prepare-upload failed: ${errText}`);
             }
+
+            const prepResult = await prepResponse.json();
+            console.log(`[WORKER] prepare-upload progress: ${prepResult.progress || 'done'}/${prepResult.total || '?'}`);
+
+            if (prepResult.continue === true) {
+              // Preparation isn't done yet. Schedule another worker tick soon.
+              await supabase
+                .from('upload_jobs')
+                .update({ last_heartbeat_at: nowIso() })
+                .eq('id', jobId);
+
+              const retryDelay = 400;
+              runInBackground((async () => {
+                await sleep(retryDelay);
+                const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+                await fetch(functionUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+                  body: JSON.stringify({ jobId, action: 'process' }),
+                });
+              })());
+
+              return new Response(JSON.stringify({ success: true, preparing: true, continue: true }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              });
+            }
+
+            // Preparation complete
+            console.log(`[WORKER] prepare-upload complete. Groups: ${prepResult.stats?.groupsCreated || 'N/A'}`);
+
+            await supabase
+              .from('upload_jobs')
+              .update({ current_batch: 1, last_heartbeat_at: nowIso() })
+              .eq('id', jobId)
+              .eq('current_batch', 0);
+
+            effectiveCurrentBatch = 1;
           }
-          
-          // Mark preparation as done
-          await supabase
-            .from('upload_jobs')
-            .update({ current_batch: 1, last_heartbeat_at: new Date().toISOString() })
-            .eq('id', jobId)
-            .eq('current_batch', 0);
-          effectiveCurrentBatch = 1;
         }
         // ==============================================================
 
