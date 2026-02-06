@@ -1067,9 +1067,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         )}
                       </div>
                       <div>
-                        <p className="font-medium text-sm">Udtræk vendor fra produkttitel</p>
+                        <p className="font-medium text-sm">Brug eksisterende vendor felt når udfyldt - ellers træk fra produkttitel</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Titlen forbliver uændret. Vendor udtrækkes automatisk fra titlen.
+                          Titlen forbliver uændret. Bruger MANUFAC_ID hvis udfyldt, ellers udtrækkes vendor fra titlen.
                         </p>
                         <div className="mt-2 text-xs bg-muted/50 p-2 rounded space-y-1">
                           <p className="font-mono">"BLACK COLOUR BLUSE, ..." → Vendor: "BLACK COLOUR"</p>
