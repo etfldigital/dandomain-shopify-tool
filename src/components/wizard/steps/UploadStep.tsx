@@ -128,6 +128,11 @@ interface StatusCounts {
   failed: number;
 }
 
+// Shopify live product count (fetched from API)
+interface ShopifyLiveCounts {
+  products: number | null;
+}
+
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
   { type: 'categories', icon: Folder, label: 'Collections' },
@@ -183,6 +188,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   });
   const lastCountsFetchRef = useRef<number>(0);
   const autoRecoverRef = useRef<Record<string, number>>({}); // jobId -> last auto recover ts
+  
+  // Shopify live counts (actual product count from Shopify API)
+  const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null });
+  const lastShopifyFetchRef = useRef<number>(0);
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
@@ -270,10 +279,33 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
+  // Fetch live product count from Shopify API
+  const fetchShopifyLiveCounts = async () => {
+    const now = Date.now();
+    // Throttle: only fetch every 30 seconds
+    if (now - lastShopifyFetchRef.current < 30_000) {
+      return;
+    }
+    lastShopifyFetchRef.current = now;
+    
+    try {
+      const response = await supabase.functions.invoke('shopify-products-count', {
+        body: { projectId: project.id },
+      });
+      
+      if (response.data?.success && typeof response.data.count === 'number') {
+        setShopifyLiveCounts({ products: response.data.count });
+      }
+    } catch (e) {
+      console.warn('[UploadStep] Failed to fetch Shopify live counts:', e);
+    }
+  };
+
   useEffect(() => {
     // Initial fetch
     fetchJobs();
     fetchStatusCounts();
+    fetchShopifyLiveCounts();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -346,6 +378,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     const pollTimer = window.setInterval(() => {
       fetchJobs();
       fetchStatusCounts(); // Throttled internally
+      fetchShopifyLiveCounts(); // Throttled internally (30s)
     }, 15_000);
 
     // Watchdog for stalled jobs
@@ -1224,7 +1257,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           ) : (
                             <span>
                               {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
-                              {counts.uploaded > 0 && <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>}
+                              {/* For products, show Shopify live count instead of DB uploaded count */}
+                              {type === 'products' && shopifyLiveCounts.products !== null ? (
+                                <span className="text-green-600 mr-2">{shopifyLiveCounts.products.toLocaleString('da-DK')} i Shopify</span>
+                              ) : counts.uploaded > 0 ? (
+                                <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>
+                              ) : null}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
                               {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
