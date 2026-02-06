@@ -492,10 +492,18 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       let vendor = data.vendor || '';
       
       // Apply vendor extraction from title if enabled (new rule)
+      // MANUFAC_ID (original vendor) takes precedence if filled, otherwise extract from title
       if (mappingRules.vendorExtractionMode === 'extract_from_title') {
-        const extractedVendor = extractVendorFromTitle(data.title || '');
-        if (extractedVendor) {
-          vendor = extractedVendor;
+        const originalVendor = data.vendor?.trim() || '';
+        if (originalVendor) {
+          // Use the original MANUFAC_ID value as vendor
+          vendor = originalVendor;
+        } else {
+          // MANUFAC_ID is empty, extract vendor from product title
+          const extractedVendor = extractVendorFromTitle(data.title || '');
+          if (extractedVendor) {
+            vendor = extractedVendor;
+          }
         }
         // Title remains unchanged when using vendor extraction mode
       }
