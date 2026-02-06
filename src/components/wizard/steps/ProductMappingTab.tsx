@@ -222,30 +222,50 @@ const defaultMappingRules: MappingRules = {
 /**
  * Extract vendor from a DanDomain-style product title.
  * 
+/**
+ * Convert a string to Title Case (first letter of each word uppercase, rest lowercase)
+ */
+function toTitleCase(str: string): string {
+  return str.toLowerCase().replace(/(?:^|\s)\S/g, (match) => match.toUpperCase());
+}
+
+/**
+ * Extract vendor and cleaned title from a product title.
+ * 
  * Input format: BRAND + PRODUCTTYPE, MODEL + DESCRIPTORS + ENGLISH PRODUCTTYPE, COLOR / VARIANT
  * Examples:
- *   - "BLACK COLOUR BLUSE, BCLUNA BLOUSE, LILY BRONZE" → "BLACK COLOUR"
- *   - "MERAKI BODY LOTION, BODYLOTION NORTHERN DAWN 275 ML" → "MERAKI"
+ *   - "BLACK COLOUR HÅRSPÆNDE, BCPREMIUM RHINESTONE HAIR CLAW, PURPLE/WHITE CONFETTI" 
+ *       → { vendor: "Black Colour", cleanedTitle: "BCPREMIUM RHINESTONE HAIR CLAW, PURPLE/WHITE CONFETTI" }
+ *   - "MERAKI BODY LOTION, BODYLOTION NORTHERN DAWN 275 ML" 
+ *       → { vendor: "Meraki", cleanedTitle: "BODYLOTION NORTHERN DAWN 275 ML" }
  * 
  * Logic:
- * 1. Split title on first comma → left_part
+ * 1. Split title on first comma → left_part (contains "BRAND PRODUCTTYPE") and right_part (rest of title)
  * 2. Check if last two words match a known compound product type (e.g., BODY LOTION)
  * 3. If match: Vendor = all words before those two
- * 4. Else: Vendor = all words except final word
+ * 4. Else: Vendor = all words except final word (the product type)
  * 5. Fallback: first word as vendor
+ * 
+ * Returns: { vendor: string (Title Case), cleanedTitle: string (rest after first comma) }
  */
-function extractVendorFromTitle(title: string): string {
-  if (!title) return '';
+function extractVendorFromTitle(title: string): { vendor: string; cleanedTitle: string } {
+  if (!title) return { vendor: '', cleanedTitle: '' };
   
   // Split on first comma
   const commaIndex = title.indexOf(',');
   const leftPart = commaIndex > 0 ? title.substring(0, commaIndex).trim() : title.trim();
+  const rightPart = commaIndex > 0 ? title.substring(commaIndex + 1).trim() : '';
   
   // Tokenize into words
   const words = leftPart.split(/\s+/).filter(w => w.length > 0);
   
-  if (words.length === 0) return '';
-  if (words.length === 1) return words[0]; // Only one word, use it as vendor
+  if (words.length === 0) return { vendor: '', cleanedTitle: rightPart };
+  if (words.length === 1) {
+    // Only one word in left part - use it as vendor, right part is the cleaned title
+    return { vendor: toTitleCase(words[0]), cleanedTitle: rightPart };
+  }
+  
+  let vendorWords: string[];
   
   // Check if last two words form a known compound product type
   if (words.length >= 2) {
@@ -253,15 +273,21 @@ function extractVendorFromTitle(title: string): string {
     if (KNOWN_COMPOUND_PRODUCT_TYPES.includes(lastTwoWords)) {
       // Vendor is all words before the compound product type
       if (words.length > 2) {
-        return words.slice(0, words.length - 2).join(' ');
+        vendorWords = words.slice(0, words.length - 2);
+      } else {
+        // Only two words and they match a compound type - fallback to first word
+        vendorWords = [words[0]];
       }
-      // Only two words and they match a compound type - fallback to first word
-      return words[0];
+    } else {
+      // Default: Vendor = all words except the last one (product type)
+      vendorWords = words.slice(0, words.length - 1);
     }
+  } else {
+    vendorWords = words.slice(0, words.length - 1);
   }
   
-  // Default: Vendor = all words except the last one (product type)
-  return words.slice(0, words.length - 1).join(' ');
+  const vendor = toTitleCase(vendorWords.join(' '));
+  return { vendor, cleanedTitle: rightPart };
 }
 
 export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
@@ -493,19 +519,27 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       
       // Apply vendor extraction from title if enabled (new rule)
       // MANUFAC_ID (original vendor) takes precedence if filled, otherwise extract from title
+      // Also cleans the title by removing vendor + producttype + first comma
       if (mappingRules.vendorExtractionMode === 'extract_from_title') {
         const originalVendor = data.vendor?.trim() || '';
         if (originalVendor) {
-          // Use the original MANUFAC_ID value as vendor
-          vendor = originalVendor;
+          // Use the original MANUFAC_ID value as vendor (convert to Title Case)
+          vendor = toTitleCase(originalVendor);
+          // Still clean the title by extracting and removing the prefix
+          const { cleanedTitle } = extractVendorFromTitle(data.title || '');
+          if (cleanedTitle) {
+            transformedTitle = cleanedTitle;
+          }
         } else {
           // MANUFAC_ID is empty, extract vendor from product title
-          const extractedVendor = extractVendorFromTitle(data.title || '');
+          const { vendor: extractedVendor, cleanedTitle } = extractVendorFromTitle(data.title || '');
           if (extractedVendor) {
             vendor = extractedVendor;
           }
+          if (cleanedTitle) {
+            transformedTitle = cleanedTitle;
+          }
         }
-        // Title remains unchanged when using vendor extraction mode
       }
       
       // Helper to normalize brand names for comparison (remove +, &, extra spaces)
@@ -1069,11 +1103,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                       <div>
                         <p className="font-medium text-sm">Brug eksisterende vendor felt når udfyldt - ellers træk fra produkttitel</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Titlen forbliver uændret. Bruger MANUFAC_ID hvis udfyldt, ellers udtrækkes vendor fra titlen.
+                          Vendor konverteres til Title Case. Titlen renses for brand + produkttype + første komma.
                         </p>
                         <div className="mt-2 text-xs bg-muted/50 p-2 rounded space-y-1">
-                          <p className="font-mono">"BLACK COLOUR BLUSE, ..." → Vendor: "BLACK COLOUR"</p>
-                          <p className="font-mono">"MERAKI BODY LOTION, ..." → Vendor: "MERAKI"</p>
+                          <p className="font-mono">"BLACK COLOUR HÅRSPÆNDE, BCPREMIUM..." → Vendor: "Black Colour", Titel: "BCPREMIUM..."</p>
+                          <p className="font-mono">"MERAKI BODY LOTION, BODYLOTION..." → Vendor: "Meraki", Titel: "BODYLOTION..."</p>
                         </div>
                         <p className="text-xs text-muted-foreground mt-2">
                           Understøtter sammensatte produkttyper (BODY LOTION, HAND SOAP, osv.)
