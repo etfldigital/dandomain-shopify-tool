@@ -210,9 +210,36 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
 
     // Products
-    const { count: productPending } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
-    const { count: productUploaded } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
-    const { count: productFailed } = await supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
+    // IMPORTANT: Count primary products when possible (to match what Shopify actually shows).
+    // Fallback: if data isn't prepared yet (_isPrimary missing), we use raw pending count so test uploads can still start.
+    const { count: productPendingPrimary } = await supabase
+      .from('canonical_products')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', project.id)
+      .eq('status', 'pending')
+      .eq('data->>_isPrimary', 'true');
+
+    const { count: productPendingRaw } = await supabase
+      .from('canonical_products')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', project.id)
+      .eq('status', 'pending');
+
+    const { count: productUploaded } = await supabase
+      .from('canonical_products')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', project.id)
+      .eq('status', 'uploaded')
+      .eq('data->>_isPrimary', 'true');
+
+    const { count: productFailed } = await supabase
+      .from('canonical_products')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', project.id)
+      .eq('status', 'failed')
+      .eq('data->>_isPrimary', 'true');
+
+    const productPending = (productPendingPrimary ?? 0) > 0 ? productPendingPrimary : productPendingRaw;
     counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
 
     // Customers
