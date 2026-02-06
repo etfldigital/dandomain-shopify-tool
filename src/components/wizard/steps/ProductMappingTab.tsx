@@ -229,6 +229,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [shopifyMetafields, setShopifyMetafields] = useState<ShopifyMetafield[]>([]);
   const [fetchingMetafields, setFetchingMetafields] = useState(false);
   const [metafieldsLoaded, setMetafieldsLoaded] = useState(false);
+  
+  // DanDomain base URL for resolving relative image paths
+  const [danDomainBaseUrl, setDanDomainBaseUrl] = useState<string | null>(null);
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -290,6 +293,17 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
   const loadData = async () => {
     setLoading(true);
+    
+    // Load project to get DanDomain base URL for image resolution
+    const { data: project } = await supabase
+      .from('projects')
+      .select('dandomain_base_url')
+      .eq('id', projectId)
+      .single();
+    
+    if (project?.dandomain_base_url) {
+      setDanDomainBaseUrl(project.dandomain_base_url);
+    }
     
     // Load product list
     const { count } = await supabase
@@ -1544,7 +1558,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                             <img 
                               src={product.original.images[0].startsWith('http') 
                                 ? product.original.images[0] 
-                                : `https://maggiesgemakker.dk${product.original.images[0]}`} 
+                                : danDomainBaseUrl 
+                                  ? `${danDomainBaseUrl.replace(/\/$/, '')}${product.original.images[0].startsWith('/') ? '' : '/'}${product.original.images[0]}`
+                                  : product.original.images[0]} 
                               alt="Primært produktbillede"
                               className="object-contain w-full h-full"
                               onError={(e) => {
@@ -1559,7 +1575,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                               {product.original.images.slice(1, 5).map((img, i) => (
                                 <div key={i} className="aspect-square overflow-hidden rounded border bg-background">
                                   <img 
-                                    src={img.startsWith('http') ? img : `https://maggiesgemakker.dk${img}`} 
+                                    src={img.startsWith('http') 
+                                      ? img 
+                                      : danDomainBaseUrl 
+                                        ? `${danDomainBaseUrl.replace(/\/$/, '')}${img.startsWith('/') ? '' : '/'}${img}`
+                                        : img} 
                                     alt={`Galleri billede ${i + 2}`}
                                     className="object-contain w-full h-full"
                                     onError={(e) => {
