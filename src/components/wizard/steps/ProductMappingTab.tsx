@@ -26,13 +26,32 @@ interface ProductMappingTabProps {
   projectId: string;
 }
 
+// Vendor extraction mode for the new title-based rule
+type VendorExtractionMode = 'none' | 'extract_from_title';
+
 interface MappingRules {
   stripVendorFromTitle: boolean;
   vendorSeparator: string;
   excludeUntitled: boolean;
   excludeZeroPrice: boolean;
   excludeNoImages: boolean;
+  // New: Vendor extraction from product title
+  vendorExtractionMode: VendorExtractionMode;
 }
+
+// Known compound product types (two words) for vendor extraction
+const KNOWN_COMPOUND_PRODUCT_TYPES = [
+  'BODY LOTION',
+  'HAND SOAP',
+  'FACE CREAM',
+  'BODY WASH',
+  'HAND CREAM',
+  'BODY OIL',
+  'FACE OIL',
+  'SHOWER GEL',
+  'BODY SCRUB',
+  'LIP BALM',
+];
 
 interface FieldMapping {
   id: string;
@@ -197,7 +216,53 @@ const defaultMappingRules: MappingRules = {
   excludeUntitled: true,
   excludeZeroPrice: false,
   excludeNoImages: false,
+  vendorExtractionMode: 'none',
 };
+
+/**
+ * Extract vendor from a DanDomain-style product title.
+ * 
+ * Input format: BRAND + PRODUCTTYPE, MODEL + DESCRIPTORS + ENGLISH PRODUCTTYPE, COLOR / VARIANT
+ * Examples:
+ *   - "BLACK COLOUR BLUSE, BCLUNA BLOUSE, LILY BRONZE" → "BLACK COLOUR"
+ *   - "MERAKI BODY LOTION, BODYLOTION NORTHERN DAWN 275 ML" → "MERAKI"
+ * 
+ * Logic:
+ * 1. Split title on first comma → left_part
+ * 2. Check if last two words match a known compound product type (e.g., BODY LOTION)
+ * 3. If match: Vendor = all words before those two
+ * 4. Else: Vendor = all words except final word
+ * 5. Fallback: first word as vendor
+ */
+function extractVendorFromTitle(title: string): string {
+  if (!title) return '';
+  
+  // Split on first comma
+  const commaIndex = title.indexOf(',');
+  const leftPart = commaIndex > 0 ? title.substring(0, commaIndex).trim() : title.trim();
+  
+  // Tokenize into words
+  const words = leftPart.split(/\s+/).filter(w => w.length > 0);
+  
+  if (words.length === 0) return '';
+  if (words.length === 1) return words[0]; // Only one word, use it as vendor
+  
+  // Check if last two words form a known compound product type
+  if (words.length >= 2) {
+    const lastTwoWords = `${words[words.length - 2]} ${words[words.length - 1]}`.toUpperCase();
+    if (KNOWN_COMPOUND_PRODUCT_TYPES.includes(lastTwoWords)) {
+      // Vendor is all words before the compound product type
+      if (words.length > 2) {
+        return words.slice(0, words.length - 2).join(' ');
+      }
+      // Only two words and they match a compound type - fallback to first word
+      return words[0];
+    }
+  }
+  
+  // Default: Vendor = all words except the last one (product type)
+  return words.slice(0, words.length - 1).join(' ');
+}
 
 export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [loading, setLoading] = useState(true);
@@ -424,12 +489,23 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       // Transform title based on rules - fuzzy case-insensitive vendor stripping
       let transformedTitle = data.title || '';
-      const vendor = data.vendor || '';
+      let vendor = data.vendor || '';
+      
+      // Apply vendor extraction from title if enabled (new rule)
+      if (mappingRules.vendorExtractionMode === 'extract_from_title') {
+        const extractedVendor = extractVendorFromTitle(data.title || '');
+        if (extractedVendor) {
+          vendor = extractedVendor;
+        }
+        // Title remains unchanged when using vendor extraction mode
+      }
       
       // Helper to normalize brand names for comparison (remove +, &, extra spaces)
       const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
       
-      if (mappingRules.stripVendorFromTitle && vendor) {
+      // Apply title stripping only if NOT using vendor extraction mode
+      // (vendor extraction mode keeps title unchanged)
+      if (mappingRules.vendorExtractionMode !== 'extract_from_title' && mappingRules.stripVendorFromTitle && vendor) {
         const normalizedVendor = normalizeBrand(vendor);
         const separators = [' - ', ' – ', ' — ', ': ', ' | '];
         let stripped = false;
@@ -866,56 +942,176 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                 Konfigurer hvordan produktdata transformeres til Shopify
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>Fjern brand fra titel</Label>
-                  <p className="text-sm text-muted-foreground">
-                    "Mads Nørgaard - T-shirt" → "T-shirt" (brand i Vendor felt)
+            <CardContent className="space-y-6">
+              {/* Vendor Extraction Section */}
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">Vendor/Forhandler</Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Vælg hvordan leverandør (vendor) skal bestemmes
                   </p>
                 </div>
-                <Switch
-                  checked={mappingRules.stripVendorFromTitle}
-                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, stripVendorFromTitle: checked })}
-                />
+                
+                <div className="space-y-3 pl-4 border-l-2 border-muted">
+                  {/* Option 1: No vendor transformation */}
+                  <div 
+                    className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                      mappingRules.vendorExtractionMode === 'none' && !mappingRules.stripVendorFromTitle
+                        ? 'border-primary bg-primary/5' 
+                        : 'border-border hover:border-muted-foreground/50'
+                    }`}
+                    onClick={() => setMappingRules({ 
+                      ...mappingRules, 
+                      vendorExtractionMode: 'none',
+                      stripVendorFromTitle: false 
+                    })}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
+                        mappingRules.vendorExtractionMode === 'none' && !mappingRules.stripVendorFromTitle
+                          ? 'border-primary bg-primary' 
+                          : 'border-muted-foreground/50'
+                      }`}>
+                        {mappingRules.vendorExtractionMode === 'none' && !mappingRules.stripVendorFromTitle && (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <div className="w-1.5 h-1.5 rounded-full bg-background" />
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">Brug eksisterende vendor felt</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Vendor hentes fra produktets eksisterende MANUFAC_ID eller vendor felt
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Option 2: Strip vendor from title (existing rule) */}
+                  <div 
+                    className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                      mappingRules.vendorExtractionMode === 'none' && mappingRules.stripVendorFromTitle
+                        ? 'border-primary bg-primary/5' 
+                        : 'border-border hover:border-muted-foreground/50'
+                    }`}
+                    onClick={() => setMappingRules({ 
+                      ...mappingRules, 
+                      vendorExtractionMode: 'none',
+                      stripVendorFromTitle: true 
+                    })}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
+                        mappingRules.vendorExtractionMode === 'none' && mappingRules.stripVendorFromTitle
+                          ? 'border-primary bg-primary' 
+                          : 'border-muted-foreground/50'
+                      }`}>
+                        {mappingRules.vendorExtractionMode === 'none' && mappingRules.stripVendorFromTitle && (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <div className="w-1.5 h-1.5 rounded-full bg-background" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">Fjern brand fra titel</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          "Mads Nørgaard - T-shirt" → Titel: "T-shirt", Vendor: fra eksisterende felt
+                        </p>
+                        {mappingRules.vendorExtractionMode === 'none' && mappingRules.stripVendorFromTitle && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <Label className="text-xs">Separator:</Label>
+                            <Input
+                              value={mappingRules.vendorSeparator}
+                              onChange={(e) => setMappingRules({ ...mappingRules, vendorSeparator: e.target.value })}
+                              placeholder=" - "
+                              className="w-20 h-7 text-xs"
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Option 3: Extract vendor from title (new rule) */}
+                  <div 
+                    className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                      mappingRules.vendorExtractionMode === 'extract_from_title'
+                        ? 'border-primary bg-primary/5' 
+                        : 'border-border hover:border-muted-foreground/50'
+                    }`}
+                    onClick={() => setMappingRules({ 
+                      ...mappingRules, 
+                      vendorExtractionMode: 'extract_from_title',
+                      stripVendorFromTitle: false 
+                    })}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
+                        mappingRules.vendorExtractionMode === 'extract_from_title'
+                          ? 'border-primary bg-primary' 
+                          : 'border-muted-foreground/50'
+                      }`}>
+                        {mappingRules.vendorExtractionMode === 'extract_from_title' && (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <div className="w-1.5 h-1.5 rounded-full bg-background" />
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">Udtræk vendor fra produkttitel</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Titlen forbliver uændret. Vendor udtrækkes automatisk fra titlen.
+                        </p>
+                        <div className="mt-2 text-xs bg-muted/50 p-2 rounded space-y-1">
+                          <p className="font-mono">"BLACK COLOUR BLUSE, ..." → Vendor: "BLACK COLOUR"</p>
+                          <p className="font-mono">"MERAKI BODY LOTION, ..." → Vendor: "MERAKI"</p>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Understøtter sammensatte produkttyper (BODY LOTION, HAND SOAP, osv.)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              
-              {mappingRules.stripVendorFromTitle && (
-                <div className="pl-4 border-l-2 border-muted">
-                  <Label>Separator mellem brand og titel</Label>
-                  <Input
-                    value={mappingRules.vendorSeparator}
-                    onChange={(e) => setMappingRules({ ...mappingRules, vendorSeparator: e.target.value })}
-                    placeholder=" - "
-                    className="w-24 mt-1"
+
+              <Separator />
+
+              {/* Exclusion Rules */}
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">Ekskluderingsregler</Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Bestem hvilke produkter der skal udelukkes fra upload
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Ekskluder "Untitled" produkter</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {untitledCount} produkter uden navn vil ikke blive oprettet
+                    </p>
+                  </div>
+                  <Switch
+                    checked={mappingRules.excludeUntitled}
+                    onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeUntitled: checked })}
                   />
                 </div>
-              )}
 
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>Ekskluder "Untitled" produkter</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {untitledCount} produkter uden navn vil ikke blive oprettet
-                  </p>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Ekskluder produkter med pris 0</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Produkter uden pris vil ikke blive oprettet
+                    </p>
+                  </div>
+                  <Switch
+                    checked={mappingRules.excludeZeroPrice}
+                    onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeZeroPrice: checked })}
+                  />
                 </div>
-                <Switch
-                  checked={mappingRules.excludeUntitled}
-                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeUntitled: checked })}
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>Ekskluder produkter med pris 0</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Produkter uden pris vil ikke blive oprettet
-                  </p>
-                </div>
-                <Switch
-                  checked={mappingRules.excludeZeroPrice}
-                  onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeZeroPrice: checked })}
-                />
               </div>
             </CardContent>
           </Card>
