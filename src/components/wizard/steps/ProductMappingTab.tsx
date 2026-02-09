@@ -448,12 +448,24 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         .maybeSingle();
 
       if (data?.mappings) {
-        const mappings = (data.mappings as any[]).filter(m => m.type === 'field');
-        setFieldMappings(mappings.map((m, i) => ({
+        const allMappings = data.mappings as any[];
+        
+        // Load field mappings
+        const fieldMappingsData = allMappings.filter(m => m.type === 'field');
+        setFieldMappings(fieldMappingsData.map((m, i) => ({
           id: `mapping-${i}`,
           sourceField: m.sourceField,
           targetField: m.targetField,
         })));
+        
+        // Load transformation rules
+        const rulesMapping = allMappings.find(m => m.type === 'transformationRules');
+        if (rulesMapping?.rules) {
+          setMappingRules({
+            ...defaultMappingRules,
+            ...rulesMapping.rules,
+          });
+        }
       }
     } catch (error) {
       console.error('Error loading field mappings:', error);
@@ -891,7 +903,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     toast.success(`${newMappings.length} felt-mappings tilføjet automatisk`);
   };
 
-  const saveMappings = async (mappings: FieldMapping[]) => {
+  const saveMappings = async (mappings: FieldMapping[], rules?: MappingRules) => {
     try {
       const { data: existing } = await supabase
         .from('mapping_profiles')
@@ -900,21 +912,34 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         .eq('is_active', true)
         .maybeSingle();
 
-      const mappingsData = mappings.map(m => ({
+      const fieldMappingsData = mappings.map(m => ({
         type: 'field',
         sourceField: m.sourceField,
         targetField: m.targetField,
         entityType: 'products',
       }));
 
+      // Include transformation rules if provided
+      const rulesData = rules ? [{
+        type: 'transformationRules',
+        rules: rules,
+      }] : [];
+
       if (existing) {
         const existingMappings = (existing.mappings as any[]) || [];
-        const otherMappings = existingMappings.filter(m => m.type !== 'field');
+        // Keep mappings that are not field mappings or transformation rules
+        const otherMappings = existingMappings.filter(m => m.type !== 'field' && m.type !== 'transformationRules');
+        
+        // If rules not provided, preserve existing rules
+        let preservedRules: any[] = [];
+        if (!rules) {
+          preservedRules = existingMappings.filter(m => m.type === 'transformationRules');
+        }
         
         await supabase
           .from('mapping_profiles')
           .update({ 
-            mappings: [...otherMappings, ...mappingsData],
+            mappings: [...otherMappings, ...fieldMappingsData, ...rulesData, ...preservedRules],
             updated_at: new Date().toISOString(),
           })
           .eq('id', existing.id);
@@ -924,13 +949,23 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           .insert({
             project_id: projectId,
             name: 'Standard',
-            mappings: mappingsData,
+            mappings: [...fieldMappingsData, ...rulesData] as any,
             is_active: true,
           });
       }
     } catch (error) {
       console.error('Error saving field mappings:', error);
       toast.error('Fejl ved gemning af felt-mappings');
+    }
+  };
+
+  // Save transformation rules when they change
+  const saveTransformationRules = async (rules: MappingRules) => {
+    try {
+      await saveMappings(fieldMappings, rules);
+      toast.success('Transformationsregler gemt');
+    } catch (error) {
+      console.error('Error saving transformation rules:', error);
     }
   };
 
@@ -1002,11 +1037,15 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         ? 'border-primary bg-primary/5' 
                         : 'border-border hover:border-muted-foreground/50'
                     }`}
-                    onClick={() => setMappingRules({ 
-                      ...mappingRules, 
-                      vendorExtractionMode: 'none',
-                      stripVendorFromTitle: false 
-                    })}
+                    onClick={() => {
+                      const newRules = { 
+                        ...mappingRules, 
+                        vendorExtractionMode: 'none' as VendorExtractionMode,
+                        stripVendorFromTitle: false 
+                      };
+                      setMappingRules(newRules);
+                      saveTransformationRules(newRules);
+                    }}
                   >
                     <div className="flex items-start gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
@@ -1036,11 +1075,15 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         ? 'border-primary bg-primary/5' 
                         : 'border-border hover:border-muted-foreground/50'
                     }`}
-                    onClick={() => setMappingRules({ 
-                      ...mappingRules, 
-                      vendorExtractionMode: 'none',
-                      stripVendorFromTitle: true 
-                    })}
+                    onClick={() => {
+                      const newRules = { 
+                        ...mappingRules, 
+                        vendorExtractionMode: 'none' as VendorExtractionMode,
+                        stripVendorFromTitle: true 
+                      };
+                      setMappingRules(newRules);
+                      saveTransformationRules(newRules);
+                    }}
                   >
                     <div className="flex items-start gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
@@ -1065,6 +1108,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                             <Input
                               value={mappingRules.vendorSeparator}
                               onChange={(e) => setMappingRules({ ...mappingRules, vendorSeparator: e.target.value })}
+                              onBlur={() => saveTransformationRules(mappingRules)}
                               placeholder=" - "
                               className="w-20 h-7 text-xs"
                               onClick={(e) => e.stopPropagation()}
@@ -1082,11 +1126,15 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         ? 'border-primary bg-primary/5' 
                         : 'border-border hover:border-muted-foreground/50'
                     }`}
-                    onClick={() => setMappingRules({ 
-                      ...mappingRules, 
-                      vendorExtractionMode: 'extract_from_title',
-                      stripVendorFromTitle: false 
-                    })}
+                    onClick={() => {
+                      const newRules = { 
+                        ...mappingRules, 
+                        vendorExtractionMode: 'extract_from_title' as VendorExtractionMode,
+                        stripVendorFromTitle: false 
+                      };
+                      setMappingRules(newRules);
+                      saveTransformationRules(newRules);
+                    }}
                   >
                     <div className="flex items-start gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 mt-0.5 flex-shrink-0 ${
