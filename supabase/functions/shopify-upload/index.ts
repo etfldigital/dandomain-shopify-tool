@@ -169,6 +169,54 @@ const skuToShopifyMap: Map<string, { productId: string; variantId: string }> = n
 // Lock duration: 2 minutes - if a worker crashes, the lock expires and another can take over
 const LOCK_DURATION_MS = 2 * 60 * 1000;
 
+type VendorExtractionMode = 'none' | 'extract_from_title';
+
+type ProductTransformationRules = {
+  stripVendorFromTitle: boolean;
+  vendorSeparator: string;
+  vendorExtractionMode: VendorExtractionMode;
+};
+
+const defaultProductTransformationRules: ProductTransformationRules = {
+  stripVendorFromTitle: true,
+  vendorSeparator: ' - ',
+  vendorExtractionMode: 'none',
+};
+
+async function loadProductTransformationRules(supabase: any, projectId: string): Promise<ProductTransformationRules> {
+  try {
+    const { data, error } = await supabase
+      .from('mapping_profiles')
+      .select('mappings')
+      .eq('project_id', projectId)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (error || !data?.mappings) return defaultProductTransformationRules;
+
+    const mappings = Array.isArray(data.mappings) ? data.mappings : [];
+    const rules = mappings.find((m: any) => m?.type === 'transformationRules')?.rules as any;
+
+    const stripVendorFromTitle =
+      typeof rules?.stripVendorFromTitle === 'boolean'
+        ? rules.stripVendorFromTitle
+        : defaultProductTransformationRules.stripVendorFromTitle;
+
+    const vendorSeparator =
+      typeof rules?.vendorSeparator === 'string' && rules.vendorSeparator.trim().length > 0
+        ? rules.vendorSeparator
+        : defaultProductTransformationRules.vendorSeparator;
+
+    const vendorExtractionMode: VendorExtractionMode =
+      rules?.vendorExtractionMode === 'extract_from_title' ? 'extract_from_title' : 'none';
+
+    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode };
+  } catch (e) {
+    console.warn('[PRODUCTS] Failed to load transformation rules, using defaults:', e);
+    return defaultProductTransformationRules;
+  }
+}
+
 async function loadCategoryTags(supabase: any, projectId: string): Promise<Map<string, string>> {
   const cache = new Map<string, string>();
   const { data: categories, error } = await supabase
@@ -208,9 +256,9 @@ async function uploadProducts(
   dandomainBaseUrl: string,
   startTime: number,
   timeBudget: number
-): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
   categoryTagCache = await loadCategoryTags(supabase, projectId);
+  const transformationRules = await loadProductTransformationRules(supabase, projectId);
   
   // ============================================================================
   // STEP 1: Clear expired locks from crashed workers
@@ -285,8 +333,16 @@ async function uploadProducts(
     groupsProcessed++;
 
     try {
-      const result = await processProductGroup(supabase, shopifyUrl, token, groupKey, items, dandomainBaseUrl, projectId);
-      
+      const result = await processProductGroup(
+        supabase,
+        shopifyUrl,
+        token,
+        groupKey,
+        items,
+        dandomainBaseUrl,
+        projectId,
+        transformationRules
+      );
       if ('rateLimited' in result && result.rateLimited) {
         rateLimited = true;
         retryAfterSeconds = Math.ceil((result.retryAfterMs || 2000) / 1000);
@@ -383,11 +439,19 @@ async function processProductGroup(
   groupKey: string,
   items: any[],
   dandomainBaseUrl: string,
-  projectId: string
+  projectId: string,
+  rules: ProductTransformationRules
 ): Promise<{ skipped?: boolean; error?: string; rateLimited?: boolean; retryAfterMs?: number }> {
   
   const data = items[0].data || {};
-  const title = String(data._groupTitle || data.title || '').trim();
+  const originalTitle = String(data.title || '').trim();
+  const groupedTitle = String(data._groupTitle || originalTitle || '').trim();
+
+  const allowTitleTransform = rules.stripVendorFromTitle || rules.vendorExtractionMode === 'extract_from_title';
+
+  // If title transforms are disabled ("Brug eksisterende vendor felt"), keep the title exactly as-is.
+  const title = allowTitleTransform ? groupedTitle : originalTitle;
+
   const vendor = String(data.vendor || '').trim();
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
   const primaryItem = items[0];
@@ -518,22 +582,39 @@ async function processProductGroup(
   // PHASE 3: PREPARE PRODUCT DATA
   // ============================================================================
   const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
+  const allowTitleTransform = rules.stripVendorFromTitle || rules.vendorExtractionMode === 'extract_from_title';
   
+  // Apply title stripping only when the user's transformation rules allow it.
+  // When "Brug eksisterende vendor felt" is selected in the UI, we persist stripVendorFromTitle=false,
+  // and we must NOT modify the product title during upload.
   let transformedTitle = title;
-  if (vendor) {
+  if (allowTitleTransform && vendor) {
     const normalizedVendor = normalizeBrand(vendor);
-    const separators = [' - ', ' – ', ' — ', ': ', ' | '];
+
+    const separators = Array.from(
+      new Set([
+        rules.vendorSeparator,
+        ' - ',
+        ' – ',
+        ' — ',
+        ': ',
+        ' | ',
+      ].filter((s) => typeof s === 'string' && s.length > 0))
+    );
+
     let stripped = false;
-    
+
     for (const sep of separators) {
       const sepIndex = title.indexOf(sep);
       if (sepIndex > 0 && sepIndex < 60) {
         const prefix = title.slice(0, sepIndex).trim();
         const normalizedPrefix = normalizeBrand(prefix);
-        
-        if (normalizedPrefix === normalizedVendor || 
-            normalizedVendor.startsWith(normalizedPrefix + ' ') ||
-            normalizedVendor.startsWith(normalizedPrefix)) {
+
+        if (
+          normalizedPrefix === normalizedVendor ||
+          normalizedVendor.startsWith(normalizedPrefix + ' ') ||
+          normalizedVendor.startsWith(normalizedPrefix)
+        ) {
           const rest = title.slice(sepIndex + sep.length).trim();
           if (rest) {
             transformedTitle = rest;
@@ -543,7 +624,7 @@ async function processProductGroup(
         }
       }
     }
-    
+
     if (!stripped && normalizeBrand(title).startsWith(normalizedVendor)) {
       const rest = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
       if (rest) transformedTitle = rest;
