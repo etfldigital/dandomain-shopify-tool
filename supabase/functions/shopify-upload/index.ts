@@ -583,8 +583,7 @@ async function processProductGroup(
   // PHASE 3: PREPARE PRODUCT DATA
   // ============================================================================
   const normalizeBrand = (s: string) => s.toLowerCase().replace(/[+&]/g, ' ').replace(/\s+/g, ' ').trim();
-  const allowTitleTransform = rules.stripVendorFromTitle || rules.vendorExtractionMode === 'extract_from_title';
-  
+
   // Apply title stripping only when the user's transformation rules allow it.
   // When "Brug eksisterende vendor felt" is selected in the UI, we persist stripVendorFromTitle=false,
   // and we must NOT modify the product title during upload.
