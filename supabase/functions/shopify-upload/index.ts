@@ -256,6 +256,7 @@ async function uploadProducts(
   dandomainBaseUrl: string,
   startTime: number,
   timeBudget: number
+): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
   categoryTagCache = await loadCategoryTags(supabase, projectId);
   const transformationRules = await loadProductTransformationRules(supabase, projectId);
