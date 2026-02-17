@@ -1097,6 +1097,8 @@ function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
 const SIZE_PATTERNS = [
   /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
   /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[\/](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
+  // Hyphenated compound letter sizes: S-M, L-XL, XS-S, etc.
+  /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[-](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
   /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,
   /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,
   /^\d{2}[-\/]\d{2}$/,
@@ -1130,10 +1132,18 @@ function isValidSizeVariant(option: string): boolean {
 function extractSizeFromSku(sku: string): string | null {
   if (!sku) return null;
   
-  const combinedSizeMatch = sku.match(/-((?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\/(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl))$/i);
-  if (combinedSizeMatch) return combinedSizeMatch[1].toUpperCase();
+  // Check for slash-separated compound sizes first: e.g. 10041-S/M
+  const slashSizeMatch = sku.match(/-((?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\/(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl))$/i);
+  if (slashSizeMatch) return slashSizeMatch[1].toUpperCase();
   
+  // Check for hyphen-separated compound letter sizes: e.g. 10041-S-M, 10041-L-XL
   const parts = sku.split('-');
+  if (parts.length >= 3) {
+    const lastTwo = parts.slice(-2).join('-').toUpperCase();
+    if (/^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)-(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)$/.test(lastTwo)) {
+      return lastTwo;
+    }
+  }
   
   if (parts.length >= 2) {
     const secondLast = parts[parts.length - 2].trim();
@@ -1174,6 +1184,8 @@ const SIZE_ORDER: Record<string, number> = {
   'XL': 7, 'XXL': 8, '2XL': 8, 'XXXL': 9, '3XL': 9, 'XXXXL': 10, '4XL': 10,
   'ONE-SIZE': 100, 'ONESIZE': 100, 'ONE SIZE': 100,
   'XXS/XS': 2.5, 'XS/S': 3.5, 'S/M': 4.5, 'M/L': 5.5, 'L/XL': 6.5, 'XL/XXL': 7.5, 'XXL/XXXL': 8.5,
+  // Hyphenated compound sizes
+  'XXS-XS': 2.5, 'XS-S': 3.5, 'S-M': 4.5, 'M-L': 5.5, 'L-XL': 6.5, 'XL-XXL': 7.5, 'XXL-XXXL': 8.5,
 };
 
 function getSizeSortPriority(size: string): number {
