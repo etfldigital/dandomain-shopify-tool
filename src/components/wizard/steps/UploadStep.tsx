@@ -451,21 +451,34 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     setIsPreparing(true);
     
     try {
-      const response = await supabase.functions.invoke('prepare-upload', {
-        body: {
-          projectId: project.id,
-          entityType: 'products',
-          previewOnly: false, // Actually commit the grouping
-        },
-      });
+      // Resumable loop: prepare-upload processes chunks and returns continue=true until done
+      let result: any = null;
+      while (true) {
+        const response = await supabase.functions.invoke('prepare-upload', {
+          body: {
+            projectId: project.id,
+            entityType: 'products',
+            previewOnly: false,
+          },
+        });
 
-      if (response.error) {
-        throw new Error(response.error.message);
-      }
+        if (response.error) {
+          throw new Error(response.error.message);
+        }
 
-      const result = response.data;
-      if (!result.success) {
-        throw new Error(result.error || 'Forberedelse fejlede');
+        result = response.data;
+        if (!result.success) {
+          throw new Error(result.error || 'Forberedelse fejlede');
+        }
+
+        // If the function signals more work to do, keep calling
+        if (result.continue) {
+          console.log(`[Prepare] Progress: ${result.progress}/${result.total}`);
+          continue;
+        }
+
+        // Done
+        break;
       }
 
       setPrepareResult({
