@@ -685,7 +685,11 @@ async function processProductGroup(
     for (const mv of mergedVariants) {
       const sku = String(mv?.sku || '').trim();
       const hasNoVariantOption = mv?.noVariantOption === true;
-      const option1 = hasNoVariantOption ? null : normalizeSizeOption(String(mv?.size || ''));
+      // Re-extract size from SKU to pick up compound sizes (e.g. S-M, L-XL)
+      // that may have been stored incorrectly by older prepare-upload versions
+      const reExtracted = sku ? extractSizeFromSku(sku) : null;
+      const bestSize = reExtracted || String(mv?.size || '');
+      const option1 = hasNoVariantOption ? null : normalizeSizeOption(bestSize);
       const dedupeKey = option1 ?? `__no_option_${sku}`;
       if (variantByOption.has(dedupeKey)) continue;
 
