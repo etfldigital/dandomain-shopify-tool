@@ -453,12 +453,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     try {
       // Resumable loop: prepare-upload processes chunks and returns continue=true until done
       let result: any = null;
+      let currentOffset = 0;
       while (true) {
         const response = await supabase.functions.invoke('prepare-upload', {
           body: {
             projectId: project.id,
             entityType: 'products',
             previewOnly: false,
+            resumeOffset: currentOffset,
           },
         });
 
@@ -473,6 +475,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
         // If the function signals more work to do, keep calling
         if (result.continue) {
+          currentOffset = result.progress;
           console.log(`[Prepare] Progress: ${result.progress}/${result.total}`);
           continue;
         }

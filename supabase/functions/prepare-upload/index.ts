@@ -480,6 +480,7 @@ Deno.serve(async (req) => {
       jobId,
       isTestMode = false,
       testLimit = 3,
+      resumeOffset = 0,
     }: {
       projectId: string;
       entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
@@ -488,6 +489,7 @@ Deno.serve(async (req) => {
       jobId?: string;
       isTestMode?: boolean;
       testLimit?: number;
+      resumeOffset?: number;
     } = await req.json();
 
     console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType} (testMode=${isTestMode}, limit=${testLimit})`);
@@ -542,7 +544,7 @@ Deno.serve(async (req) => {
 
         // ==================== RESUMABLE WRITE ====================
         // Get current offset from the job (if provided)
-        let offset = 0;
+        let offset = resumeOffset || 0;
         if (jobId) {
           const { data: jobRow } = await supabase
             .from('upload_jobs')
