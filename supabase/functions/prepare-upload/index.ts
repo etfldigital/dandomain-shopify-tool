@@ -552,16 +552,20 @@ Deno.serve(async (req) => {
           offset = jobRow?.prepare_offset || 0;
         }
 
+        // Build a Map for O(1) lookups instead of O(n) .find() calls
+        const productById = new Map<string, ProductRecord>();
+        for (const p of allProducts) productById.set(p.id, p);
+
         // Collect all updates
         const allUpdates: Array<{ id: string; patch: Record<string, unknown> }> = [];
 
         // Rejected records
-        for (const rejected of result.rejected) {
-          const rejectedRecord = allProducts.find((p) => p.id === rejected.recordId);
+        for (const rej of result.rejected) {
+          const rejectedRecord = productById.get(rej.recordId);
           if (rejectedRecord?.status === 'uploaded') continue;
           allUpdates.push({
-            id: rejected.recordId,
-            patch: { status: 'mapped', error_message: `Afvist: ${rejected.reason}`, updated_at: now },
+            id: rej.recordId,
+            patch: { status: 'mapped', error_message: `Afvist: ${rej.reason}`, updated_at: now },
           });
         }
 
@@ -570,7 +574,7 @@ Deno.serve(async (req) => {
           if (group.recordIds.length === 0) continue;
 
           const uploadedInGroup = group.recordIds
-            .map((id) => allProducts.find((p) => p.id === id))
+            .map((id) => productById.get(id))
             .find((p) => p?.status === 'uploaded');
 
           let primaryId: string;
@@ -586,9 +590,9 @@ Deno.serve(async (req) => {
               primaryId = group.recordIds[0];
             }
           }
-          const primaryRecord = allProducts.find((p) => p.id === primaryId);
+          const primaryRecord = productById.get(primaryId);
 
-          const groupRecords = group.recordIds.map((id) => allProducts.find((p) => p.id === id)).filter(Boolean) as any[];
+          const groupRecords = group.recordIds.map((id) => productById.get(id)).filter(Boolean) as any[];
 
           const pickBestNonEmpty = (key: string) => {
             for (const r of groupRecords) {
@@ -633,7 +637,7 @@ Deno.serve(async (req) => {
           // Secondary updates
           for (const secId of group.recordIds) {
             if (secId === primaryId) continue;
-            const secRecord = allProducts.find((p) => p.id === secId);
+            const secRecord = productById.get(secId);
             const isUploaded = secRecord?.status === 'uploaded';
             allUpdates.push({
               id: secId,
@@ -658,7 +662,7 @@ Deno.serve(async (req) => {
         console.log(`[PREPARE] Total updates: ${allUpdates.length}, starting from offset ${offset}`);
 
         // Process a chunk this invocation
-        const CHUNK_SIZE = 200;
+        const CHUNK_SIZE = 500;
         const chunk = allUpdates.slice(offset, offset + CHUNK_SIZE);
 
         if (chunk.length > 0) {
