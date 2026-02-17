@@ -664,11 +664,11 @@ Deno.serve(async (req) => {
         console.log(`[PREPARE] Total updates: ${allUpdates.length}, starting from offset ${offset}`);
 
         // Process a chunk this invocation
-        const CHUNK_SIZE = 500;
+        const CHUNK_SIZE = 2000;
         const chunk = allUpdates.slice(offset, offset + CHUNK_SIZE);
 
         if (chunk.length > 0) {
-          const BATCH_SIZE = 20;
+          const BATCH_SIZE = 50;
           for (let i = 0; i < chunk.length; i += BATCH_SIZE) {
             const batch = chunk.slice(i, i + BATCH_SIZE);
             await Promise.all(batch.map(({ id, patch }) => supabase.from('canonical_products').update(patch).eq('id', id)));
