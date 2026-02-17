@@ -196,6 +196,8 @@ serve(async (req) => {
     const SIZE_PATTERNS = [
       // Letter sizes (case insensitive)
       /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|xxxxl|xxxxxl)$/i,
+      // Hyphenated compound letter sizes: S-M, L-XL, XS-S, etc.
+      /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)[-](xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)$/i,
       // Combined letter-number sizes
       /^(xs|s|m|l|xl|xxl)[-\/]?\d+$/i,  // e.g., S-36, M/38
       /^\d+[-\/]?(xs|s|m|l|xl|xxl)$/i,  // e.g., 36-S
@@ -277,6 +279,14 @@ serve(async (req) => {
       if (!sku) return null;
       
       const parts = sku.split('-');
+
+      // Check for hyphen-separated compound letter sizes first: e.g. 10041-S-M, 10041-L-XL
+      if (parts.length >= 3) {
+        const lastTwo = parts.slice(-2).join('-').toUpperCase();
+        if (/^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)-(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)$/.test(lastTwo)) {
+          return lastTwo;
+        }
+      }
       
       // Start from the last part (most common location for size)
       for (let i = parts.length - 1; i >= 0; i--) {
