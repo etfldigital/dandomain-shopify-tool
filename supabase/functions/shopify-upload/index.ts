@@ -1597,9 +1597,26 @@ async function uploadOrders(
 
     // Find customer
     const customerEmail = data.customer_email || data.email;
-    const customerId = data.customer_id;
+    const customerId = data.customer_external_id || data.customer_id;
     let shopifyCustomerId = customerLookup.get(customerId) || 
                            (customerEmail ? customerLookup.get(customerEmail.toLowerCase()) : undefined);
+
+    // Build full name from customer fields
+    const firstName = data.customer_first_name || '';
+    const lastName = data.customer_last_name || '';
+
+    // Enrich shipping_address and billing_address with customer name if missing
+    const enrichAddress = (addr: any) => {
+      if (!addr) return addr;
+      return {
+        ...addr,
+        first_name: addr.first_name || firstName,
+        last_name: addr.last_name || lastName,
+      };
+    };
+
+    const shippingAddress = enrichAddress(data.shipping_address);
+    const billingAddress = enrichAddress(data.billing_address);
 
     const orderPayload: any = {
       order: {
@@ -1609,10 +1626,20 @@ async function uploadOrders(
         send_receipt: false,
         send_fulfillment_receipt: false,
         inventory_behaviour: 'bypass',
-        ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {}),
-        ...(data.shipping_address ? { shipping_address: data.shipping_address } : {}),
-        ...(data.billing_address ? { billing_address: data.billing_address } : {}),
-        ...(data.created_at ? { created_at: data.created_at } : {}),
+        ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {
+          // No shopify customer found - include name and email directly
+          ...(customerEmail ? { email: customerEmail } : {}),
+          ...(firstName || lastName ? {
+            billing_address: {
+              first_name: firstName,
+              last_name: lastName,
+              email: customerEmail || undefined,
+            }
+          } : {}),
+        }),
+        ...(shippingAddress ? { shipping_address: shippingAddress } : {}),
+        ...(billingAddress ? { billing_address: billingAddress } : {}),
+        ...(data.order_date ? { created_at: data.order_date } : data.created_at ? { created_at: data.created_at } : {}),
         ...(data.note ? { note: data.note } : {}),
       },
     };
