@@ -1,56 +1,45 @@
 
-# Plan: Sikr At Hvert Produkt Kun Oprettes Én Gang i Shopify
+# Sanitize Image Filenames for Shopify Upload
 
-## ✅ IMPLEMENTERET
+## Problem
+Product image filenames from DanDomain XML contain spaces and Danish special characters (e.g. `/images/Miriam - black.jpg`) which cause Shopify image uploads to fail.
 
-### Ændringer Foretaget
+## Solution
+Add a `sanitizeImageFilename` function and apply it at the point where image URLs are normalized before sending to Shopify.
 
-#### 1. `supabase/functions/shopify-upload/index.ts`
+## Changes
 
-**Ændring 1 - Streng primary filter (linje 316-323):**
-```typescript
-// FØR: Tillader undefined som primær
-return data._isPrimary !== false;
+### 1. Add sanitize function to `supabase/functions/shopify-upload/index.ts`
 
-// EFTER: Kun eksplicit markerede primære
-return data._isPrimary === true; // STRICT check
+A new `sanitizeImageFilename` utility function will be added that:
+- Extracts just the filename portion from the URL path
+- Replaces Danish characters (ae, oe, aa)
+- Replaces spaces and unsafe characters with hyphens
+- Collapses double hyphens
+- Converts to lowercase
+- Preserves the file extension and directory path
+
+### 2. Apply sanitization inside `normalizeImageUrl`
+
+The existing `normalizeImageUrl` function (already called for every image) will be updated to run the filename through the sanitizer before returning the final URL. This is the single choke-point for all image URLs going to Shopify, so no other call sites need changes.
+
+## Technical Details
+
+```text
+sanitizeImageFilename("Miriam - black.jpg")
+  -> "miriam-black.jpg"
+
+normalizeImageUrl("/images/Miriam - black.jpg", "https://example.dk")
+  -> "https://example.dk/images/miriam-black.jpg"
 ```
 
-**Ændring 2 - Database-level group dedupe (i processProductGroup):**
-Før oprettelse tjekkes om nogen record med samme `_groupKey` allerede har `shopify_id`.
-Hvis ja: Skip og marker som uploaded.
+The function:
+1. Splits the URL into directory path + filename
+2. Separates the extension from the base name
+3. Applies Danish character replacements (ae, oe, aa, Ae, Oe, Aa)
+4. Replaces non-alphanumeric/non-dot characters with hyphens
+5. Collapses multiple hyphens, trims leading/trailing hyphens
+6. Lowercases the result
+7. Reassembles directory + sanitized filename
 
-**Ændring 3 - Atomic lock før Shopify API-kald:**
-```typescript
-const { data: lockResult } = await supabase
-  .from('canonical_products')
-  .update({ error_message: 'Processing...' })
-  .eq('id', primaryItem.id)
-  .eq('status', 'pending')
-  .is('shopify_id', null)
-  .select('id');
-
-if (!lockResult || lockResult.length === 0) {
-  return { skipped: true }; // Another worker has it
-}
-```
-
-**Ændring 4 - Opdater HELE gruppen efter succes:**
-Efter Shopify-oprettelse opdateres alle records med samme `_groupKey` med `shopify_id`.
-
-#### 2. `supabase/functions/upload-worker/index.ts`
-
-**Ændring - Streng primary-only tælling:**
-```typescript
-// FØR: Tæller null som primær
-query = query.or('data->>_isPrimary.eq.true,data->>_isPrimary.is.null');
-
-// EFTER: Kun eksplicit primære
-query = query.eq('data->>_isPrimary', 'true');
-```
-
-## Resultat
-- Produkter oprettes PRÆCIS én gang i Shopify
-- Database er source of truth (ikke session cache)
-- Race conditions håndteres via atomisk locking
-- Ingen Shopify tags påkrævet
+Only the `shopify-upload` edge function is modified -- the XML parser stores raw data as-is, and sanitization happens at upload time.
