@@ -1061,43 +1061,19 @@ function generateHandle(title: string): string {
     .replace(/^-|-$/g, '');
 }
 
-function sanitizeImageFilename(filename: string): string {
-  if (!filename) return filename;
-  const lastDot = filename.lastIndexOf('.');
-  const baseName = lastDot > 0 ? filename.substring(0, lastDot) : filename;
-  const extension = lastDot > 0 ? filename.substring(lastDot + 1).toLowerCase() : '';
-
-  const danishMap: Record<string, string> = {
-    'æ': 'ae', 'ø': 'oe', 'å': 'aa',
-    'Æ': 'Ae', 'Ø': 'Oe', 'Å': 'Aa',
-  };
-  let sanitized = baseName.replace(/[æøåÆØÅ]/g, (ch) => danishMap[ch] || ch);
-  sanitized = sanitized
-    .replace(/[^a-zA-Z0-9]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-
-  return extension ? `${sanitized}.${extension}` : sanitized;
-}
-
-function sanitizeImagePath(path: string): string {
-  if (!path) return path;
-  const lastSlash = path.lastIndexOf('/');
-  if (lastSlash === -1) return sanitizeImageFilename(path);
-  const dir = path.substring(0, lastSlash + 1);
-  const file = path.substring(lastSlash + 1);
-  return dir + sanitizeImageFilename(file);
-}
-
 function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
   if (!url) return url;
   
+  // Strategy: URL-encode the path so the original filename (with spaces, parentheses, etc.)
+  // is preserved but made URL-safe. The DanDomain server can still locate the file.
+  // We do NOT rename the file — just encode each path segment properly.
+
   // Already absolute URL
   if (url.startsWith('http://') || url.startsWith('https://')) {
     try {
       const u = new URL(url);
-      u.pathname = sanitizeImagePath(u.pathname);
+      // Re-encode pathname segments to fix un-encoded spaces/special chars
+      u.pathname = encodePathSegments(u.pathname);
       return u.toString();
     } catch { return url; }
   }
@@ -1106,12 +1082,12 @@ function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
   if (url.startsWith('//')) {
     try {
       const u = new URL('https:' + url);
-      u.pathname = sanitizeImagePath(u.pathname);
+      u.pathname = encodePathSegments(u.pathname);
       return u.toString();
     } catch { return 'https:' + url; }
   }
 
-  const sanitizedPath = sanitizeImagePath(url);
+  const encodedPath = encodePathSegments(url);
   
   // Relative URL starting with /
   if (url.startsWith('/')) {
@@ -1120,9 +1096,9 @@ function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
       if (!base.startsWith('http://') && !base.startsWith('https://')) {
         base = `https://${base}`;
       }
-      return `${base}${sanitizedPath}`;
+      return `${base}${encodedPath}`;
     }
-    return sanitizedPath;
+    return encodedPath;
   }
   
   // Relative URL without leading /
@@ -1131,10 +1107,20 @@ function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
     if (!base.startsWith('http://') && !base.startsWith('https://')) {
       base = `https://${base}`;
     }
-    return `${base}/${sanitizedPath}`;
+    return `${base}/${encodedPath}`;
   }
   
-  return sanitizedPath;
+  return encodedPath;
+}
+
+// Properly encode each segment of a URL path, preserving slashes.
+// e.g. "/images/preview (4)_277722719.jpg" -> "/images/preview%20(4)_277722719.jpg"
+function encodePathSegments(path: string): string {
+  if (!path) return path;
+  return path
+    .split('/')
+    .map(segment => segment ? encodeURIComponent(decodeURIComponent(segment)) : segment)
+    .join('/');
 }
 
 const SIZE_PATTERNS = [
