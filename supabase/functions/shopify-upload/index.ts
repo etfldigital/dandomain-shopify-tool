@@ -1061,29 +1061,68 @@ function generateHandle(title: string): string {
     .replace(/^-|-$/g, '');
 }
 
+function sanitizeImageFilename(filename: string): string {
+  if (!filename) return filename;
+  const lastDot = filename.lastIndexOf('.');
+  const baseName = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+  const extension = lastDot > 0 ? filename.substring(lastDot + 1).toLowerCase() : '';
+
+  const danishMap: Record<string, string> = {
+    'æ': 'ae', 'ø': 'oe', 'å': 'aa',
+    'Æ': 'Ae', 'Ø': 'Oe', 'Å': 'Aa',
+  };
+  let sanitized = baseName.replace(/[æøåÆØÅ]/g, (ch) => danishMap[ch] || ch);
+  sanitized = sanitized
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+
+  return extension ? `${sanitized}.${extension}` : sanitized;
+}
+
+function sanitizeImagePath(path: string): string {
+  if (!path) return path;
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash === -1) return sanitizeImageFilename(path);
+  const dir = path.substring(0, lastSlash + 1);
+  const file = path.substring(lastSlash + 1);
+  return dir + sanitizeImageFilename(file);
+}
+
 function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
   if (!url) return url;
   
   // Already absolute URL
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    try {
+      const u = new URL(url);
+      u.pathname = sanitizeImagePath(u.pathname);
+      return u.toString();
+    } catch { return url; }
+  }
   
   // Protocol-relative URL
-  if (url.startsWith('//')) return 'https:' + url;
+  if (url.startsWith('//')) {
+    try {
+      const u = new URL('https:' + url);
+      u.pathname = sanitizeImagePath(u.pathname);
+      return u.toString();
+    } catch { return 'https:' + url; }
+  }
+
+  const sanitizedPath = sanitizeImagePath(url);
   
   // Relative URL starting with /
   if (url.startsWith('/')) {
     if (dandomainBaseUrl) {
-      // dandomainBaseUrl may or may not include https:// - handle both cases
       let base = dandomainBaseUrl.trim().replace(/\/$/, '');
-      
-      // If base already has https:// or http://, use it as-is
       if (!base.startsWith('http://') && !base.startsWith('https://')) {
         base = `https://${base}`;
       }
-      
-      return `${base}${url}`;
+      return `${base}${sanitizedPath}`;
     }
-    return url;
+    return sanitizedPath;
   }
   
   // Relative URL without leading /
@@ -1092,10 +1131,10 @@ function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
     if (!base.startsWith('http://') && !base.startsWith('https://')) {
       base = `https://${base}`;
     }
-    return `${base}/${url}`;
+    return `${base}/${sanitizedPath}`;
   }
   
-  return url;
+  return sanitizedPath;
 }
 
 const SIZE_PATTERNS = [
