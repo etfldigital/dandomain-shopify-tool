@@ -283,37 +283,22 @@ async function uploadProducts(
     .lt('upload_locked_until', now.toISOString());
 
   // ============================================================================
-  // STEP 2: Fetch unlocked, pending, primary products
+  // STEP 2: Fetch unlocked, pending, PRIMARY products directly
   // ============================================================================
-  const { data: pendingProducts, error: fetchError } = await supabase
+  // CRITICAL: Filter for _isPrimary=true in the query itself, not in JS.
+  // Otherwise we may fetch a page full of secondary variants and find zero primaries.
+  const { data: primaryProducts, error: fetchError } = await supabase
     .from('canonical_products')
     .select('*')
     .eq('project_id', projectId)
     .eq('status', 'pending')
+    .eq('data->>_isPrimary', 'true')
     .is('upload_lock_id', null)  // Not locked by another worker
     .order('created_at', { ascending: true })
     .limit(batchSize * 2);
 
   if (fetchError) throw new Error(`Failed to fetch products: ${fetchError.message}`);
-  if (!pendingProducts || pendingProducts.length === 0) {
-    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
-  }
-
-  // CRITICAL: Only process products that have been through prepare-upload.
-  // Products must have _isPrimary === true to be uploaded.
-  // Products with _isPrimary === null/undefined have NOT been prepared yet and should be skipped.
-  // This ensures proper variant grouping where one primary product = one Shopify product with all variants.
-  const primaryProducts: any[] = [];
-  for (const p of pendingProducts) {
-    const data = p.data || {};
-    if (data._isPrimary === true) {
-      primaryProducts.push(p);
-    }
-    // _isPrimary === false => secondary variant, already grouped with primary - skip
-    // _isPrimary === null/undefined => not prepared yet - skip (will be processed after prepare-upload runs)
-  }
-
-  if (primaryProducts.length === 0) {
+  if (!primaryProducts || primaryProducts.length === 0) {
     console.log('[PRODUCTS] No prepared primary products found - prepare-upload needs to run first');
     return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: true };
   }
