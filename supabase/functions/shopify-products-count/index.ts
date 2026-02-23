@@ -60,7 +60,8 @@ Deno.serve(async (req) => {
       throw new Error("Shopify credentials not configured");
     }
 
-    const url = `https://${shopifyDomain}/admin/api/2024-01/products/count.json`;
+    // Include ALL statuses (active, draft, archived) to match Shopify admin's "All products" view
+    const url = `https://${shopifyDomain}/admin/api/2024-01/products/count.json?status=any`;
 
     const resp = await fetch(url, {
       method: "GET",
