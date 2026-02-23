@@ -116,7 +116,7 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       // PRICES section - get first/default price
       const prices = product.getElementsByTagName('PRICES')[0];
       let price = 0;
-      let compareAtPrice: number | null = null;
+      let specialOfferPrice: number | null = null;
       if (prices) {
         const priceElements = getAllElements(prices, 'PRICE');
         if (priceElements.length > 0) {
@@ -124,8 +124,7 @@ export function parseProductsXML(xmlText: string): ProductData[] {
           price = parsePrice(getElementText(firstPrice, 'UNIT_PRICE'));
           const specialOffer = parsePrice(getElementText(firstPrice, 'SPECIAL_OFFER_PRICE'));
           if (specialOffer > 0) {
-            compareAtPrice = price;
-            price = specialOffer;
+            specialOfferPrice = specialOffer;
           }
         }
       }
@@ -177,7 +176,8 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         short_description: shortDescription,
         sku,
         price,
-        compare_at_price: compareAtPrice,
+        compare_at_price: null,
+        special_offer_price: specialOfferPrice,
         cost_price: costPrice,
         weight,
         stock_quantity: stockCount,

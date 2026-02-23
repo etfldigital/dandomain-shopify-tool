@@ -175,12 +175,14 @@ type ProductTransformationRules = {
   stripVendorFromTitle: boolean;
   vendorSeparator: string;
   vendorExtractionMode: VendorExtractionMode;
+  useSpecialOfferPrice: boolean;
 };
 
 const defaultProductTransformationRules: ProductTransformationRules = {
   stripVendorFromTitle: true,
   vendorSeparator: ' - ',
   vendorExtractionMode: 'none',
+  useSpecialOfferPrice: false,
 };
 
 async function loadProductTransformationRules(supabase: any, projectId: string): Promise<ProductTransformationRules> {
@@ -210,7 +212,12 @@ async function loadProductTransformationRules(supabase: any, projectId: string):
     const vendorExtractionMode: VendorExtractionMode =
       rules?.vendorExtractionMode === 'extract_from_title' ? 'extract_from_title' : 'none';
 
-    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode };
+    // Check if SPECIAL_OFFER_PRICE is mapped
+    const useSpecialOfferPrice = mappings.some(
+      (m: any) => m?.type === 'field' && m?.sourceField === 'SPECIAL_OFFER_PRICE'
+    );
+
+    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode, useSpecialOfferPrice };
   } catch (e) {
     console.warn('[PRODUCTS] Failed to load transformation rules, using defaults:', e);
     return defaultProductTransformationRules;
@@ -720,8 +727,16 @@ async function processProductGroup(
       const v: VariantCandidate = {
         option1,
         sku,
-        price: String(itemData.price || '0'),
-        compare_at_price: itemData.compare_at_price ? String(itemData.compare_at_price) : null,
+        price: rules.useSpecialOfferPrice
+          ? String(itemData.special_offer_price || itemData.price || '0')
+          : String(
+              itemData.compare_at_price && parseFloat(String(itemData.compare_at_price)) > parseFloat(String(itemData.price || '0'))
+                ? itemData.compare_at_price
+                : itemData.price || '0'
+            ),
+        compare_at_price: rules.useSpecialOfferPrice
+          ? (itemData.special_offer_price ? String(itemData.compare_at_price || itemData.price || '0') : null)
+          : null,
         inventory_quantity: parseInt(String(itemData.stock_quantity || 0), 10),
         weight: itemData.weight ? parseFloat(String(itemData.weight)) : 0,
       };

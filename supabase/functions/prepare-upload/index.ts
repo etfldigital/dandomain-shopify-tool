@@ -300,7 +300,7 @@ function mergeText(a: string | undefined, b: string | undefined): string {
   return aVal.length >= bVal.length ? aVal : bVal;
 }
 
-function groupProducts(products: ProductRecord[]): PrepareResult {
+function groupProducts(products: ProductRecord[], useSpecialOfferPrice: boolean): PrepareResult {
   const groups: Map<string, ProductGroup> = new Map();
   const rejected: RejectedRecord[] = [];
 
@@ -373,8 +373,16 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
           externalId: product.external_id,
           sku: sku,
           size: variantSize.toUpperCase(),
-          price: String(data.price || '0'),
-          compareAtPrice: data.compare_at_price ? String(data.compare_at_price) : null,
+          price: useSpecialOfferPrice
+            ? String(data.special_offer_price || data.price || '0')
+            : String(
+                data.compare_at_price && parseFloat(String(data.compare_at_price)) > parseFloat(String(data.price || '0'))
+                  ? data.compare_at_price
+                  : data.price || '0'
+              ),
+          compareAtPrice: useSpecialOfferPrice
+            ? (data.special_offer_price ? String(data.compare_at_price || data.price || '0') : null)
+            : null,
           stockQuantity: parseInt(String(data.stock_quantity || 0), 10),
           weight: data.weight ? parseFloat(String(data.weight)) : 0,
           barcode: data.barcode || null,
@@ -387,8 +395,16 @@ function groupProducts(products: ProductRecord[]): PrepareResult {
           externalId: product.external_id,
           sku: sku,
           size: '',
-          price: String(data.price || '0'),
-          compareAtPrice: data.compare_at_price ? String(data.compare_at_price) : null,
+          price: useSpecialOfferPrice
+            ? String(data.special_offer_price || data.price || '0')
+            : String(
+                data.compare_at_price && parseFloat(String(data.compare_at_price)) > parseFloat(String(data.price || '0'))
+                  ? data.compare_at_price
+                  : data.price || '0'
+              ),
+          compareAtPrice: useSpecialOfferPrice
+            ? (data.special_offer_price ? String(data.compare_at_price || data.price || '0') : null)
+            : null,
           stockQuantity: parseInt(String(data.stock_quantity || 0), 10),
           weight: data.weight ? parseFloat(String(data.weight)) : 0,
           barcode: data.barcode || null,
@@ -495,6 +511,27 @@ Deno.serve(async (req) => {
     console.log(`[PREPARE] Starting ${previewOnly ? 'preview' : 'commit'} for ${entityType} (testMode=${isTestMode}, limit=${testLimit})`);
 
     if (entityType === 'products') {
+      // Check mapping profile for SPECIAL_OFFER_PRICE mapping
+      let useSpecialOfferPrice = false;
+      try {
+        const { data: profileData } = await supabase
+          .from('mapping_profiles')
+          .select('mappings')
+          .eq('project_id', projectId)
+          .eq('is_active', true)
+          .maybeSingle();
+        
+        if (profileData?.mappings) {
+          const mappings = Array.isArray(profileData.mappings) ? profileData.mappings : [];
+          useSpecialOfferPrice = mappings.some(
+            (m: any) => m?.type === 'field' && m?.sourceField === 'SPECIAL_OFFER_PRICE'
+          );
+        }
+      } catch (e) {
+        console.warn('[PREPARE] Could not load mapping profile, defaulting to no special offer price:', e);
+      }
+      console.log(`[PREPARE] SPECIAL_OFFER_PRICE mapping: ${useSpecialOfferPrice ? 'ENABLED' : 'DISABLED'}`);
+
       // CRITICAL FIX: For test mode, do NOT fetch the entire catalogue.
       // We only need a safe subset of pending rows to generate the primaries the test-run will upload.
       let allProducts: ProductRecord[] = [];
@@ -534,7 +571,7 @@ Deno.serve(async (req) => {
         `[PREPARE] Fetched ${allProducts.length} products for ${isTestMode ? 'TEST' : 'FULL'} regrouping (pending=${pendingCount}) (testFetchMax=${isTestMode ? testFetchMax : 'n/a'})`
       );
 
-      const result = groupProducts(allProducts);
+      const result = groupProducts(allProducts, useSpecialOfferPrice);
 
       console.log(`[PREPARE] Created ${result.stats.groupsCreated} groups with ${result.stats.variantsTotal} variants`);
       console.log(`[PREPARE] Rejected ${result.stats.recordsRejected} records`);
