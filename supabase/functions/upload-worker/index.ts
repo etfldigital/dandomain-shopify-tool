@@ -517,12 +517,15 @@ Deno.serve(async (req) => {
 
         console.log(`[WORKER] Processing ${job.entity_type} (${job.processed_count}/${job.total_count})`);
 
-        const getRetryMs = (entityType: string, retryAfterSeconds?: number | null) => {
-          // Use Shopify's suggested retry time, or default minimum
+        // Exponential backoff for consecutive rate limits.
+        // Uses last_batch_items to detect consecutive zero-progress batches.
+        const getRetryMs = (entityType: string, retryAfterSeconds?: number | null, consecutiveEmpty: number = 0) => {
           const raw = Math.max(0, (retryAfterSeconds || 0) * 1000);
-          const min = 2000; // 2s minimum - Shopify bucket refills at 2 req/s
-          const jitter = Math.floor(Math.random() * 500);
-          return Math.min(Math.max(raw, min) + jitter, 30_000);
+          const min = 2000;
+          // Exponential backoff: 2s, 4s, 8s, 16s, 30s max
+          const backoff = min * Math.pow(2, Math.min(consecutiveEmpty, 4));
+          const jitter = Math.floor(Math.random() * 1000);
+          return Math.min(Math.max(raw, backoff) + jitter, 30_000);
         };
 
         // If scheduled retry is in future, wait
@@ -758,13 +761,22 @@ Deno.serve(async (req) => {
           current_batch: (typeof effectiveCurrentBatch === 'number' ? effectiveCurrentBatch : (job.current_batch || 0)) + 1,
         };
 
-        // Handle rate limiting
+        // Handle rate limiting with exponential backoff
         let scheduledRetryMs: number | null = null;
         if (result.rateLimited && result.retryAfterSeconds) {
-          const retryMs = getRetryMs(job.entity_type, result.retryAfterSeconds);
+          // Count consecutive empty (zero-progress) batches to escalate backoff.
+          // If the PREVIOUS batch also processed 0 items, we're in a 429 loop.
+          const previousBatchWasEmpty = (job.last_batch_items === 0 || job.last_batch_items === null);
+          const currentBatchEmpty = itemsProcessed === 0;
+          // Estimate consecutive empty count from pattern: if both prev and current are empty, escalate
+          const consecutiveEmpty = (previousBatchWasEmpty && currentBatchEmpty) ? 
+            Math.min(Math.floor((job.current_batch || 0) - (job.processed_count || 0) / Math.max(job.batch_size || 1, 1)), 5) : 
+            (currentBatchEmpty ? 1 : 0);
+          
+          const retryMs = getRetryMs(job.entity_type, result.retryAfterSeconds, consecutiveEmpty);
           scheduledRetryMs = retryMs;
           updateData.next_attempt_at = new Date(Date.now() + retryMs).toISOString();
-          console.log(`[WORKER] Rate limited, backing off ${Math.ceil(retryMs / 1000)}s (entity=${job.entity_type})`);
+          console.log(`[WORKER] Rate limited, backing off ${Math.ceil(retryMs / 1000)}s (entity=${job.entity_type}, consecutiveEmpty~${consecutiveEmpty})`);
         }
 
         // Merge error details (filter transient messages)
