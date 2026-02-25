@@ -470,6 +470,57 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
   return groups;
 }
 
+async function resolveGroupProductBarcode(
+  supabase: any,
+  projectId: string,
+  primaryData: any,
+  groupKey: string,
+  fallbackTitle: string
+): Promise<string> {
+  const directPrimaryBarcode = String(primaryData?.barcode || '').trim();
+  if (directPrimaryBarcode) return directPrimaryBarcode;
+
+  const mergedVariants = Array.isArray(primaryData?._mergedVariants) ? primaryData._mergedVariants : [];
+  const mergedVariantBarcode = mergedVariants
+    .map((v: any) => String(v?.barcode || '').trim())
+    .find((v: string) => v.length > 0);
+  if (mergedVariantBarcode) return mergedVariantBarcode;
+
+  try {
+    let query = supabase
+      .from('canonical_products')
+      .select('external_id, data')
+      .eq('project_id', projectId)
+      .limit(100);
+
+    if (groupKey) {
+      query = query.eq('data->>_groupKey', groupKey);
+    } else if (fallbackTitle) {
+      query = query.eq('data->>title', fallbackTitle);
+    } else {
+      return '';
+    }
+
+    const { data: groupRows, error } = await query;
+    if (error || !groupRows || groupRows.length === 0) return '';
+
+    const extractBarcode = (row: any) => String(row?.data?.barcode || '').trim();
+    const looksLikeBaseSku = (row: any) => {
+      const sku = String(row?.data?.sku || row?.external_id || '').trim();
+      return sku.length > 0 && !sku.includes('-');
+    };
+
+    const preferred = groupRows.find((row: any) => looksLikeBaseSku(row) && extractBarcode(row));
+    if (preferred) return extractBarcode(preferred);
+
+    const anyNonEmpty = groupRows.map(extractBarcode).find((v: string) => v.length > 0);
+    return anyNonEmpty || '';
+  } catch (error) {
+    console.warn('[PRODUCTS] Failed resolving group barcode fallback:', error);
+    return '';
+  }
+}
+
 async function processProductGroup(
   supabase: any,
   shopifyUrl: string,
@@ -802,17 +853,24 @@ async function processProductGroup(
   // Only when the toggle is enabled in migration rules
   // ============================================================================
   if (rules.inheritProductBarcode) {
-    const productBarcode = String(primaryData.barcode || '').trim();
-    if (productBarcode) {
+    const resolvedProductBarcode = await resolveGroupProductBarcode(
+      supabase,
+      projectId,
+      primaryData,
+      dbGroupKey,
+      title
+    );
+
+    if (resolvedProductBarcode) {
       let inherited = 0;
       for (const v of variants) {
         if (!v.barcode || String(v.barcode).trim() === '') {
-          v.barcode = productBarcode;
+          v.barcode = resolvedProductBarcode;
           inherited++;
         }
       }
       if (inherited > 0) {
-        console.log(`[PRODUCTS] "${transformedTitle}": Inherited product barcode "${productBarcode}" to ${inherited}/${variants.length} variant(s)`);
+        console.log(`[PRODUCTS] "${transformedTitle}": Inherited product barcode "${resolvedProductBarcode}" to ${inherited}/${variants.length} variant(s)`);
       }
     }
   }
