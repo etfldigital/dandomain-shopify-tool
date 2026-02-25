@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Loader2, Save, ArrowRight, Folder, Tag, Package, ShoppingCart, Users } from 'lucide-react';
+import { Loader2, Save, ArrowRight, Folder, Tag, Package, ShoppingCart, Users, RefreshCw } from 'lucide-react';
 import { Project, CanonicalCategory } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { ProductMappingTab } from './ProductMappingTab';
@@ -34,6 +34,8 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState('products');
   const { forecast, isLoading: forecastLoading, error: forecastError, refresh: refreshForecast } = useProductForecast(project.id);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const [stats, setStats] = useState({
     totalLines: 0,
     uniqueProducts: 0,
@@ -219,11 +221,32 @@ export function MappingStep({ project, onUpdateProject, onNext }: MappingStepPro
           </div>
 
           <div className="flex justify-center">
-            <Button onClick={() => refreshForecast(true)}>
-              Opdater forecast
+            <Button 
+              onClick={async () => {
+                setIsRefreshing(true);
+                try {
+                  await refreshForecast(true);
+                  setPreviewRefreshKey(k => k + 1);
+                } finally {
+                  setIsRefreshing(false);
+                }
+              }}
+              disabled={isRefreshing}
+            >
+              {isRefreshing ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Genberegner...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Opdater forecast
+                </>
+              )}
             </Button>
           </div>
-          <ProductMappingTab projectId={project.id} />
+          <ProductMappingTab projectId={project.id} key={previewRefreshKey} />
         </TabsContent>
 
         <TabsContent value="categories" className="mt-6">
