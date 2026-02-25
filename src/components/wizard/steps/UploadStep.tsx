@@ -1328,6 +1328,48 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="bg-popover">
+                          {/* Upload single entity type */}
+                          {(() => {
+                            const entityLabels: Record<EntityType, string> = {
+                              pages: 'sider',
+                              categories: 'collections',
+                              products: 'produkter',
+                              customers: 'kunder',
+                              orders: 'ordrer',
+                            };
+                            const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
+                            const currentIdx = sequenceOrder.indexOf(type);
+                            // Check if any predecessor entity still has pending items
+                            const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(
+                              predType => statusCounts[predType].pending > 0
+                            );
+                            const predecessorLabel = predecessorBlocking 
+                              ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
+                              : null;
+                            const jobRunning = job?.status === 'running';
+                            const noPending = counts.pending === 0;
+
+                            return (
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (predecessorBlocking) {
+                                    toast.error(`Kan ikke starte endnu`, {
+                                      description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
+                                    });
+                                    return;
+                                  }
+                                  handleStartUpload(false, type);
+                                }}
+                                disabled={jobRunning || isStarting}
+                              >
+                                <Play className="w-4 h-4 mr-2" />
+                                {jobRunning 
+                                  ? `Upload kører allerede…` 
+                                  : `Upload ${entityLabels[type]}`}
+                              </DropdownMenuItem>
+                            );
+                          })()}
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleStartUpload(true, type)}
                             disabled={counts.pending === 0 || isStarting}
