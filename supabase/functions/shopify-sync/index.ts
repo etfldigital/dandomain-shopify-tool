@@ -91,6 +91,14 @@ interface ShopifyRecord {
   matchKey: string; // The value we match against local DB
 }
 
+interface ShopifyRecord {
+  id: number | string;
+  matchKey: string;
+  // Extra keys for multi-strategy matching (categories)
+  handle?: string;
+  title?: string;
+}
+
 async function fetchAllShopifyRecords(
   shopifyUrl: string,
   token: string,
@@ -135,7 +143,12 @@ async function fetchAllShopifyRecords(
     for (const item of items) {
       const matchKey = getMatchKey(item, entityType);
       if (matchKey) {
-        records.push({ id: item.id, matchKey });
+        const rec: ShopifyRecord = { id: item.id, matchKey };
+        if (entityType === "categories") {
+          rec.handle = (item.handle || "").toLowerCase().trim();
+          rec.title = (item.title || "").toLowerCase().trim();
+        }
+        records.push(rec);
       }
     }
 
@@ -152,7 +165,10 @@ async function fetchAllShopifyRecords(
       for (const item of items) {
         const matchKey = getMatchKey(item, entityType);
         if (matchKey) {
-          records.push({ id: item.id, matchKey });
+          const rec: ShopifyRecord = { id: item.id, matchKey };
+          rec.handle = (item.handle || "").toLowerCase().trim();
+          rec.title = (item.title || "").toLowerCase().trim();
+          records.push(rec);
         }
       }
       customUrl = linkNext;
@@ -278,10 +294,17 @@ Deno.serve(async (req) => {
     const shopifyRecords = await fetchAllShopifyRecords(shopifyUrl, shopifyToken, entityType);
     console.log(`[SYNC] Found ${shopifyRecords.length} ${entityType} in Shopify`);
 
-    // Build lookup map: matchKey -> shopifyId
+    // Build lookup maps: matchKey -> shopifyId
     const shopifyMap = new Map<string, string>();
+    // For categories, also build maps by handle and by title for multi-strategy matching
+    const shopifyByHandle = new Map<string, string>();
+    const shopifyByTitle = new Map<string, string>();
     for (const rec of shopifyRecords) {
       shopifyMap.set(rec.matchKey, String(rec.id));
+      if (entityType === "categories") {
+        if (rec.handle) shopifyByHandle.set(rec.handle, String(rec.id));
+        if (rec.title) shopifyByTitle.set(rec.title, String(rec.id));
+      }
     }
 
     // 2. Fetch all local records (paginate to avoid 1000-row limit)
@@ -317,6 +340,9 @@ Deno.serve(async (req) => {
     let matched = 0;
     let notFound = 0;
     let alreadyUploaded = 0;
+    let matchedByHandle = 0;
+    let matchedByTitle = 0;
+    let matchedByName = 0;
     const BATCH_SIZE = 50;
 
     // Collect updates to batch them
@@ -329,13 +355,33 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const localKey = getLocalMatchKey(local, entityType);
-      if (!localKey) {
-        notFound++;
-        continue;
+      let shopifyId: string | undefined;
+
+      if (entityType === "categories") {
+        // Strategy 1: slug → handle
+        const localSlug = (local.slug || "").toLowerCase().trim();
+        if (localSlug) shopifyId = shopifyByHandle.get(localSlug);
+        if (shopifyId) { matchedByHandle++; }
+
+        // Strategy 2: name → title (exact)
+        if (!shopifyId) {
+          const localName = (local.name || "").toLowerCase().trim();
+          if (localName) shopifyId = shopifyByTitle.get(localName);
+          if (shopifyId) { matchedByTitle++; }
+        }
+
+        // Strategy 3: name slugified → handle
+        if (!shopifyId) {
+          const localName = (local.name || "").toLowerCase().trim();
+          const slugified = localName.replace(/\s+/g, "-").replace(/[æ]/g, "ae").replace(/[ø]/g, "oe").replace(/[å]/g, "aa").replace(/[^a-z0-9\-]/g, "");
+          if (slugified) shopifyId = shopifyByHandle.get(slugified);
+          if (shopifyId) { matchedByName++; }
+        }
+      } else {
+        const localKey = getLocalMatchKey(local, entityType);
+        if (localKey) shopifyId = shopifyMap.get(localKey);
       }
 
-      const shopifyId = shopifyMap.get(localKey);
       if (shopifyId) {
         updates.push({ id: local.id, shopify_id: shopifyId });
         matched++;
@@ -395,6 +441,7 @@ Deno.serve(async (req) => {
       alreadyUploaded,
       totalShopify: shopifyRecords.length,
       totalLocal: allLocalRecords.length,
+      ...(entityType === "categories" ? { matchedByHandle, matchedByTitle, matchedByName } : {}),
     };
 
     console.log(`[SYNC] Done: ${JSON.stringify(summary)}`);
