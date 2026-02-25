@@ -548,7 +548,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
 
   // Internal upload starter (used after prepare or for non-product entities)
-  const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType) => {
+  const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType, forceMode: boolean = false) => {
     // Check if there's anything to upload BEFORE starting
     const freshCounts = await fetchStatusCounts();
     
@@ -583,7 +583,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         isTestMode: boolean;
         entityTypes?: string[];
         skipPrepare?: boolean;
-        triggerMode?: 'manual' | 'full';
+        triggerMode?: 'manual' | 'full' | 'force';
       } = {
         projectId: project.id,
         action: 'start',
@@ -594,7 +594,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // If a single entity type is specified, only upload that type
       if (singleEntityType) {
         body.entityTypes = [singleEntityType];
-        body.triggerMode = 'manual';
+        body.triggerMode = forceMode ? 'force' : 'manual';
       } else {
         body.triggerMode = 'full';
       }
@@ -1497,7 +1497,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                 {predecessorBlocking && (
                                   <DropdownMenuItem
                                     onClick={() => {
-                                      handleStartUploadInternal(false, type);
+                                      handleStartUploadInternal(false, type, true);
                                     }}
                                     disabled={jobRunning || isStarting || noPending}
                                     className="text-amber-600"

@@ -46,7 +46,7 @@ interface WorkerRequest {
   entityTypes?: string[];
   isTestMode?: boolean;
   skipPrepare?: boolean; // If true, skip prepare-upload (already done by UI)
-  triggerMode?: 'manual' | 'full'; // 'manual' = single entity, 'full' = run all in sequence
+  triggerMode?: 'manual' | 'full' | 'force'; // 'manual' = single entity, 'full' = run all in sequence, 'force' = bypass sequencing gate
 }
 
 Deno.serve(async (req) => {
@@ -508,10 +508,11 @@ Deno.serve(async (req) => {
           );
         };
 
-        if (isSequencedEntity(job.entity_type)) {
+        if (isSequencedEntity(job.entity_type) && job.trigger_mode !== 'force') {
           // For manual trigger_mode: check if predecessor is "effectively complete"
           // by comparing Shopify live count vs local total. This handles the case where
           // all items exist in Shopify but local DB hasn't been synced yet.
+          // trigger_mode === 'force' skips the gate entirely (user override).
           const isManualMode = job.trigger_mode === 'manual';
 
           let earliest: SequencedEntity | null;
@@ -552,6 +553,8 @@ Deno.serve(async (req) => {
               required_entity: earliest,
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
           }
+        } else if (job.trigger_mode === 'force') {
+          console.log(`[WORKER] Sequencing gate BYPASSED for ${job.entity_type} (trigger_mode=force)`);
         }
         // ===================================================
 
