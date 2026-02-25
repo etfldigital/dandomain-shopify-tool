@@ -138,6 +138,59 @@ Deno.serve(async (req) => {
       return null;
     };
 
+    // Like getEarliestIncompleteEntity, but also checks Shopify live counts.
+    // If Shopify has >= local total items for an entity, consider it "effectively complete"
+    // even if local DB still shows pending records (not yet synced).
+    const getEarliestIncompleteEntityWithShopifyCheck = async (pid: string): Promise<SequencedEntity | null> => {
+      projectIdForCounts = pid;
+      const { data: proj } = await supabase
+        .from('projects')
+        .select('shopify_store_domain, shopify_access_token_encrypted')
+        .eq('id', pid)
+        .single();
+      const shopifyDomain = (proj?.shopify_store_domain || '').trim();
+      const shopifyToken = (proj?.shopify_access_token_encrypted || '').trim();
+
+      for (const entity of ENTITY_SEQUENCE) {
+        const pending = await countCanonicalStatus(entity, 'pending');
+        if (pending <= 0) continue;
+
+        if (shopifyDomain && shopifyToken) {
+          const uploaded = await countCanonicalStatus(entity, 'uploaded');
+          const failed = await countCanonicalStatus(entity, 'failed');
+          const localTotal = pending + uploaded + failed;
+          try {
+            const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+            let liveCount = 0;
+            if (entity === 'categories') {
+              const r1 = await fetch(`${shopifyUrl}/smart_collections/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
+              const b1 = await r1.json();
+              const r2 = await fetch(`${shopifyUrl}/custom_collections/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
+              const b2 = await r2.json();
+              liveCount = (b1.count || 0) + (b2.count || 0);
+            } else if (entity === 'products') {
+              const r = await fetch(`${shopifyUrl}/products/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
+              liveCount = (await r.json()).count || 0;
+            } else if (entity === 'customers') {
+              const r = await fetch(`${shopifyUrl}/customers/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
+              liveCount = (await r.json()).count || 0;
+            } else if (entity === 'orders') {
+              const r = await fetch(`${shopifyUrl}/orders/count.json?status=any`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
+              liveCount = (await r.json()).count || 0;
+            }
+            if (liveCount >= localTotal) {
+              console.log(`[WORKER] Sequencing: ${entity} has ${pending} pending locally but Shopify has ${liveCount}>=${localTotal} – treating as complete`);
+              continue;
+            }
+          } catch (e) {
+            console.warn(`[WORKER] Failed Shopify count check for ${entity}, using local count`);
+          }
+        }
+        return entity;
+      }
+      return null;
+    };
+
     const ensureEntityJobRunning = async (pid: string, entity: SequencedEntity) => {
       // Try running first
       const { data: running } = await supabase
@@ -447,11 +500,20 @@ Deno.serve(async (req) => {
         };
 
         if (isSequencedEntity(job.entity_type)) {
-          // For test mode: Only enforce sequencing if the earlier entity type has an active test job
-          // This allows single-entity test runs to proceed independently
-          const earliest = job.is_test_mode
-            ? await getEarliestIncompleteTestEntity(job.project_id)
-            : await getEarliestIncompleteEntity(job.project_id);
+          // For manual trigger_mode: check if predecessor is "effectively complete"
+          // by comparing Shopify live count vs local total. This handles the case where
+          // all items exist in Shopify but local DB hasn't been synced yet.
+          const isManualMode = job.trigger_mode === 'manual';
+
+          let earliest: SequencedEntity | null;
+          if (job.is_test_mode) {
+            earliest = await getEarliestIncompleteTestEntity(job.project_id);
+          } else if (isManualMode) {
+            // For manual mode: skip predecessors that are "effectively complete" in Shopify
+            earliest = await getEarliestIncompleteEntityWithShopifyCheck(job.project_id);
+          } else {
+            earliest = await getEarliestIncompleteEntity(job.project_id);
+          }
 
           // Block only if:
           // 1. There IS an earlier entity with pending work, AND
@@ -465,11 +527,13 @@ Deno.serve(async (req) => {
               .update({ status: 'pending', last_heartbeat_at: nowIso(), next_attempt_at: null })
               .eq('id', jobId);
 
-            // Ensure the correct (earliest incomplete) entity is running.
-            if (job.is_test_mode) {
-              await ensureTestEntityJobRunning(job.project_id, earliest);
-            } else {
-              await ensureEntityJobRunning(job.project_id, earliest);
+            // For manual mode: don't try to start the predecessor (user didn't request it)
+            if (!isManualMode) {
+              if (job.is_test_mode) {
+                await ensureTestEntityJobRunning(job.project_id, earliest);
+              } else {
+                await ensureEntityJobRunning(job.project_id, earliest);
+              }
             }
 
             return new Response(JSON.stringify({

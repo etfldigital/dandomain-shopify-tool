@@ -1408,8 +1408,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
                             const currentIdx = sequenceOrder.indexOf(type);
                             // Check if any predecessor entity still has pending items
+                            // BUT: if Shopify live count >= local total, consider it "done" even if local DB hasn't synced
                             const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(
-                              predType => statusCounts[predType].pending > 0
+                              predType => {
+                                if (statusCounts[predType].pending === 0) return false;
+                                // If Shopify already has at least as many as local total, predecessor is effectively done
+                                const localTotal = statusCounts[predType].pending + statusCounts[predType].uploaded + statusCounts[predType].failed;
+                                const liveCount = shopifyLiveCounts[predType];
+                                if (liveCount !== null && liveCount !== undefined && liveCount >= localTotal) return false;
+                                return true;
+                              }
                             );
                             const predecessorLabel = predecessorBlocking 
                               ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
