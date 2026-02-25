@@ -37,6 +37,8 @@ interface MappingRules {
   excludeNoImages: boolean;
   // New: Vendor extraction from product title
   vendorExtractionMode: VendorExtractionMode;
+  // Barcode inheritance: apply primary product barcode to variants missing one
+  inheritProductBarcode: boolean;
 }
 
 // Known compound product types (two words) for vendor extraction
@@ -217,6 +219,7 @@ const defaultMappingRules: MappingRules = {
   excludeZeroPrice: false,
   excludeNoImages: false,
   vendorExtractionMode: 'none',
+  inheritProductBarcode: false,
 };
 
 /**
@@ -963,7 +966,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const saveTransformationRules = async (rules: MappingRules) => {
     try {
       await saveMappings(fieldMappings, rules);
-      toast.success('Transformationsregler gemt');
+      toast.success('Migrationsregler gemt');
     } catch (error) {
       console.error('Error saving transformation rules:', error);
     }
@@ -995,7 +998,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="transform" className="flex items-center gap-2">
             <Settings className="w-4 h-4" />
-            <span className="hidden sm:inline">Transformationsregler</span>
+            <span className="hidden sm:inline">Migrationsregler</span>
             <span className="sm:hidden">Regler</span>
           </TabsTrigger>
           <TabsTrigger value="mapping" className="flex items-center gap-2">
@@ -1014,7 +1017,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         <TabsContent value="transform" className="mt-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Transformationsregler</CardTitle>
+              <CardTitle className="text-lg">Migrationsregler</CardTitle>
               <CardDescription>
                 Konfigurer hvordan produktdata transformeres til Shopify
               </CardDescription>
@@ -1200,6 +1203,35 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                   <Switch
                     checked={mappingRules.excludeZeroPrice}
                     onCheckedChange={(checked) => setMappingRules({ ...mappingRules, excludeZeroPrice: checked })}
+                  />
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Barcode Inheritance */}
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">Stregkode</Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Indstillinger for stregkode-håndtering under migrering
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Anvend primært produkts stregkode, hvis stregkode ikke er angivet for varianter</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Hvis en variant mangler stregkode, kopieres produktets stregkode til varianten. Eksisterende variant-stregkoder overskrives aldrig.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={mappingRules.inheritProductBarcode}
+                    onCheckedChange={(checked) => {
+                      const newRules = { ...mappingRules, inheritProductBarcode: checked };
+                      setMappingRules(newRules);
+                      saveTransformationRules(newRules);
+                    }}
                   />
                 </div>
               </div>
