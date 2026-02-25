@@ -131,6 +131,7 @@ interface StatusCounts {
 // Shopify live product count (fetched from API)
 interface ShopifyLiveCounts {
   products: number | null;
+  fetchFailed: boolean;
 }
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
@@ -188,7 +189,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const autoRecoverRef = useRef<Record<string, number>>({}); // jobId -> last auto recover ts
   
   // Shopify live counts (actual product count from Shopify API)
-  const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null });
+  const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, fetchFailed: false });
   const lastShopifyFetchRef = useRef<number>(0);
 
   // Reset confirmation dialog state
@@ -292,10 +293,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       });
       
       if (response.data?.success && typeof response.data.count === 'number') {
-        setShopifyLiveCounts({ products: response.data.count });
+        setShopifyLiveCounts({ products: response.data.count, fetchFailed: false });
+      } else {
+        setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true }));
       }
     } catch (e) {
       console.warn('[UploadStep] Failed to fetch Shopify live counts:', e);
+      setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true }));
     }
   };
 
@@ -1260,6 +1264,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               {/* For products, show Shopify live count instead of DB uploaded count */}
                               {type === 'products' && shopifyLiveCounts.products !== null ? (
                                 <span className="text-green-600 mr-2">{shopifyLiveCounts.products.toLocaleString('da-DK')} i Shopify</span>
+                              ) : type === 'products' && shopifyLiveCounts.fetchFailed ? (
+                                <span className="text-muted-foreground mr-2">– i Shopify</span>
                               ) : counts.uploaded > 0 ? (
                                 <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>
                               ) : null}
