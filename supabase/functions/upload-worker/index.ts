@@ -638,20 +638,30 @@ Deno.serve(async (req) => {
         let effectiveCurrentBatch = typeof job.current_batch === 'number' ? job.current_batch : 0;
 
         if (job.entity_type === 'products' && effectiveCurrentBatch === 0) {
-          const neededPrimaries = Math.min(job.batch_size || 3, 3);
           const nowIso = () => new Date().toISOString();
 
-          // Fast path: if we already have enough prepared primary products pending, skip prepare-upload.
-          // This is common when the user has already run prepare previously.
-          const { count: preparedPrimariesCount, error: preparedCountError } = await supabase
+          // Check if ALL products have been prepared (no records with _isPrimary=null).
+          // Previously this only checked if *enough* primaries existed, which caused
+          // prepare to be skipped when only 1 chunk (2000 records) out of 10k+ was processed.
+          const { count: unpreparedCount, error: unpreparedError } = await supabase
+            .from('canonical_products')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', job.project_id)
+            .in('status', ['pending', 'mapped'])
+            .is('data->>_isPrimary', null);
+
+          const allPrepared = !unpreparedError && (unpreparedCount ?? 0) === 0;
+
+          // Also check we actually have some primaries (not zero)
+          const { count: preparedPrimariesCount } = await supabase
             .from('canonical_products')
             .select('*', { count: 'exact', head: true })
             .eq('project_id', job.project_id)
             .eq('status', 'pending')
             .eq('data->>_isPrimary', 'true');
 
-          if (!preparedCountError && (preparedPrimariesCount ?? 0) >= neededPrimaries) {
-            console.log(`[WORKER] Skipping prepare-upload (already have ${preparedPrimariesCount} pending primaries, need ${neededPrimaries})`);
+          if (allPrepared && (preparedPrimariesCount ?? 0) > 0) {
+            console.log(`[WORKER] Skipping prepare-upload (all records prepared, ${preparedPrimariesCount} pending primaries)`);
 
             await supabase
               .from('upload_jobs')
@@ -661,6 +671,8 @@ Deno.serve(async (req) => {
 
             effectiveCurrentBatch = 1;
           } else {
+            console.log(`[WORKER] Need to run prepare-upload (unprepared=${unpreparedCount ?? '?'}, primaries=${preparedPrimariesCount ?? 0})`);
+
             console.log('[WORKER] Running prepare-upload for product grouping...');
 
             const isTestMode = job.is_test_mode || false;
