@@ -1317,7 +1317,15 @@ function encodePathSegments(path: string): string {
     decodedFilename = filename;
   }
 
-  segments[filenameIndex] = encodeURIComponent(decodedFilename);
+  // Encode the filename but restore characters that DanDomain servers expect literal:
+  // parentheses (), asterisks *, exclamation marks !, single quotes ', tildes ~
+  segments[filenameIndex] = encodeURIComponent(decodedFilename)
+    .replace(/%28/g, '(')
+    .replace(/%29/g, ')')
+    .replace(/%2A/g, '*')
+    .replace(/%21/g, '!')
+    .replace(/%27/g, "'")
+    .replace(/%7E/g, '~');
   return segments.join('/');
 }
 
