@@ -26,7 +26,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 10,
   customers: 20,
-  orders: 20,
+  orders: 10, // Sequential processing with 550ms spacing = ~10 orders per batch within time budget
 };
 
 // Enforce strict upload order for dependent entities.
