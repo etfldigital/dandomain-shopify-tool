@@ -1234,74 +1234,91 @@ function generateHandle(title: string): string {
 
 function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
   if (!url) return url;
-  
-  // Strategy: URL-encode the path so the original filename (with spaces, parentheses, etc.)
-  // is preserved but made URL-safe. The DanDomain server can still locate the file.
-  // We do NOT rename the file — just encode each path segment properly.
+
+  const rawUrl = url.trim();
+  if (!rawUrl) return rawUrl;
 
   // Already absolute URL
-  if (url.startsWith('http://') || url.startsWith('https://')) {
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
     try {
-      const u = new URL(url);
-      // Re-encode pathname segments to fix un-encoded spaces/special chars
+      const u = new URL(rawUrl);
+      // Encode filename portion only (last path segment), keep path separators
       u.pathname = encodePathSegments(u.pathname);
       return u.toString();
-    } catch { return url; }
-  }
-  
-  // Protocol-relative URL
-  if (url.startsWith('//')) {
-    try {
-      const u = new URL('https:' + url);
-      u.pathname = encodePathSegments(u.pathname);
-      return u.toString();
-    } catch { return 'https:' + url; }
+    } catch {
+      return rawUrl;
+    }
   }
 
-  const encodedPath = encodePathSegments(url);
-  
+  // Protocol-relative URL
+  if (rawUrl.startsWith('//')) {
+    try {
+      const u = new URL(`https:${rawUrl}`);
+      u.pathname = encodePathSegments(u.pathname);
+      return u.toString();
+    } catch {
+      return `https:${rawUrl}`;
+    }
+  }
+
+  // Split relative URL into path + optional query/hash so only path filename is encoded
+  const pathMatch = rawUrl.match(/^([^?#]*)([?#].*)?$/);
+  const pathPart = pathMatch?.[1] ?? rawUrl;
+  const suffix = pathMatch?.[2] ?? '';
+  const encodedPath = encodePathSegments(pathPart);
+
   // Relative URL starting with /
-  if (url.startsWith('/')) {
+  if (pathPart.startsWith('/')) {
     if (dandomainBaseUrl) {
       let base = dandomainBaseUrl.trim().replace(/\/$/, '');
       if (!base.startsWith('http://') && !base.startsWith('https://')) {
         base = `https://${base}`;
       }
-      return `${base}${encodedPath}`;
+      return `${base}${encodedPath}${suffix}`;
     }
-    return encodedPath;
+    return `${encodedPath}${suffix}`;
   }
-  
+
   // Relative URL without leading /
   if (dandomainBaseUrl) {
     let base = dandomainBaseUrl.trim().replace(/\/$/, '');
     if (!base.startsWith('http://') && !base.startsWith('https://')) {
       base = `https://${base}`;
     }
-    return `${base}/${encodedPath}`;
+    return `${base}/${encodedPath}${suffix}`;
   }
-  
-  return encodedPath;
+
+  return `${encodedPath}${suffix}`;
 }
 
-// Properly encode each segment of a URL path, preserving slashes.
-// e.g. "/images/preview (4)_277722719.jpg" -> "/images/preview%20(4)_277722719.jpg"
+// Properly encode filename (last segment) of a URL path, preserving directory slashes.
+// e.g. "/images/some file (1).webp" -> "/images/some%20file%20%281%29.webp"
 function encodePathSegments(path: string): string {
   if (!path) return path;
-  return path
-    .split('/')
-    .map(segment => {
-      if (!segment) return segment;
-      // encodeURIComponent then restore characters that are valid in URLs
-      // and that source servers (DanDomain) expect literally: () ' ! *
-      return encodeURIComponent(decodeURIComponent(segment))
-        .replace(/%28/g, '(')
-        .replace(/%29/g, ')')
-        .replace(/%27/g, "'")
-        .replace(/%21/g, '!')
-        .replace(/%2A/g, '*');
-    })
-    .join('/');
+
+  const segments = path.split('/');
+  let filenameIndex = -1;
+
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i]) {
+      filenameIndex = i;
+      break;
+    }
+  }
+
+  if (filenameIndex === -1) return path;
+
+  const filename = segments[filenameIndex];
+  let decodedFilename = filename;
+
+  try {
+    decodedFilename = decodeURIComponent(filename);
+  } catch {
+    decodedFilename = filename;
+  }
+
+  segments[filenameIndex] = encodeURIComponent(decodedFilename);
+  return segments.join('/');
 }
 
 const SIZE_PATTERNS = [
