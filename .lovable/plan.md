@@ -1,45 +1,60 @@
 
-# Sanitize Image Filenames for Shopify Upload
 
-## Problem
-Product image filenames from DanDomain XML contain spaces and Danish special characters (e.g. `/images/Miriam - black.jpg`) which cause Shopify image uploads to fail.
+## Investigation Results
 
-## Solution
-Add a `sanitizeImageFilename` function and apply it at the point where image URLs are normalized before sending to Shopify.
+The "i Shopify" refresh button is **NOT broken by CORS**. The full flow works correctly:
 
-## Changes
+1. Browser calls backend Edge Function `shopify-products-count` via `supabase.functions.invoke()` -- confirmed in console logs and network requests
+2. Edge Function calls Shopify REST API at `https://alexandrasdk.myshopify.com/admin/api/2025-01/products/count.json?status=any`
+3. Shopify returns `{"count":0}` -- HTTP 200, not an error
 
-### 1. Add sanitize function to `supabase/functions/shopify-upload/index.ts`
+This is confirmed by edge function logs showing dozens of calls all returning `{"count":0}`. Meanwhile, the same function correctly returns customers (16,215), orders (4,539), categories (405), and pages (1).
 
-A new `sanitizeImageFilename` utility function will be added that:
-- Extracts just the filename portion from the URL path
-- Replaces Danish characters (ae, oe, aa)
-- Replaces spaces and unsafe characters with hyphens
-- Collapses double hyphens
-- Converts to lowercase
-- Preserves the file extension and directory path
+### Root Cause
 
-### 2. Apply sanitization inside `normalizeImageUrl`
+The Shopify REST Products API (`/products/count.json`) was deprecated starting in API version `2024-10`. In version `2025-01`, this endpoint returns 0 even though products exist. The upload works because `POST /products.json` still functions for creation, but the count endpoint is broken.
 
-The existing `normalizeImageUrl` function (already called for every image) will be updated to run the filename through the sanitizer before returning the final URL. This is the single choke-point for all image URLs going to Shopify, so no other call sites need changes.
+### Plan
 
-## Technical Details
+**1. Fix `shopify-products-count` Edge Function** -- use GraphQL for products count instead of the deprecated REST endpoint
 
-```text
-sanitizeImageFilename("Miriam - black.jpg")
-  -> "miriam-black.jpg"
-
-normalizeImageUrl("/images/Miriam - black.jpg", "https://example.dk")
-  -> "https://example.dk/images/miriam-black.jpg"
+Replace the products case in `fetchCountForEntity` with a GraphQL query:
+```graphql
+{ productsCount { count } }
 ```
 
-The function:
-1. Splits the URL into directory path + filename
-2. Separates the extension from the base name
-3. Applies Danish character replacements (ae, oe, aa, Ae, Oe, Aa)
-4. Replaces non-alphanumeric/non-dot characters with hyphens
-5. Collapses multiple hyphens, trims leading/trailing hyphens
-6. Lowercases the result
-7. Reassembles directory + sanitized filename
+This hits `POST /admin/api/2025-01/graphql.json` which is the supported way to count products in newer API versions. All other entity types (customers, orders, categories, pages) keep their current REST endpoints since those still work.
 
-Only the `shopify-upload` edge function is modified -- the XML parser stores raw data as-is, and sanitization happens at upload time.
+**2. No frontend changes needed**
+
+The frontend code in `UploadStep.tsx` already:
+- Calls the backend Edge Function (not Shopify directly)
+- Has per-entity-type refresh via `fetchShopifyLiveCountForEntity()`
+- Displays "–" when fetch fails (`null` values)
+- Logs responses to console
+
+The only change is in the backend Edge Function.
+
+### Technical Detail
+
+```text
+Current (broken):
+  GET /admin/api/2025-01/products/count.json?status=any → {"count": 0}
+
+Fixed:
+  POST /admin/api/2025-01/graphql.json
+  Body: { "query": "{ productsCount { count } }" }
+  → {"data": {"productsCount": {"count": 431}}}
+```
+
+### Files to change
+
+- `supabase/functions/shopify-products-count/index.ts` -- replace REST products count with GraphQL query
+- `supabase/functions/upload-worker/index.ts` -- also fix the products count at line 172 which has the same bug (used for sequencing gate)
+
+### Not changing
+- Upload logic, payload mapping, retry logic
+- "Afventer" count logic
+- Frontend UploadStep.tsx
+- Watchdog mechanism
+
