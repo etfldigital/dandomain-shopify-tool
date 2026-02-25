@@ -6,8 +6,11 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+type EntityType = "products" | "customers" | "orders" | "categories" | "pages";
+
 type Body = {
   projectId: string;
+  entityTypes?: EntityType[]; // If omitted, defaults to ["products"]
 };
 
 Deno.serve(async (req) => {
@@ -37,7 +40,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { projectId }: Body = await req.json();
+    const { projectId, entityTypes }: Body = await req.json();
     if (!projectId) throw new Error("projectId required");
 
     const { data: project, error: projectError } = await supabase
@@ -60,26 +63,31 @@ Deno.serve(async (req) => {
       throw new Error("Shopify credentials not configured");
     }
 
-    // Include ALL statuses (active, draft, archived) to match Shopify admin's "All products" view
-    const url = `https://${shopifyDomain}/admin/api/2024-01/products/count.json?status=any`;
+    const baseUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+    const headers = {
+      "X-Shopify-Access-Token": shopifyToken,
+      Accept: "application/json",
+    };
 
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: {
-        "X-Shopify-Access-Token": shopifyToken,
-        Accept: "application/json",
-      },
-    });
+    const typesToFetch = entityTypes || ["products"];
+    const counts: Record<string, number | null> = {};
 
-    const text = await resp.text();
-    if (!resp.ok) {
-      throw new Error(`Shopify count failed (HTTP ${resp.status}): ${text.substring(0, 200)}`);
+    for (const et of typesToFetch) {
+      try {
+        counts[et] = await fetchCountForEntity(baseUrl, headers, et);
+      } catch (e) {
+        console.error(`[shopify-counts] Failed to fetch ${et}:`, e);
+        counts[et] = null;
+      }
     }
 
-    const json = JSON.parse(text) as { count?: number };
-    const count = typeof json.count === "number" ? json.count : null;
+    // Backward compat: if only products requested the old way, include top-level "count"
+    const response: Record<string, any> = { success: true, counts };
+    if (typesToFetch.length === 1 && typesToFetch[0] === "products" && counts.products !== null) {
+      response.count = counts.products;
+    }
 
-    return new Response(JSON.stringify({ success: true, count }), {
+    return new Response(JSON.stringify(response), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
@@ -91,3 +99,49 @@ Deno.serve(async (req) => {
     });
   }
 });
+
+async function fetchCountForEntity(
+  baseUrl: string,
+  headers: Record<string, string>,
+  entityType: EntityType
+): Promise<number> {
+  switch (entityType) {
+    case "products": {
+      const r = await fetch(`${baseUrl}/products/count.json?status=any`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      return j.count ?? 0;
+    }
+    case "customers": {
+      const r = await fetch(`${baseUrl}/customers/count.json`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      return j.count ?? 0;
+    }
+    case "orders": {
+      const r = await fetch(`${baseUrl}/orders/count.json?status=any`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      return j.count ?? 0;
+    }
+    case "categories": {
+      // Sum smart_collections + custom_collections
+      const [r1, r2] = await Promise.all([
+        fetch(`${baseUrl}/smart_collections/count.json`, { headers }),
+        fetch(`${baseUrl}/custom_collections/count.json`, { headers }),
+      ]);
+      if (!r1.ok) throw new Error(`smart_collections HTTP ${r1.status}`);
+      if (!r2.ok) throw new Error(`custom_collections HTTP ${r2.status}`);
+      const [j1, j2] = await Promise.all([r1.json(), r2.json()]);
+      return (j1.count ?? 0) + (j2.count ?? 0);
+    }
+    case "pages": {
+      const r = await fetch(`${baseUrl}/pages/count.json`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      return j.count ?? 0;
+    }
+    default:
+      throw new Error(`Unknown entity type: ${entityType}`);
+  }
+}
