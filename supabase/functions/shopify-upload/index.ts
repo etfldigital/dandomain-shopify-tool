@@ -1290,7 +1290,17 @@ function encodePathSegments(path: string): string {
   if (!path) return path;
   return path
     .split('/')
-    .map(segment => segment ? encodeURIComponent(decodeURIComponent(segment)) : segment)
+    .map(segment => {
+      if (!segment) return segment;
+      // encodeURIComponent then restore characters that are valid in URLs
+      // and that source servers (DanDomain) expect literally: () ' ! *
+      return encodeURIComponent(decodeURIComponent(segment))
+        .replace(/%28/g, '(')
+        .replace(/%29/g, ')')
+        .replace(/%27/g, "'")
+        .replace(/%21/g, '!')
+        .replace(/%2A/g, '*');
+    })
     .join('/');
 }
 
