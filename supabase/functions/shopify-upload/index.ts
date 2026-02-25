@@ -1069,9 +1069,10 @@ async function processProductGroup(
 
     const imagePromises = allImages.map((imageUrl) =>
       imageLimit(async () => {
+        const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
+
         try {
-          const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
-          const imgResult = await shopifyFetch(
+          const srcUploadResult = await shopifyFetch(
             `${shopifyUrl}/products/${shopifyId}/images.json`,
             {
               method: 'POST',
@@ -1079,19 +1080,47 @@ async function processProductGroup(
               body: JSON.stringify({ image: { src: normalizedUrl } }),
             }
           );
-          if ('rateLimited' in imgResult) {
+
+          if ('rateLimited' in srcUploadResult) {
             // Wait out the rate limit, then count as failed (will be retried on next run if needed)
-            await sleep(imgResult.retryAfterMs);
+            await sleep(srcUploadResult.retryAfterMs);
             failed++;
             return;
           }
-          if (imgResult.response.ok) {
+
+          if (srcUploadResult.response.ok) {
             added++;
-          } else {
-            failed++;
+            return;
           }
+
+          // Fallback: fetch image ourselves (with browser-like headers) and upload as attachment.
+          const attachmentFallback = await uploadProductImageAsAttachment(
+            shopifyUrl,
+            shopifyId,
+            token,
+            normalizedUrl,
+            dandomainBaseUrl
+          );
+
+          if (attachmentFallback.rateLimited) {
+            await sleep(attachmentFallback.retryAfterMs ?? 2000);
+            failed++;
+            return;
+          }
+
+          if (attachmentFallback.uploaded) {
+            added++;
+            return;
+          }
+
+          failed++;
+          console.warn(
+            `[PRODUCTS] "${transformedTitle}": image upload failed for ${normalizedUrl}. src_status=${srcUploadResult.response.status}, src_body=${truncateForLog(srcUploadResult.body)}, fallback_error=${attachmentFallback.error || 'unknown'}`
+          );
         } catch (e) {
           failed++;
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[PRODUCTS] "${transformedTitle}": image upload exception for ${normalizedUrl}: ${message}`);
         }
       })
     );
@@ -1230,6 +1259,121 @@ function generateHandle(title: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function truncateForLog(value: string, maxLength = 220): string {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '(empty)';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function extractFilenameFromImageUrl(imageUrl: string): string {
+  try {
+    const u = new URL(imageUrl);
+    const segments = u.pathname.split('/').filter(Boolean);
+    const lastSegment = segments[segments.length - 1] || 'image';
+    try {
+      return decodeURIComponent(lastSegment);
+    } catch {
+      return lastSegment;
+    }
+  } catch {
+    const fallback = imageUrl.split('/').pop()?.split('?')[0]?.split('#')[0] || 'image';
+    try {
+      return decodeURIComponent(fallback);
+    } catch {
+      return fallback;
+    }
+  }
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (bytes.length === 0) return '';
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+async function uploadProductImageAsAttachment(
+  shopifyUrl: string,
+  shopifyId: string,
+  token: string,
+  normalizedUrl: string,
+  dandomainBaseUrl: string
+): Promise<{ uploaded: boolean; rateLimited?: true; retryAfterMs?: number; error?: string }> {
+  const sourceHeaders: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+
+  if (dandomainBaseUrl) {
+    let base = dandomainBaseUrl.trim().replace(/\/$/, '');
+    if (!base.startsWith('http://') && !base.startsWith('https://')) {
+      base = `https://${base}`;
+    }
+    sourceHeaders.Referer = `${base}/`;
+  }
+
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), 20_000);
+
+  let sourceResponse: Response;
+  try {
+    sourceResponse = await fetch(normalizedUrl, {
+      method: 'GET',
+      headers: sourceHeaders,
+      redirect: 'follow',
+      signal: timeoutController.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeoutId);
+    const message = error instanceof Error ? error.message : String(error);
+    return { uploaded: false, error: `Source fetch exception: ${message}` };
+  }
+
+  clearTimeout(timeoutId);
+
+  if (!sourceResponse.ok) {
+    return {
+      uploaded: false,
+      error: `Source fetch failed (${sourceResponse.status} ${sourceResponse.statusText})`,
+    };
+  }
+
+  const imageBytes = new Uint8Array(await sourceResponse.arrayBuffer());
+  if (imageBytes.length === 0) {
+    return { uploaded: false, error: 'Source image was empty' };
+  }
+
+  const filename = extractFilenameFromImageUrl(normalizedUrl);
+  const attachmentPayload = uint8ArrayToBase64(imageBytes);
+
+  const result = await shopifyFetch(
+    `${shopifyUrl}/products/${shopifyId}/images.json`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+      body: JSON.stringify({ image: { attachment: attachmentPayload, filename } }),
+    }
+  );
+
+  if ('rateLimited' in result) {
+    return { uploaded: false, rateLimited: true, retryAfterMs: result.retryAfterMs };
+  }
+
+  if (!result.response.ok) {
+    return {
+      uploaded: false,
+      error: `Attachment upload failed (${result.response.status}): ${truncateForLog(result.body)}`,
+    };
+  }
+
+  return { uploaded: true };
 }
 
 function normalizeImageUrl(url: string, dandomainBaseUrl: string): string {
