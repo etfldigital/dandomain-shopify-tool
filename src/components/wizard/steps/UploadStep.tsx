@@ -223,9 +223,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0 },
     };
 
-    // Products - count only primary products where PROD_VAR_MASTER = 'True' in source data.
-    // This filters out variants and gives the correct Shopify product count.
-    const masterFilter = 'True'; // Matches <PROD_VAR_MASTER>True</PROD_VAR_MASTER> from XML source
+    // Products - count all pending products (including variants) for the upload guard.
+    // The prepare-upload step handles variant grouping, so the pending count here must include
+    // all rows to avoid a false "no data" guard. For uploaded/failed, filter on _isPrimary
+    // to show the Shopify-level product count.
     const [
       { count: productPending },
       { count: productUploaded },
@@ -235,20 +236,19 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         .from('canonical_products')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
-        .eq('status', 'pending')
-        .eq('data->>PROD_VAR_MASTER', masterFilter),
+        .eq('status', 'pending'),
       supabase
         .from('canonical_products')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('status', 'uploaded')
-        .eq('data->>PROD_VAR_MASTER', masterFilter),
+        .eq('data->>_isPrimary', 'true'),
       supabase
         .from('canonical_products')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('status', 'failed')
-        .eq('data->>PROD_VAR_MASTER', masterFilter),
+        .eq('data->>_isPrimary', 'true'),
     ]);
 
     counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
