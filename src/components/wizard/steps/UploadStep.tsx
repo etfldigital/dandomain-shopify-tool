@@ -223,35 +223,24 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0 },
     };
 
-    // Products - count all pending products (including variants) for the upload guard.
-    // The prepare-upload step handles variant grouping, so the pending count here must include
-    // all rows to avoid a false "no data" guard. For uploaded/failed, filter on _isPrimary
-    // to show the Shopify-level product count.
-    const [
-      { count: productPending },
-      { count: productUploaded },
-      { count: productFailed },
-    ] = await Promise.all([
-      supabase
-        .from('canonical_products')
-        .select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('status', 'pending'),
-      supabase
-        .from('canonical_products')
-        .select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded')
-        .eq('data->>_isPrimary', 'true'),
-      supabase
-        .from('canonical_products')
-        .select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .eq('status', 'failed')
-        .eq('data->>_isPrimary', 'true'),
-    ]);
+    // Products - count primary products (unique titles) per status using DB function.
+    // This correctly counts ~3,478 primary products regardless of variant rows.
+    const { data: primaryCounts } = await supabase.rpc('count_primary_products', {
+      p_project_id: project.id,
+    });
 
-    counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
+    let productPending = 0;
+    let productUploaded = 0;
+    let productFailed = 0;
+    if (primaryCounts && Array.isArray(primaryCounts)) {
+      for (const row of primaryCounts) {
+        if (row.status === 'pending') productPending = Number(row.primary_count) || 0;
+        else if (row.status === 'uploaded') productUploaded = Number(row.primary_count) || 0;
+        else if (row.status === 'failed') productFailed = Number(row.primary_count) || 0;
+      }
+    }
+
+    counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed };
 
     // Customers
     const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');

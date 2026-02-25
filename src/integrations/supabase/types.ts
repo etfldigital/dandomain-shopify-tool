@@ -680,7 +680,13 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      count_primary_products: {
+        Args: { p_project_id: string }
+        Returns: {
+          primary_count: number
+          status: string
+        }[]
+      }
     }
     Enums: {
       canonical_status: "pending" | "mapped" | "uploaded" | "failed"
