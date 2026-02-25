@@ -270,7 +270,46 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
-  // Fetch live counts from Shopify API for all entity types
+  // Fetch live count from Shopify API for a SINGLE entity type
+  const fetchShopifyLiveCountForEntity = async (entityType: EntityType, force = false) => {
+    console.log(`[UploadStep] fetchShopifyLiveCountForEntity called for ${entityType}, force=${force}`);
+    
+    try {
+      const response = await supabase.functions.invoke('shopify-products-count', {
+        body: { 
+          projectId: project.id,
+          entityTypes: [entityType],
+        },
+      });
+      
+      console.log(`[UploadStep] Shopify response for ${entityType}:`, response.data);
+      
+      if (response.data?.success && response.data.counts) {
+        const value = response.data.counts[entityType] ?? null;
+        setShopifyLiveCounts(prev => ({
+          ...prev,
+          [entityType]: value,
+          fetchFailed: false,
+        }));
+      } else {
+        console.warn(`[UploadStep] Shopify fetch failed for ${entityType}:`, response.data?.error || 'unknown');
+        setShopifyLiveCounts(prev => ({
+          ...prev,
+          [entityType]: null,
+          fetchFailed: true,
+        }));
+      }
+    } catch (e) {
+      console.warn(`[UploadStep] Failed to fetch Shopify live count for ${entityType}:`, e);
+      setShopifyLiveCounts(prev => ({
+        ...prev,
+        [entityType]: null,
+        fetchFailed: true,
+      }));
+    }
+  };
+
+  // Fetch live counts from Shopify API for all entity types (sequential to avoid 429)
   const fetchShopifyLiveCounts = async (force = false) => {
     const now = Date.now();
     if (!force && now - lastShopifyFetchRef.current < 60_000) {
@@ -286,6 +325,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           entityTypes: ['products', 'customers', 'orders', 'categories', 'pages'],
         },
       });
+      
+      console.log('[UploadStep] Shopify all-counts response:', response.data);
       
       if (response.data?.success && response.data.counts) {
         const c = response.data.counts;
@@ -1315,11 +1356,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-green-600 mr-2">
                                       {liveCount.toLocaleString('da-DK')} i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCounts(true); }}
+                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
-                                        title="Opdater Shopify-tal"
+                                        title={`Opdater ${label} Shopify-tal`}
                                       >
-                                        <RefreshCw className={`w-3 h-3 ${shopifyLiveCounts.isLoading ? 'animate-spin' : ''}`} />
+                                        <RefreshCw className="w-3 h-3" />
                                       </button>
                                     </span>
                                   );
@@ -1332,7 +1373,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-muted-foreground mr-2">
                                       – i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCounts(true); }}
+                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Retry refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center hover:text-foreground"
                                         title="Prøv igen"
                                       >
