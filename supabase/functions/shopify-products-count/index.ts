@@ -113,14 +113,21 @@ async function fetchCountForEntity(
 ): Promise<number> {
   switch (entityType) {
     case "products": {
-      const url = `${baseUrl}/products/count.json?status=any`;
-      console.log(`[shopify-counts] Fetching products count from: ${url}`);
-      const r = await fetch(url, { headers });
+      // REST /products/count.json is deprecated in API 2025-01 and returns 0.
+      // Use GraphQL productsCount instead.
+      const gqlUrl = `${baseUrl}/graphql.json`;
+      console.log(`[shopify-counts] Fetching products count via GraphQL: ${gqlUrl}`);
+      const r = await fetch(gqlUrl, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "{ productsCount { count } }" }),
+      });
       const body = await r.text();
-      console.log(`[shopify-counts] Products response: HTTP ${r.status}, body: ${body}`);
+      console.log(`[shopify-counts] Products GraphQL response: HTTP ${r.status}, body: ${body}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${body}`);
       const j = JSON.parse(body);
-      return j.count ?? 0;
+      if (j.errors) throw new Error(`GraphQL errors: ${JSON.stringify(j.errors)}`);
+      return j.data?.productsCount?.count ?? 0;
     }
     case "customers": {
       const r = await fetch(`${baseUrl}/customers/count.json`, { headers });
