@@ -169,8 +169,14 @@ Deno.serve(async (req) => {
               const b2 = await r2.json();
               liveCount = (b1.count || 0) + (b2.count || 0);
             } else if (entity === 'products') {
-              const r = await fetch(`${shopifyUrl}/products/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
-              liveCount = (await r.json()).count || 0;
+              // REST /products/count.json deprecated in API 2025-01 – use GraphQL
+              const r = await fetch(`${shopifyUrl}/graphql.json`, {
+                method: 'POST',
+                headers: { 'X-Shopify-Access-Token': shopifyToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: '{ productsCount { count } }' }),
+              });
+              const j = await r.json();
+              liveCount = j.data?.productsCount?.count || 0;
             } else if (entity === 'customers') {
               const r = await fetch(`${shopifyUrl}/customers/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });
               liveCount = (await r.json()).count || 0;
