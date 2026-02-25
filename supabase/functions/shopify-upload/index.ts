@@ -34,11 +34,50 @@ function getCurrentBucketUsage(): number {
 
 function getPreRequestDelay(entityType?: string): number {
   const usage = getCurrentBucketUsage();
-  if (usage >= 38) return 1000;
-  if (usage >= 35) return 500;
-  if (usage >= 30) return 200;
-  // No fixed pre-delay for any entity - the bucket-based limiter above handles it dynamically
+  // 80% of 40-bucket = 32. Pause aggressively when close to limit.
+  if (usage >= 38) return 2000;
+  if (usage >= 35) return 1000;
+  if (usage >= 32) return 500;  // 80% threshold
+  if (usage >= 28) return 200;
   return 0;
+}
+
+// Returns true if bucket is above 80% full (should pause new requests)
+function isBucketHot(): boolean {
+  return getCurrentBucketUsage() >= 32; // 80% of 40
+}
+
+// Simple concurrency limiter (like p-limit)
+function createConcurrencyLimiter(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const next = () => {
+    if (queue.length > 0 && active < concurrency) {
+      active++;
+      const resolve = queue.shift()!;
+      resolve();
+    }
+  };
+
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    // Wait for bucket to cool down before acquiring slot
+    while (isBucketHot()) {
+      await sleep(500);
+    }
+
+    await new Promise<void>((resolve) => {
+      queue.push(resolve);
+      next();
+    });
+
+    try {
+      return await fn();
+    } finally {
+      active--;
+      next();
+    }
+  };
 }
 
 async function shopifyFetch(
@@ -1633,10 +1672,24 @@ async function uploadOrders(
 
   let processed = 0;
   let errors = 0;
-  const errorDetails: { externalId: string; message: string }[] = [];
+  const errorDetails: { externalId: string; message: string; step?: string }[] = [];
+  let rateLimitedGlobal = false;
+  let retryAfterSecondsGlobal = 0;
 
-  for (const item of items) {
-    if (Date.now() - startTime > timeBudget) break;
+  // ============================================================================
+  // CONCURRENT ORDER PROCESSING
+  // Max 3 simultaneous orders. Each order fully completes before being marked done.
+  // If bucket is >80% full, the limiter pauses automatically.
+  // ============================================================================
+  const ORDER_CONCURRENCY = 3;
+  const ORDER_MAX_RETRIES = 3;
+  const limit = createConcurrencyLimiter(ORDER_CONCURRENCY);
+
+  const processOneOrder = async (item: any): Promise<void> => {
+    // Check time budget
+    if (Date.now() - startTime > timeBudget) return;
+    // If another order triggered a global rate limit, stop starting new ones
+    if (rateLimitedGlobal) return;
 
     const data = item.data || {};
     const lineItems = data.line_items || [];
@@ -1671,18 +1724,12 @@ async function uploadOrders(
     let shopifyCustomerId = customerLookup.get(customerId) || 
                            (customerEmail ? customerLookup.get(customerEmail.toLowerCase()) : undefined);
 
-    // Build full name from customer fields
     const firstName = data.customer_first_name || '';
     const lastName = data.customer_last_name || '';
 
-    // Enrich shipping_address and billing_address with customer name if missing
     const enrichAddress = (addr: any) => {
       if (!addr) return addr;
-      return {
-        ...addr,
-        first_name: addr.first_name || firstName,
-        last_name: addr.last_name || lastName,
-      };
+      return { ...addr, first_name: addr.first_name || firstName, last_name: addr.last_name || lastName };
     };
 
     const shippingAddress = enrichAddress(data.shipping_address);
@@ -1697,14 +1744,9 @@ async function uploadOrders(
         send_fulfillment_receipt: false,
         inventory_behaviour: 'bypass',
         ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {
-          // No shopify customer found - include name and email directly
           ...(customerEmail ? { email: customerEmail } : {}),
           ...(firstName || lastName ? {
-            billing_address: {
-              first_name: firstName,
-              last_name: lastName,
-              email: customerEmail || undefined,
-            }
+            billing_address: { first_name: firstName, last_name: lastName, email: customerEmail || undefined }
           } : {}),
         }),
         ...(shippingAddress ? { shipping_address: shippingAddress } : {}),
@@ -1714,49 +1756,90 @@ async function uploadOrders(
       },
     };
 
-    const result = await shopifyFetch(
-      `${shopifyUrl}/orders.json`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-        body: JSON.stringify(orderPayload),
-      },
-      3,
-      'orders'
-    );
+    // ========== RETRY LOOP (up to 3 attempts with exponential backoff) ==========
+    let lastError = '';
+    let failedStep = 'create_order';
+    for (let attempt = 1; attempt <= ORDER_MAX_RETRIES; attempt++) {
+      try {
+        const result = await shopifyFetch(
+          `${shopifyUrl}/orders.json`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+            body: JSON.stringify(orderPayload),
+          },
+          1, // shopifyFetch retries transient errors internally; we handle retries at this level
+          'orders'
+        );
 
-    if ('rateLimited' in result) {
-      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
+        if ('rateLimited' in result) {
+          // On rate limit, wait and retry (don't immediately fail the order)
+          if (attempt < ORDER_MAX_RETRIES) {
+            const waitMs = Math.max(result.retryAfterMs, 2000 * Math.pow(2, attempt - 1));
+            console.log(`[ORDERS] Order ${item.external_id} rate limited, retry ${attempt}/${ORDER_MAX_RETRIES} in ${Math.ceil(waitMs/1000)}s`);
+            await sleep(waitMs);
+            continue;
+          }
+          // Final attempt still rate limited → signal global rate limit
+          rateLimitedGlobal = true;
+          retryAfterSecondsGlobal = Math.ceil(result.retryAfterMs / 1000);
+          return; // Don't mark as failed - will be retried next batch
+        }
+
+        if (!result.response.ok) {
+          lastError = `${result.response.status}: ${result.body.slice(0, 200)}`;
+          // 422 (validation error) = permanent, don't retry
+          if (result.response.status === 422) break;
+          // Other errors: retry with backoff
+          if (attempt < ORDER_MAX_RETRIES) {
+            const waitMs = 1000 * Math.pow(2, attempt - 1);
+            console.warn(`[ORDERS] Order ${item.external_id} failed (${result.response.status}), retry ${attempt}/${ORDER_MAX_RETRIES} in ${waitMs}ms`);
+            await sleep(waitMs);
+            continue;
+          }
+          break;
+        }
+
+        // Success!
+        const responseData = JSON.parse(result.body);
+        const orderId = String(responseData.order.id);
+        await supabase
+          .from('canonical_orders')
+          .update({ 
+            status: 'uploaded', 
+            shopify_id: orderId, 
+            error_message: unmappedItems > 0 ? `${unmappedItems} produkter ikke fundet` : null,
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', item.id);
+        processed++;
+        return; // Done with this order
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        failedStep = 'create_order';
+        if (attempt < ORDER_MAX_RETRIES) {
+          const waitMs = 1000 * Math.pow(2, attempt - 1);
+          console.warn(`[ORDERS] Order ${item.external_id} exception (attempt ${attempt}): ${lastError}, retrying in ${waitMs}ms`);
+          await sleep(waitMs);
+          continue;
+        }
+      }
     }
 
-    if (!result.response.ok) {
-      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
-      await supabase
-        .from('canonical_orders')
-        .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
-      errors++;
-      errorDetails.push({ externalId: item.external_id, message: errorMsg });
-      continue;
-    }
+    // All retries exhausted → mark as failed with detailed info
+    const errorMsg = `[${failedStep}] ${lastError}`.slice(0, 500);
+    console.error(`[ORDERS] Order ${item.external_id} permanently failed after ${ORDER_MAX_RETRIES} attempts: ${errorMsg}`);
+    await supabase
+      .from('canonical_orders')
+      .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
+      .eq('id', item.id);
+    errors++;
+    errorDetails.push({ externalId: item.external_id, message: errorMsg, step: failedStep });
+  };
 
-    try {
-      const responseData = JSON.parse(result.body);
-      const orderId = String(responseData.order.id);
-      await supabase
-        .from('canonical_orders')
-        .update({ 
-          status: 'uploaded', 
-          shopify_id: orderId, 
-          error_message: unmappedItems > 0 ? `${unmappedItems} produkter ikke fundet` : null,
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', item.id);
-      processed++;
-    } catch {
-      errors++;
-    }
-  }
+  // Process all orders with concurrency limiter
+  const promises = items.map((item: any) => limit(() => processOneOrder(item)));
+  await Promise.all(promises);
 
   const { count: remainingCount } = await supabase
     .from('canonical_orders')
@@ -1770,6 +1853,7 @@ async function uploadOrders(
     errors,
     hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
+    ...(rateLimitedGlobal ? { rateLimited: true, retryAfterSeconds: retryAfterSecondsGlobal } : {}),
   };
 }
 
