@@ -1677,13 +1677,18 @@ async function uploadOrders(
   let retryAfterSecondsGlobal = 0;
 
   // ============================================================================
-  // CONCURRENT ORDER PROCESSING
-  // Max 3 simultaneous orders. Each order fully completes before being marked done.
-  // If bucket is >80% full, the limiter pauses automatically.
+  // SEQUENTIAL ORDER PROCESSING with mandatory spacing
+  // Shopify REST = 2 req/s leak rate, 40 bucket. Edge functions are stateless so
+  // bucket tracking resets each invocation. Concurrency causes instant 429 storms.
+  // Solution: process orders one at a time with 550ms spacing between API calls.
+  // This yields ~1.8 req/s = safe headroom. ~108 orders/min theoretical max.
   // ============================================================================
-  const ORDER_CONCURRENCY = 3;
   const ORDER_MAX_RETRIES = 3;
-  const limit = createConcurrencyLimiter(ORDER_CONCURRENCY);
+  const INTER_ORDER_DELAY_MS = 550; // ~1.8 req/s, under 2 req/s limit
+
+  // Assume bucket is partially filled from previous invocation (conservative start)
+  shopifyBucketUsed = Math.max(shopifyBucketUsed, 20);
+  lastBucketUpdate = Date.now();
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
@@ -1837,9 +1842,14 @@ async function uploadOrders(
     errorDetails.push({ externalId: item.external_id, message: errorMsg, step: failedStep });
   };
 
-  // Process all orders with concurrency limiter
-  const promises = items.map((item: any) => limit(() => processOneOrder(item)));
-  await Promise.all(promises);
+  // Process orders sequentially with spacing
+  for (const item of items) {
+    if (rateLimitedGlobal) break;
+    if (Date.now() - startTime > timeBudget) break;
+    await processOneOrder(item);
+    // Mandatory spacing between orders to avoid bucket exhaustion
+    if (!rateLimitedGlobal) await sleep(INTER_ORDER_DELAY_MS);
+  }
 
   const { count: remainingCount } = await supabase
     .from('canonical_orders')
