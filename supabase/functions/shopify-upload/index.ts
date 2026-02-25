@@ -388,7 +388,9 @@ async function uploadProducts(
         break;
       }
       
-      if (result.skipped) {
+      if (result.lockBusy) {
+        // Lock busy = another worker is handling it, don't count as skipped
+      } else if (result.skipped) {
         skipped += items.length;
       } else if (result.error) {
         errors += items.length;
@@ -530,7 +532,7 @@ async function processProductGroup(
   dandomainBaseUrl: string,
   projectId: string,
   rules: ProductTransformationRules
-): Promise<{ skipped?: boolean; error?: string; rateLimited?: boolean; retryAfterMs?: number }> {
+): Promise<{ skipped?: boolean; lockBusy?: boolean; error?: string; rateLimited?: boolean; retryAfterMs?: number }> {
   
   const data = items[0].data || {};
   const originalTitle = String(data.title || '').trim();
@@ -603,7 +605,7 @@ async function processProductGroup(
 
   if (!lockResult || lockResult.length === 0) {
     console.log(`[PRODUCTS] Failed to acquire lock for "${dbGroupKey || primaryItem.id}" - another worker owns it`);
-    return { skipped: true };
+    return { lockBusy: true };
   }
   
   console.log(`[PRODUCTS] Acquired lock ${lockId} for "${dbGroupKey || title}"`);
