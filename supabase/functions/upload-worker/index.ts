@@ -160,7 +160,7 @@ Deno.serve(async (req) => {
           const failed = await countCanonicalStatus(entity, 'failed');
           const localTotal = pending + uploaded + failed;
           try {
-            const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+            const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
             let liveCount = 0;
             if (entity === 'categories') {
               const r1 = await fetch(`${shopifyUrl}/smart_collections/count.json`, { headers: { 'X-Shopify-Access-Token': shopifyToken } });

@@ -286,7 +286,7 @@ Deno.serve(async (req) => {
       throw new Error("Shopify credentials not configured");
     }
 
-    const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+    const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
 
     console.log(`[SYNC] Starting sync for ${entityType} in project ${projectId}`);
 

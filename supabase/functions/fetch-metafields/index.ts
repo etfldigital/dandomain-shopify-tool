@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
     }
 
     // Use GraphQL to fetch metafield definitions for products
-    const graphqlUrl = `https://${shopify_store_domain}/admin/api/2024-01/graphql.json`;
+    const graphqlUrl = `https://${shopify_store_domain}/admin/api/2025-01/graphql.json`;
     
     const query = `
       query {

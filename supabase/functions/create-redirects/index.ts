@@ -104,7 +104,7 @@ Deno.serve(async (req) => {
       try {
         // Create redirect in Shopify
         const response = await fetch(
-          `https://${shopifyDomain}/admin/api/2024-01/redirects.json`,
+          `https://${shopifyDomain}/admin/api/2025-01/redirects.json`,
           {
             method: 'POST',
             headers: {
