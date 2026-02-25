@@ -224,15 +224,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
 
     // Products
-    // IMPORTANT: Count primary products when possible (to match what Shopify actually shows).
-    // Fallback: if data isn't prepared yet (_isPrimary missing), we use raw pending count so test uploads can still start.
-    const { count: productPendingPrimary } = await supabase
-      .from('canonical_products')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending')
-      .eq('data->>_isPrimary', 'true');
-
+    // PENDING: Always use raw count (no _isPrimary filter) because _isPrimary is only set
+    // during prepare-upload. After a reset, most records won't have _isPrimary yet, causing
+    // an incorrect low count if we filter on it.
+    // UPLOADED/FAILED: Use _isPrimary filter to match Shopify product count (not variants).
     const { count: productPendingRaw } = await supabase
       .from('canonical_products')
       .select('*', { count: 'exact', head: true })
@@ -253,8 +248,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       .eq('status', 'failed')
       .eq('data->>_isPrimary', 'true');
 
-    const productPending = (productPendingPrimary ?? 0) > 0 ? productPendingPrimary : productPendingRaw;
-    counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
+    counts.products = { pending: productPendingRaw || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
 
     // Customers
     const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
@@ -1324,13 +1318,35 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
                                 if (liveCount !== null && liveCount !== undefined) {
-                                  return <span className="text-green-600 mr-2">{liveCount.toLocaleString('da-DK')} i Shopify</span>;
+                                  return (
+                                    <span className="text-green-600 mr-2">
+                                      {liveCount.toLocaleString('da-DK')} i Shopify
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCounts(true); }}
+                                        className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
+                                        title="Opdater Shopify-tal"
+                                      >
+                                        <RefreshCw className={`w-3 h-3 ${shopifyLiveCounts.isLoading ? 'animate-spin' : ''}`} />
+                                      </button>
+                                    </span>
+                                  );
                                 }
                                 if (shopifyLiveCounts.isLoading) {
                                   return <span className="text-muted-foreground mr-2"><Loader2 className="w-3 h-3 inline animate-spin mr-1" />henter…</span>;
                                 }
                                 if (shopifyLiveCounts.fetchFailed) {
-                                  return <span className="text-muted-foreground mr-2">– i Shopify</span>;
+                                  return (
+                                    <span className="text-muted-foreground mr-2">
+                                      – i Shopify
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCounts(true); }}
+                                        className="ml-1 inline-flex items-center hover:text-foreground"
+                                        title="Prøv igen"
+                                      >
+                                        <RefreshCw className="w-3 h-3" />
+                                      </button>
+                                    </span>
+                                  );
                                 }
                                 if (counts.uploaded > 0) {
                                   return <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>;
