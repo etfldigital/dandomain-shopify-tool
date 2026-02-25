@@ -176,6 +176,7 @@ type ProductTransformationRules = {
   vendorSeparator: string;
   vendorExtractionMode: VendorExtractionMode;
   useSpecialOfferPrice: boolean;
+  inheritProductBarcode: boolean;
 };
 
 const defaultProductTransformationRules: ProductTransformationRules = {
@@ -183,6 +184,7 @@ const defaultProductTransformationRules: ProductTransformationRules = {
   vendorSeparator: ' - ',
   vendorExtractionMode: 'none',
   useSpecialOfferPrice: false,
+  inheritProductBarcode: false,
 };
 
 async function loadProductTransformationRules(supabase: any, projectId: string): Promise<ProductTransformationRules> {
@@ -212,12 +214,16 @@ async function loadProductTransformationRules(supabase: any, projectId: string):
     const vendorExtractionMode: VendorExtractionMode =
       rules?.vendorExtractionMode === 'extract_from_title' ? 'extract_from_title' : 'none';
 
-    // Check if SPECIAL_OFFER_PRICE is mapped
     const useSpecialOfferPrice = mappings.some(
       (m: any) => m?.type === 'field' && m?.sourceField === 'SPECIAL_OFFER_PRICE'
     );
 
-    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode, useSpecialOfferPrice };
+    const inheritProductBarcode =
+      typeof rules?.inheritProductBarcode === 'boolean'
+        ? rules.inheritProductBarcode
+        : defaultProductTransformationRules.inheritProductBarcode;
+
+    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode, useSpecialOfferPrice, inheritProductBarcode };
   } catch (e) {
     console.warn('[PRODUCTS] Failed to load transformation rules, using defaults:', e);
     return defaultProductTransformationRules;
@@ -751,6 +757,26 @@ async function processProductGroup(
     
     return variantData;
   });
+
+  // ============================================================================
+  // BARCODE INHERITANCE: Apply product-level barcode to variants missing one
+  // Only when the toggle is enabled in migration rules
+  // ============================================================================
+  if (rules.inheritProductBarcode) {
+    const productBarcode = String(primaryData.barcode || '').trim();
+    if (productBarcode) {
+      let inherited = 0;
+      for (const v of variants) {
+        if (!v.barcode || String(v.barcode).trim() === '') {
+          v.barcode = productBarcode;
+          inherited++;
+        }
+      }
+      if (inherited > 0) {
+        console.log(`[PRODUCTS] "${transformedTitle}": Inherited product barcode "${productBarcode}" to ${inherited}/${variants.length} variant(s)`);
+      }
+    }
+  }
 
   // Collect images
   const allImages: string[] = [];
