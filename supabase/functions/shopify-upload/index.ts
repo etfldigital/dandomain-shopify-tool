@@ -871,7 +871,7 @@ async function processProductGroup(
   }
 
   console.log(`[PRODUCTS] Creating "${transformedTitle}" with ${variants.length} variant(s)`);
-
+  
   const createResult = await shopifyFetch(
     `${shopifyUrl}/products.json`,
     {
