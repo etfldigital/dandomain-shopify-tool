@@ -291,9 +291,10 @@ Deno.serve(async (req) => {
     const PAGE_SIZE = 1000;
 
     while (true) {
+      const shopifyIdCol = entityType === "categories" ? "shopify_collection_id" : "shopify_id";
       let query = supabase
         .from(table)
-        .select("id, external_id, status, shopify_id" + (entityType === "categories" ? ", name, slug" : ", data"))
+        .select(`id, external_id, status, ${shopifyIdCol}` + (entityType === "categories" ? ", name, slug" : ", data"))
         .eq("project_id", projectId)
         .range(from, from + PAGE_SIZE - 1);
 
@@ -322,7 +323,8 @@ Deno.serve(async (req) => {
     const updates: { id: string; shopify_id: string }[] = [];
 
     for (const local of allLocalRecords) {
-      if (local.status === "uploaded" && local.shopify_id) {
+      const existingShopifyId = entityType === "categories" ? local.shopify_collection_id : local.shopify_id;
+      if (local.status === "uploaded" && existingShopifyId) {
         alreadyUploaded++;
         continue;
       }
@@ -347,13 +349,18 @@ Deno.serve(async (req) => {
       const batch = updates.slice(i, i + BATCH_SIZE);
       // Update each record in the batch
       for (const upd of batch) {
+        const updatePayload: Record<string, any> = {
+          status: "uploaded",
+          updated_at: new Date().toISOString(),
+        };
+        if (entityType === "categories") {
+          updatePayload.shopify_collection_id = upd.shopify_id;
+        } else {
+          updatePayload.shopify_id = upd.shopify_id;
+        }
         await supabase
           .from(table)
-          .update({
-            status: "uploaded",
-            shopify_id: upd.shopify_id,
-            updated_at: new Date().toISOString(),
-          })
+          .update(updatePayload)
           .eq("id", upd.id);
       }
       console.log(`[SYNC] Updated ${Math.min(i + BATCH_SIZE, updates.length)}/${updates.length} records`);
