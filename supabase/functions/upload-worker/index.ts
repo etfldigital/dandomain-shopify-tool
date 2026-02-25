@@ -46,6 +46,7 @@ interface WorkerRequest {
   entityTypes?: string[];
   isTestMode?: boolean;
   skipPrepare?: boolean; // If true, skip prepare-upload (already done by UI)
+  triggerMode?: 'manual' | 'full'; // 'manual' = single entity, 'full' = run all in sequence
 }
 
 Deno.serve(async (req) => {
@@ -207,6 +208,7 @@ Deno.serve(async (req) => {
           is_test_mode: false,
           started_at: nowIso(),
           last_heartbeat_at: nowIso(),
+          trigger_mode: 'full',
         })
         .select()
         .single();
@@ -221,7 +223,7 @@ Deno.serve(async (req) => {
       );
     };
 
-    const { jobId, projectId, action, entityTypes, isTestMode, skipPrepare }: WorkerRequest = await req.json();
+    const { jobId, projectId, action, entityTypes, isTestMode, skipPrepare, triggerMode }: WorkerRequest = await req.json();
 
     // Make count helpers work for this request.
     projectIdForCounts = projectId || null;
@@ -300,6 +302,7 @@ Deno.serve(async (req) => {
                 batch_size: batchSize,
                 is_test_mode: isTestMode || false,
                  current_batch: initialBatch,
+                trigger_mode: triggerMode || 'full',
               })
               .select()
               .single();
@@ -875,15 +878,21 @@ Deno.serve(async (req) => {
               console.log(`[WORKER] Test run complete for project ${job.project_id}`);
             }
           } else {
-            // Start next pending job
-            // Always pick the earliest incomplete entity in our dependency chain.
-            const earliest = await getEarliestIncompleteEntity(job.project_id);
-
-            if (earliest) {
-              await ensureEntityJobRunning(job.project_id, earliest);
+            // Check trigger_mode: if 'manual', do NOT cascade to next entity
+            const jobTriggerMode = job.trigger_mode || 'full';
+            if (jobTriggerMode === 'manual') {
+              console.log(`[WORKER] Job ${jobId} completed (manual mode) – NOT cascading to next entity`);
             } else {
-              // All done
-              console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+              // Start next pending job (full mode)
+              // Always pick the earliest incomplete entity in our dependency chain.
+              const earliest = await getEarliestIncompleteEntity(job.project_id);
+
+              if (earliest) {
+                await ensureEntityJobRunning(job.project_id, earliest);
+              } else {
+                // All done
+                console.log(`[WORKER] All jobs complete for project ${job.project_id}`);
+              }
             }
           }
         }

@@ -1,0 +1,1 @@
+ALTER TABLE public.upload_jobs ADD COLUMN IF NOT EXISTS trigger_mode text NOT NULL DEFAULT 'full';

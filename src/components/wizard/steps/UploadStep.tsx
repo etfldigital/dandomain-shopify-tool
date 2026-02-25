@@ -555,6 +555,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         isTestMode: boolean;
         entityTypes?: string[];
         skipPrepare?: boolean;
+        triggerMode?: 'manual' | 'full';
       } = {
         projectId: project.id,
         action: 'start',
@@ -565,6 +566,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // If a single entity type is specified, only upload that type
       if (singleEntityType) {
         body.entityTypes = [singleEntityType];
+        body.triggerMode = 'manual';
+      } else {
+        body.triggerMode = 'full';
       }
       
       const response = await supabase.functions.invoke('upload-worker', {
