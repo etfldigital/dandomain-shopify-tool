@@ -304,6 +304,7 @@ Deno.serve(async (req) => {
         const entitiesToProcess = entityTypes || ['pages', 'categories', 'products', 'customers', 'orders'];
         const jobs = [];
 
+        let skipPrepareOverride: boolean | null = null; // null = use original skipPrepare
         for (const entityType of entitiesToProcess) {
           // Use robust counting to avoid accidentally skipping an entity (which breaks sequencing)
           projectIdForCounts = projectId;
@@ -312,22 +313,23 @@ Deno.serve(async (req) => {
           const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
           const failedCount = await countCanonicalStatus(entityType, 'failed');
 
-          // TEST MODE + PRODUCTS:
+          // PRODUCTS FALLBACK:
           // If products haven't been prepared yet, primary-only counting returns 0.
-          // In test mode we still want to create a products job so the worker can run prepare-upload.
-          if (entityType === 'products' && isTestMode && !skipPrepare && (!pendingCount || pendingCount <= 0)) {
-            const { data: probe, error: probeError } = await supabase
+          // We still want to create a job so the worker can run prepare-upload first.
+          if (entityType === 'products' && (!pendingCount || pendingCount <= 0)) {
+            const { count: rawPending, error: probeError } = await supabase
               .from('canonical_products')
-              .select('id')
+              .select('*', { count: 'exact', head: true })
               .eq('project_id', projectId)
-              .eq('status', 'pending')
-              .limit(3);
+              .eq('status', 'pending');
 
             if (probeError) throw probeError;
-            if (probe && probe.length > 0) {
-              // We don't need the full count here; we just need to know there is work.
-              // Use up to 3 so job.total_count can still be capped correctly.
-              pendingCount = Math.min(3, probe.length);
+            if (rawPending && rawPending > 0) {
+              // Products exist but aren't prepared yet – use raw count and force prepare step
+              pendingCount = isTestMode ? Math.min(3, rawPending) : rawPending;
+              // Override skipPrepare so the worker runs prepare-upload for this job
+              skipPrepareOverride = false;
+              console.log(`[WORKER] Products: primary count=0 but raw pending=${rawPending} – will run prepare-upload`);
             }
           }
 
@@ -342,7 +344,8 @@ Deno.serve(async (req) => {
             
              // IMPORTANT: For products, the UI may already have run prepare-upload.
              // In that case, skip the worker-side prepare step by starting at current_batch=1.
-             const initialBatch = entityType === 'products' && skipPrepare ? 1 : 0;
+             const effectiveSkipPrepare = skipPrepareOverride !== null ? skipPrepareOverride : skipPrepare;
+             const initialBatch = entityType === 'products' && effectiveSkipPrepare ? 1 : 0;
 
              const { data: job, error } = await supabase
               .from('upload_jobs')
