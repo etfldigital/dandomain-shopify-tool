@@ -1475,24 +1475,38 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             const jobRunning = job?.status === 'running';
                             const noPending = counts.pending === 0;
 
-                            return (
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  if (predecessorBlocking) {
-                                    toast.error(`Kan ikke starte endnu`, {
-                                      description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
-                                    });
-                                    return;
-                                  }
-                                  handleStartUpload(false, type);
-                                }}
-                                disabled={jobRunning || isStarting}
-                              >
-                                <Play className="w-4 h-4 mr-2" />
-                                {jobRunning 
-                                  ? `Upload kører allerede…` 
-                                  : `Upload ${entityLabels[type]}`}
-                              </DropdownMenuItem>
+                          return (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    if (predecessorBlocking) {
+                                      toast.error(`Kan ikke starte endnu`, {
+                                        description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
+                                      });
+                                      return;
+                                    }
+                                    handleStartUpload(false, type);
+                                  }}
+                                  disabled={jobRunning || isStarting}
+                                >
+                                  <Play className="w-4 h-4 mr-2" />
+                                  {jobRunning 
+                                    ? `Upload kører allerede…` 
+                                    : `Upload ${entityLabels[type]}`}
+                                </DropdownMenuItem>
+                                {predecessorBlocking && (
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      handleStartUploadInternal(false, type);
+                                    }}
+                                    disabled={jobRunning || isStarting || noPending}
+                                    className="text-amber-600"
+                                  >
+                                    <AlertTriangle className="w-4 h-4 mr-2" />
+                                    Tving start (ignorer rækkefølge)
+                                  </DropdownMenuItem>
+                                )}
+                              </>
                             );
                           })()}
                           <DropdownMenuSeparator />
