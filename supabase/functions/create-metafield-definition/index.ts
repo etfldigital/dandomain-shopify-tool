@@ -59,7 +59,7 @@ Deno.serve(async (req) => {
     }
 
     // GraphQL mutation to create metafield definition
-    const graphqlUrl = `https://${shopify_store_domain}/admin/api/2024-01/graphql.json`;
+    const graphqlUrl = `https://${shopify_store_domain}/admin/api/2025-01/graphql.json`;
     
     const mutation = `
       mutation CreateMetafieldDefinition($definition: MetafieldDefinitionInput!) {

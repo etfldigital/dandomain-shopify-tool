@@ -63,7 +63,8 @@ Deno.serve(async (req) => {
       throw new Error("Shopify credentials not configured");
     }
 
-    const baseUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+    // Use a current API version (2025-01) - older versions may be sunset by Shopify
+    const baseUrl = `https://${shopifyDomain}/admin/api/2025-01`;
     const headers = {
       "X-Shopify-Access-Token": shopifyToken,
       Accept: "application/json",
@@ -72,12 +73,17 @@ Deno.serve(async (req) => {
     const typesToFetch = entityTypes || ["products"];
     const counts: Record<string, number | null> = {};
 
+    // Fetch SEQUENTIALLY to avoid Shopify 429 rate limits
     for (const et of typesToFetch) {
       try {
         counts[et] = await fetchCountForEntity(baseUrl, headers, et);
       } catch (e) {
         console.error(`[shopify-counts] Failed to fetch ${et}:`, e);
         counts[et] = null;
+      }
+      // Small delay between calls to respect rate limits
+      if (typesToFetch.length > 1) {
+        await new Promise(r => setTimeout(r, 250));
       }
     }
 
@@ -107,9 +113,13 @@ async function fetchCountForEntity(
 ): Promise<number> {
   switch (entityType) {
     case "products": {
-      const r = await fetch(`${baseUrl}/products/count.json?status=any`, { headers });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
+      const url = `${baseUrl}/products/count.json?status=any`;
+      console.log(`[shopify-counts] Fetching products count from: ${url}`);
+      const r = await fetch(url, { headers });
+      const body = await r.text();
+      console.log(`[shopify-counts] Products response: HTTP ${r.status}, body: ${body}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${body}`);
+      const j = JSON.parse(body);
       return j.count ?? 0;
     }
     case "customers": {
@@ -125,14 +135,17 @@ async function fetchCountForEntity(
       return j.count ?? 0;
     }
     case "categories": {
-      // Sum smart_collections + custom_collections
-      const [r1, r2] = await Promise.all([
-        fetch(`${baseUrl}/smart_collections/count.json`, { headers }),
-        fetch(`${baseUrl}/custom_collections/count.json`, { headers }),
-      ]);
+      // Fetch sequentially to avoid rate limits
+      const r1 = await fetch(`${baseUrl}/smart_collections/count.json`, { headers });
       if (!r1.ok) throw new Error(`smart_collections HTTP ${r1.status}`);
+      const j1 = await r1.json();
+      
+      await new Promise(r => setTimeout(r, 200));
+      
+      const r2 = await fetch(`${baseUrl}/custom_collections/count.json`, { headers });
       if (!r2.ok) throw new Error(`custom_collections HTTP ${r2.status}`);
-      const [j1, j2] = await Promise.all([r1.json(), r2.json()]);
+      const j2 = await r2.json();
+      
       return (j1.count ?? 0) + (j2.count ?? 0);
     }
     case "pages": {

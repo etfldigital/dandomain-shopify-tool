@@ -130,7 +130,7 @@ serve(async (req) => {
 
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
-    const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+    const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
 
     const shopifyIds = duplicateGroup.shopifyIds.filter(Boolean);
     

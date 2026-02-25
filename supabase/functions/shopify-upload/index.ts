@@ -159,7 +159,7 @@ Deno.serve(async (req) => {
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
     const dandomainBaseUrl = String(project.dandomain_base_url || project.dandomain_shop_url || '').trim();
-    const shopifyUrl = `https://${shopifyDomain}/admin/api/2024-01`;
+    const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
 
     if (entityType === 'products') {
       const result = await uploadProducts(supabase, projectId, shopifyUrl, shopifyToken, batchSize, dandomainBaseUrl, requestStartTime, TIME_BUDGET_MS);
