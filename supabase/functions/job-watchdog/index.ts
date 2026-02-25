@@ -1,5 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2.90.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,7 +8,10 @@ const corsHeaders = {
 // Stall threshold: 30 seconds without heartbeat (reduced for faster recovery)
 const STALL_THRESHOLD_MS = 30 * 1000;
 
-serve(async (req) => {
+// Self-scheduling interval: how often the watchdog re-invokes itself
+const SELF_SCHEDULE_INTERVAL_MS = 25_000; // 25 seconds
+
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -40,9 +42,6 @@ serve(async (req) => {
             .from('upload_jobs')
             .select('*')
             .eq('status', 'running')
-            // Consider a job "stalled" either when:
-            // 1) heartbeat is stale (classic stall)
-            // 2) next_attempt_at is due (rate-limit backoff finished but no retrigger happened)
             .or(
               `last_heartbeat_at.lt.${stallCutoff},and(next_attempt_at.not.is.null,next_attempt_at.lte.${nowIso})`
             );
@@ -56,7 +55,7 @@ serve(async (req) => {
           if (isTransient && attempt < retries) {
             console.log(`[WATCHDOG] Transient error on attempt ${attempt}, retrying in ${delay}ms...`);
             await new Promise(r => setTimeout(r, delay));
-            delay *= 2; // Exponential backoff
+            delay *= 2;
           } else {
             throw err;
           }
@@ -70,10 +69,12 @@ serve(async (req) => {
     try {
       stalledJobs = await fetchWithRetry();
     } catch (fetchError) {
-      // Transient network errors are expected occasionally - don't fail the watchdog
-      // The next scheduled run will try again
       const msg = fetchError instanceof Error ? fetchError.message : String(fetchError);
       console.warn('[WATCHDOG] Could not fetch stalled jobs (will retry next run):', msg);
+      
+      // Even on error, self-schedule to try again
+      selfSchedule(supabaseUrl, supabaseServiceKey, runInBackground);
+      
       return new Response(JSON.stringify({
         success: true,
         message: 'Skipped due to transient network error, will retry next run',
@@ -82,11 +83,32 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    // ============================================================================
+    // SELF-SCHEDULING: Check if there are ANY active jobs (running/pending/paused).
+    // If yes, re-invoke this watchdog after a delay. This creates a server-side 
+    // polling loop that's completely independent of the browser.
+    // ============================================================================
+    const { data: activeJobs } = await supabase
+      .from('upload_jobs')
+      .select('id')
+      .in('status', ['running', 'pending', 'paused'])
+      .limit(1);
+
+    const hasActiveJobs = activeJobs && activeJobs.length > 0;
+
+    if (hasActiveJobs) {
+      selfSchedule(supabaseUrl, supabaseServiceKey, runInBackground);
+    } else {
+      console.log('[WATCHDOG] No active jobs, stopping self-scheduling loop');
+    }
+    // ============================================================================
+
     if (!stalledJobs || stalledJobs.length === 0) {
       return new Response(JSON.stringify({
         success: true,
         message: 'No stalled jobs found',
         checked_at: new Date().toISOString(),
+        selfScheduled: hasActiveJobs,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
@@ -94,7 +116,6 @@ serve(async (req) => {
 
     for (const job of stalledJobs) {
       // ========== HARD STOP CHECK ==========
-      // Check if the project has uploads_paused=true. If so, skip this job entirely.
       const { data: projectCheck } = await supabase
         .from('projects')
         .select('uploads_paused')
@@ -118,13 +139,11 @@ serve(async (req) => {
         .from('upload_jobs')
         .update({ 
           last_heartbeat_at: new Date().toISOString(),
-          // If we are resuming from a scheduled retry, clear it so UI doesn't keep showing waiting.
           next_attempt_at: null,
         })
         .eq('id', job.id);
 
-      // Re-trigger the worker to process this job.
-      // IMPORTANT: fire-and-forget, otherwise the watchdog itself can timeout when a batch is slow.
+      // Re-trigger the worker (fire-and-forget)
       const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
       runInBackground(
         fetch(functionUrl, {
@@ -151,6 +170,7 @@ serve(async (req) => {
       message: `Restarted ${restartedJobs.length} stalled job(s)`,
       restarted_jobs: restartedJobs,
       checked_at: new Date().toISOString(),
+      selfScheduled: hasActiveJobs,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
@@ -173,3 +193,31 @@ serve(async (req) => {
     });
   }
 });
+
+/**
+ * Self-schedule: After a delay, re-invoke this watchdog function.
+ * This creates a server-side loop that keeps running as long as there are active jobs,
+ * completely independent of the browser.
+ */
+function selfSchedule(
+  supabaseUrl: string,
+  supabaseServiceKey: string,
+  runInBackground: (task: Promise<unknown>) => void
+) {
+  runInBackground((async () => {
+    await new Promise(r => setTimeout(r, SELF_SCHEDULE_INTERVAL_MS));
+    try {
+      await fetch(`${supabaseUrl}/functions/v1/job-watchdog`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseServiceKey}`,
+        },
+        body: JSON.stringify({ source: 'self-schedule' }),
+      });
+      console.log('[WATCHDOG] Self-scheduled next run');
+    } catch (e) {
+      console.error('[WATCHDOG] Failed to self-schedule:', e);
+    }
+  })());
+}

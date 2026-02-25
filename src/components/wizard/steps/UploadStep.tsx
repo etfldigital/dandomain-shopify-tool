@@ -141,9 +141,7 @@ const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string
   { type: 'orders', icon: FileText, label: 'Ordrer' },
 ];
 
-// How often we run the backend watchdog to auto-restart stalled jobs.
-// This is a safety net for cases where the worker's self-scheduling is interrupted.
-const WATCHDOG_INTERVAL_MS = 20_000; // Run every 20 seconds for faster recovery
+// Watchdog is now self-scheduling on the server side, no browser polling needed.
 
 // Preparation phase state
 interface PrepareResult {
@@ -381,27 +379,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       fetchShopifyLiveCounts(); // Throttled internally (30s)
     }, 15_000);
 
-    // Watchdog for stalled jobs
-    const runWatchdog = async () => {
-      const stillHasRunning = jobs.some(j => j.status === 'running');
-      if (!stillHasRunning) return;
-      
-      try {
-        const { error } = await supabase.functions.invoke('job-watchdog');
-        if (error) throw error;
-      } catch (e) {
-        console.warn('[UploadStep] job-watchdog failed:', e);
-      }
-    };
-
-    // Watchdog interval
-    const watchdogTimer = window.setInterval(runWatchdog, WATCHDOG_INTERVAL_MS);
+    // Watchdog is now self-scheduling on the server side (started by upload-worker).
+    // No need for browser-side watchdog polling anymore.
     
     return () => {
       window.clearInterval(uiTimer);
       window.clearInterval(flushTimer);
       window.clearInterval(pollTimer);
-      window.clearInterval(watchdogTimer);
     };
   }, [jobs]);
   

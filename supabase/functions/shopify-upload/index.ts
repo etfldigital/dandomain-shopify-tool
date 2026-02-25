@@ -37,7 +37,7 @@ function getPreRequestDelay(entityType?: string): number {
   if (usage >= 38) return 1000;
   if (usage >= 35) return 500;
   if (usage >= 30) return 200;
-  if (entityType === 'orders') return 100;
+  // No fixed pre-delay for any entity - the bucket-based limiter above handles it dynamically
   return 0;
 }
 
@@ -1555,36 +1555,55 @@ async function uploadOrders(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Build product lookup
-  const { data: uploadedProducts } = await supabase
-    .from('canonical_products')
-    .select('external_id, data, shopify_id')
-    .eq('project_id', projectId)
-    .eq('status', 'uploaded');
-
+  // Build product lookup - OPTIMIZED: Only fetch external_id and shopify_id
+  // Avoid fetching the heavy 'data' JSONB column (contains body_html, images, etc.)
+  // For 10K+ products this saves megabytes of unnecessary data transfer per batch.
   const productLookup: Map<string, { shopifyProductId: string; shopifyVariantId: string }> = new Map();
-  for (const p of (uploadedProducts || [])) {
-    const variantId = p.data?._shopify_variant_id || '';
-    const productId = p.shopify_id || p.data?._shopify_product_id || '';
-    if (productId) {
-      productLookup.set(p.external_id, { shopifyProductId: productId, shopifyVariantId: variantId });
+  let productOffset = 0;
+  const LOOKUP_PAGE_SIZE = 1000;
+  while (true) {
+    const { data: productPage } = await supabase
+      .from('canonical_products')
+      .select('external_id, shopify_id')
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null)
+      .range(productOffset, productOffset + LOOKUP_PAGE_SIZE - 1);
+    
+    if (!productPage || productPage.length === 0) break;
+    for (const p of productPage) {
+      if (p.shopify_id) {
+        productLookup.set(p.external_id, { shopifyProductId: p.shopify_id, shopifyVariantId: '' });
+      }
     }
+    if (productPage.length < LOOKUP_PAGE_SIZE) break;
+    productOffset += LOOKUP_PAGE_SIZE;
   }
+  console.log(`[ORDERS] Built product lookup with ${productLookup.size} entries`);
 
-  // Build customer lookup
-  const { data: uploadedCustomers } = await supabase
-    .from('canonical_customers')
-    .select('external_id, shopify_id, data')
-    .eq('project_id', projectId)
-    .eq('status', 'uploaded');
-
+  // Build customer lookup - OPTIMIZED: paginate and only select needed fields
   const customerLookup: Map<string, string> = new Map();
-  for (const c of (uploadedCustomers || [])) {
-    if (c.shopify_id) {
-      customerLookup.set(c.external_id, c.shopify_id);
-      if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
+  let customerOffset = 0;
+  while (true) {
+    const { data: customerPage } = await supabase
+      .from('canonical_customers')
+      .select('external_id, shopify_id, data')
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null)
+      .range(customerOffset, customerOffset + LOOKUP_PAGE_SIZE - 1);
+    
+    if (!customerPage || customerPage.length === 0) break;
+    for (const c of customerPage) {
+      if (c.shopify_id) {
+        customerLookup.set(c.external_id, c.shopify_id);
+        if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
+      }
     }
+    if (customerPage.length < LOOKUP_PAGE_SIZE) break;
+    customerOffset += LOOKUP_PAGE_SIZE;
   }
+  console.log(`[ORDERS] Built customer lookup with ${customerLookup.size} entries`);
 
   let processed = 0;
   let errors = 0;

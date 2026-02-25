@@ -26,7 +26,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 10,
   customers: 20,
-  orders: 5,
+  orders: 20,
 };
 
 // Enforce strict upload order for dependent entities.
@@ -333,6 +333,16 @@ Deno.serve(async (req) => {
             })
           );
         }
+
+        // Kick off the server-side watchdog loop.
+        // This ensures stalled jobs are detected and restarted even if the browser is closed.
+        runInBackground(
+          fetch(`${supabaseUrl}/functions/v1/job-watchdog`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+            body: JSON.stringify({ source: 'upload-worker-start' }),
+          }).catch(e => console.warn('[WORKER] Failed to start watchdog loop:', e))
+        );
 
         await supabase.from('projects').update({ status: 'migrating' }).eq('id', projectId);
 
