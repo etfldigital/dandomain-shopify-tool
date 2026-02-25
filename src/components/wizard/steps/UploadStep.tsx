@@ -223,12 +223,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0 },
     };
 
-    // Products - count only primary products (_isPrimary=true) to match Shopify product count.
-    // For pending: count prepared primaries + estimate unprepared primaries using distinct external_id prefix.
-    // For uploaded/failed: use _isPrimary filter directly.
+    // Products - count only primary products where PROD_VAR_MASTER = 'True' in source data.
+    // This filters out variants and gives the correct Shopify product count.
+    const masterFilter = 'True'; // Matches <PROD_VAR_MASTER>True</PROD_VAR_MASTER> from XML source
     const [
-      { count: productPendingPrimary },
-      { count: productPendingUnprepared },
+      { count: productPending },
       { count: productUploaded },
       { count: productFailed },
     ] = await Promise.all([
@@ -237,34 +236,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('status', 'pending')
-        .eq('data->>_isPrimary', 'true'),
-      supabase
-        .from('canonical_products')
-        .select('*', { count: 'exact', head: true })
-        .eq('project_id', project.id)
-        .in('status', ['pending', 'mapped'])
-        .is('data->>_isPrimary', null),
+        .eq('data->>PROD_VAR_MASTER', masterFilter),
       supabase
         .from('canonical_products')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('status', 'uploaded')
-        .eq('data->>_isPrimary', 'true'),
+        .eq('data->>PROD_VAR_MASTER', masterFilter),
       supabase
         .from('canonical_products')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', project.id)
         .eq('status', 'failed')
-        .eq('data->>_isPrimary', 'true'),
+        .eq('data->>PROD_VAR_MASTER', masterFilter),
     ]);
 
-    // If all records are prepared, pending = prepared primaries only.
-    // If some are unprepared, show prepared primaries + "~X ikke forberedt" handled in UI.
-    const pendingPrimaries = productPendingPrimary || 0;
-    const unpreparedCount = productPendingUnprepared || 0;
-    // Store unprepared count for UI display
-    (counts as any)._productsUnprepared = unpreparedCount;
-    counts.products = { pending: pendingPrimaries, uploaded: productUploaded || 0, failed: productFailed || 0 };
+    counts.products = { pending: productPending || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
 
     // Customers
     const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
@@ -1331,11 +1318,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           ) : (
                             <span>
                               {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
-                              {type === 'products' && (statusCounts as any)._productsUnprepared > 0 && (
-                                <span className="text-amber-500 mr-2" title="Disse records er endnu ikke forberedt (grupper/varianter). Kør upload for at forberede dem.">
-                                  +{((statusCounts as any)._productsUnprepared as number).toLocaleString('da-DK')} ikke forberedt
-                                </span>
-                              )}
                               {/* Show Shopify live count for all entity types */}
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
