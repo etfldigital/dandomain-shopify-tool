@@ -24,7 +24,7 @@ const runInBackground = (task: Promise<unknown>) => {
 const DEFAULT_BATCH_SIZE: Record<string, number> = {
   pages: 20,
   categories: 20,
-  products: 10,
+  products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
   orders: 10, // Sequential processing with 550ms spacing = ~10 orders per batch within time budget
 };

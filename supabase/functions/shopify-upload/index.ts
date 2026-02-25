@@ -1000,66 +1000,114 @@ async function processProductGroup(
   }
   console.log(`[PRODUCTS] "${transformedTitle}": mapped ${Object.keys(skuMap).length} variant SKUs to Shopify IDs`);
 
-  // Add images
+  // Add images – parallelized with max 3 concurrent uploads per product.
+  // Images are independent of each other, so concurrency is safe here.
+  // A single image failure must NOT fail the product (preserved from original).
   if (allImages.length > 0) {
     let added = 0;
     let failed = 0;
-    for (const imageUrl of allImages) {
-      try {
-        const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
-        const imgResult = await shopifyFetch(
-          `${shopifyUrl}/products/${shopifyId}/images.json`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-            body: JSON.stringify({ image: { src: normalizedUrl } }),
+    const IMAGE_CONCURRENCY = 3;
+    const imageLimit = createConcurrencyLimiter(IMAGE_CONCURRENCY);
+
+    const imagePromises = allImages.map((imageUrl) =>
+      imageLimit(async () => {
+        try {
+          const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
+          const imgResult = await shopifyFetch(
+            `${shopifyUrl}/products/${shopifyId}/images.json`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+              body: JSON.stringify({ image: { src: normalizedUrl } }),
+            }
+          );
+          if ('rateLimited' in imgResult) {
+            // Wait out the rate limit, then count as failed (will be retried on next run if needed)
+            await sleep(imgResult.retryAfterMs);
+            failed++;
+            return;
           }
-        );
-        if ('rateLimited' in imgResult) {
-          await sleep(imgResult.retryAfterMs);
-          continue;
-        }
-        if (imgResult.response.ok) {
-          added++;
-        } else {
+          if (imgResult.response.ok) {
+            added++;
+          } else {
+            failed++;
+          }
+        } catch (e) {
           failed++;
         }
-      } catch (e) {
-        failed++;
-      }
-    }
-    console.log(`[PRODUCTS] "${transformedTitle}": post-create image repair done. Added=${added}, Failed=${failed}`);
+      })
+    );
+
+    await Promise.all(imagePromises);
+    console.log(`[PRODUCTS] "${transformedTitle}": image upload done (concurrent=${IMAGE_CONCURRENCY}). Added=${added}, Failed=${failed}`);
   }
 
-  // Update primary record
+  // ============================================================================
+  // PHASE 6: CONSOLIDATED DB WRITE
+  // Combine primary record update + group variant update into fewer round-trips.
+  // The lock acquisition (Phase 1) is NOT changed – it remains atomic.
+  // ============================================================================
   const updatedData = { 
     ...primaryItem.data, 
     shopify_handle: shopifyHandle,
     _shopify_product_id: shopifyId,
   };
-  
-  await supabase
-    .from('canonical_products')
-    .update({ 
-      status: 'uploaded', 
-      shopify_id: shopifyId, 
-      error_message: null, 
-      data: updatedData,
-      upload_lock_id: null,
-      upload_locked_at: null,
-      upload_locked_until: null,
-      updated_at: new Date().toISOString() 
-    })
-    .eq('id', primaryItem.id);
+  const nowTs = new Date().toISOString();
+  const successUpdate = {
+    status: 'uploaded' as const,
+    shopify_id: shopifyId,
+    error_message: null,
+    upload_lock_id: null,
+    upload_locked_at: null,
+    upload_locked_until: null,
+    updated_at: nowTs,
+  };
 
-  // ============================================================================
-  // PHASE 6: UPDATE ENTIRE GROUP
-  // Mark ALL records with same _groupKey as uploaded with the new shopify_id
-  // ============================================================================
   if (dbGroupKey) {
-    await updateEntireGroup(supabase, projectId, dbGroupKey, shopifyId);
+    // Fetch group member IDs + update primary in parallel
+    const [, groupResult] = await Promise.all([
+      supabase
+        .from('canonical_products')
+        .update({ ...successUpdate, data: updatedData })
+        .eq('id', primaryItem.id),
+      supabase
+        .from('canonical_products')
+        .select('id, data')
+        .eq('project_id', projectId)
+        .is('shopify_id', null),
+    ]);
+
+    // Filter matching group members in JS (JSONB filtering can be unreliable)
+    const matchingIds = (groupResult.data || [])
+      .filter((r: any) => {
+        const rGroupKey = String(r.data?._groupKey || '').trim().toLowerCase();
+        return rGroupKey === dbGroupKey && r.id !== primaryItem.id;
+      })
+      .map((r: any) => r.id);
+
+    if (matchingIds.length > 0) {
+      const { error: groupErr } = await supabase
+        .from('canonical_products')
+        .update({
+          ...successUpdate,
+          error_message: 'Variant grupperet med primær produkt',
+        })
+        .in('id', matchingIds);
+
+      if (groupErr) {
+        console.warn(`[PRODUCTS] Warning: Failed to update group "${dbGroupKey}": ${groupErr.message}`);
+      } else {
+        console.log(`[PRODUCTS] Updated ${matchingIds.length} records in group "${dbGroupKey}" with shopify_id ${shopifyId}`);
+      }
+    }
+  } else {
+    // No group – just update the primary record
+    await supabase
+      .from('canonical_products')
+      .update({ ...successUpdate, data: updatedData })
+      .eq('id', primaryItem.id);
   }
-  
+
   console.log(`[PRODUCTS] "${transformedTitle}": Successfully uploaded as ${shopifyId}`);
 
   return {};
