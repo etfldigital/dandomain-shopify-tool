@@ -662,6 +662,7 @@ Deno.serve(async (req) => {
                 meta_title: pickBestNonEmpty('meta_title') ?? primaryRecord?.data?.meta_title ?? null,
                 meta_description: pickBestNonEmpty('meta_description') ?? primaryRecord?.data?.meta_description ?? null,
                 source_path: pickBestNonEmpty('source_path') ?? primaryRecord?.data?.source_path ?? null,
+                barcode: pickBestNonEmpty('barcode') ?? primaryRecord?.data?.barcode ?? null,
                 _groupKey: group.key,
                 _groupTitle: group.title,
                 _variantCount: group.variants.length,
