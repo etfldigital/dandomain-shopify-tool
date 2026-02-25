@@ -676,7 +676,7 @@ Deno.serve(async (req) => {
             console.log('[WORKER] Running prepare-upload for product grouping...');
 
             const isTestMode = job.is_test_mode || false;
-            const testLimit = neededPrimaries;
+            const testLimit = isTestMode ? 3 : undefined;
 
             const prepResponse = await fetch(`${supabaseUrl}/functions/v1/prepare-upload`, {
               method: 'POST',
