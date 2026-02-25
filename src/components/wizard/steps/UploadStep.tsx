@@ -223,32 +223,48 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0 },
     };
 
-    // Products
-    // PENDING: Always use raw count (no _isPrimary filter) because _isPrimary is only set
-    // during prepare-upload. After a reset, most records won't have _isPrimary yet, causing
-    // an incorrect low count if we filter on it.
-    // UPLOADED/FAILED: Use _isPrimary filter to match Shopify product count (not variants).
-    const { count: productPendingRaw } = await supabase
-      .from('canonical_products')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'pending');
+    // Products - count only primary products (_isPrimary=true) to match Shopify product count.
+    // For pending: count prepared primaries + estimate unprepared primaries using distinct external_id prefix.
+    // For uploaded/failed: use _isPrimary filter directly.
+    const [
+      { count: productPendingPrimary },
+      { count: productPendingUnprepared },
+      { count: productUploaded },
+      { count: productFailed },
+    ] = await Promise.all([
+      supabase
+        .from('canonical_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('status', 'pending')
+        .eq('data->>_isPrimary', 'true'),
+      supabase
+        .from('canonical_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .in('status', ['pending', 'mapped'])
+        .is('data->>_isPrimary', null),
+      supabase
+        .from('canonical_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('status', 'uploaded')
+        .eq('data->>_isPrimary', 'true'),
+      supabase
+        .from('canonical_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', project.id)
+        .eq('status', 'failed')
+        .eq('data->>_isPrimary', 'true'),
+    ]);
 
-    const { count: productUploaded } = await supabase
-      .from('canonical_products')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'uploaded')
-      .eq('data->>_isPrimary', 'true');
-
-    const { count: productFailed } = await supabase
-      .from('canonical_products')
-      .select('*', { count: 'exact', head: true })
-      .eq('project_id', project.id)
-      .eq('status', 'failed')
-      .eq('data->>_isPrimary', 'true');
-
-    counts.products = { pending: productPendingRaw || 0, uploaded: productUploaded || 0, failed: productFailed || 0 };
+    // If all records are prepared, pending = prepared primaries only.
+    // If some are unprepared, show prepared primaries + "~X ikke forberedt" handled in UI.
+    const pendingPrimaries = productPendingPrimary || 0;
+    const unpreparedCount = productPendingUnprepared || 0;
+    // Store unprepared count for UI display
+    (counts as any)._productsUnprepared = unpreparedCount;
+    counts.products = { pending: pendingPrimaries, uploaded: productUploaded || 0, failed: productFailed || 0 };
 
     // Customers
     const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
@@ -360,6 +376,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           const updated = toUploadJob(payload.new);
           if (updated && (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled')) {
             fetchStatusCounts();
+            fetchShopifyLiveCounts(true); // Refresh live Shopify counts after job ends
           }
         }
       )
@@ -1314,6 +1331,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           ) : (
                             <span>
                               {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
+                              {type === 'products' && (statusCounts as any)._productsUnprepared > 0 && (
+                                <span className="text-amber-500 mr-2" title="Disse records er endnu ikke forberedt (grupper/varianter). Kør upload for at forberede dem.">
+                                  +{((statusCounts as any)._productsUnprepared as number).toLocaleString('da-DK')} ikke forberedt
+                                </span>
+                              )}
                               {/* Show Shopify live count for all entity types */}
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
