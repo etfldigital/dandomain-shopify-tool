@@ -165,6 +165,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepareResult, setPrepareResult] = useState<PrepareResult | null>(null);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
+  const [syncingEntity, setSyncingEntity] = useState<EntityType | null>(null);
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
@@ -589,6 +590,41 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     } else {
       // No products or products-only single entity
       await handleStartUploadInternal(isTestMode, singleEntityType);
+    }
+  };
+
+  // Sync: fetch Shopify records and match to local DB
+  const handleSync = async (entityType: EntityType) => {
+    setSyncingEntity(entityType);
+    try {
+      const response = await supabase.functions.invoke('shopify-sync', {
+        body: { projectId: project.id, entityType },
+      });
+
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+
+      const data = response.data;
+      if (!data?.success) {
+        throw new Error(data?.error || 'Synkronisering fejlede');
+      }
+
+      const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label || entityType;
+      toast.success(`${entityLabel} synkroniseret`, {
+        description: `${data.matched} matchet, ${data.alreadyUploaded} allerede uploadet, ${data.notFound} ikke fundet i Shopify`,
+        duration: 8000,
+      });
+
+      // Refresh counts so sequencing gate re-evaluates
+      lastCountsFetchRef.current = 0; // Force refresh
+      await fetchStatusCounts();
+      await fetchJobs();
+    } catch (error) {
+      console.error('Sync failed:', error);
+      toast.error(`Synkronisering fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setSyncingEntity(null);
     }
   };
 
@@ -1384,6 +1420,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           >
                             <RotateCcw className="w-4 h-4 mr-2" />
                             Nulstil uploads
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleSync(type)}
+                            disabled={syncingEntity !== null}
+                          >
+                            {syncingEntity === type ? (
+                              <>
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                Synkroniserer…
+                              </>
+                            ) : (
+                              <>
+                                <Cloud className="w-4 h-4 mr-2" />
+                                Synkroniser med Shopify
+                              </>
+                            )}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
