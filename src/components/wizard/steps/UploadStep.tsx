@@ -128,10 +128,15 @@ interface StatusCounts {
   failed: number;
 }
 
-// Shopify live product count (fetched from API)
+// Shopify live counts (fetched from API) per entity type
 interface ShopifyLiveCounts {
   products: number | null;
+  customers: number | null;
+  orders: number | null;
+  categories: number | null;
+  pages: number | null;
   fetchFailed: boolean;
+  isLoading: boolean;
 }
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
@@ -190,7 +195,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const autoRecoverRef = useRef<Record<string, number>>({}); // jobId -> last auto recover ts
   
   // Shopify live counts (actual product count from Shopify API)
-  const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, fetchFailed: false });
+  const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
 
   // Reset confirmation dialog state
@@ -279,28 +284,40 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
-  // Fetch live product count from Shopify API
-  const fetchShopifyLiveCounts = async () => {
+  // Fetch live counts from Shopify API for all entity types
+  const fetchShopifyLiveCounts = async (force = false) => {
     const now = Date.now();
-    // Throttle: only fetch every 30 seconds
-    if (now - lastShopifyFetchRef.current < 30_000) {
+    if (!force && now - lastShopifyFetchRef.current < 60_000) {
       return;
     }
     lastShopifyFetchRef.current = now;
+    setShopifyLiveCounts(prev => ({ ...prev, isLoading: true }));
     
     try {
       const response = await supabase.functions.invoke('shopify-products-count', {
-        body: { projectId: project.id },
+        body: { 
+          projectId: project.id,
+          entityTypes: ['products', 'customers', 'orders', 'categories', 'pages'],
+        },
       });
       
-      if (response.data?.success && typeof response.data.count === 'number') {
-        setShopifyLiveCounts({ products: response.data.count, fetchFailed: false });
+      if (response.data?.success && response.data.counts) {
+        const c = response.data.counts;
+        setShopifyLiveCounts({
+          products: c.products ?? null,
+          customers: c.customers ?? null,
+          orders: c.orders ?? null,
+          categories: c.categories ?? null,
+          pages: c.pages ?? null,
+          fetchFailed: false,
+          isLoading: false,
+        });
       } else {
-        setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true }));
+        setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
       }
     } catch (e) {
       console.warn('[UploadStep] Failed to fetch Shopify live counts:', e);
-      setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true }));
+      setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
     }
   };
 
@@ -566,8 +583,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         ? `Test-upload startet${entityLabel ? ` for ${entityLabel}` : ''} i baggrunden` 
         : 'Upload startet i baggrunden - du kan lukke browseren');
       
-      // Refresh jobs
+      // Refresh jobs and live counts
       await fetchJobs();
+      fetchShopifyLiveCounts(true);
     } catch (error) {
       console.error('Failed to start upload:', error);
       toast.error(`Kunne ikke starte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
@@ -619,6 +637,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // Refresh counts so sequencing gate re-evaluates
       lastCountsFetchRef.current = 0; // Force refresh
       await fetchStatusCounts();
+      await fetchShopifyLiveCounts(true);
       await fetchJobs();
     } catch (error) {
       console.error('Sync failed:', error);
@@ -1297,14 +1316,23 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           ) : (
                             <span>
                               {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
-                              {/* For products, show Shopify live count instead of DB uploaded count */}
-                              {type === 'products' && shopifyLiveCounts.products !== null ? (
-                                <span className="text-green-600 mr-2">{shopifyLiveCounts.products.toLocaleString('da-DK')} i Shopify</span>
-                              ) : type === 'products' && shopifyLiveCounts.fetchFailed ? (
-                                <span className="text-muted-foreground mr-2">– i Shopify</span>
-                              ) : counts.uploaded > 0 ? (
-                                <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>
-                              ) : null}
+                              {/* Show Shopify live count for all entity types */}
+                              {(() => {
+                                const liveCount = shopifyLiveCounts[type];
+                                if (liveCount !== null && liveCount !== undefined) {
+                                  return <span className="text-green-600 mr-2">{liveCount.toLocaleString('da-DK')} i Shopify</span>;
+                                }
+                                if (shopifyLiveCounts.isLoading) {
+                                  return <span className="text-muted-foreground mr-2"><Loader2 className="w-3 h-3 inline animate-spin mr-1" />henter…</span>;
+                                }
+                                if (shopifyLiveCounts.fetchFailed) {
+                                  return <span className="text-muted-foreground mr-2">– i Shopify</span>;
+                                }
+                                if (counts.uploaded > 0) {
+                                  return <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>;
+                                }
+                                return null;
+                              })()}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
                               {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
