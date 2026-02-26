@@ -698,20 +698,22 @@ Deno.serve(async (req) => {
           return Math.min(Math.max(raw, backoff) + jitter, 30_000);
         };
 
-        // If scheduled retry is in future, wait
+        // If scheduled retry is in future, SLEEP here (keep isolate alive)
         if (job.next_attempt_at) {
           const waitMs = new Date(job.next_attempt_at).getTime() - Date.now();
           if (waitMs > 0) {
+            // Update heartbeat + extend mutex lease while we wait
+            const waitHeartbeat: Record<string, any> = { last_heartbeat_at: new Date().toISOString() };
+            if (workerLockId) {
+              waitHeartbeat.worker_locked_until = new Date(Date.now() + Math.max(waitMs + 30_000, 60_000)).toISOString();
+            }
             await supabase
               .from('upload_jobs')
-              .update({ last_heartbeat_at: new Date().toISOString() })
+              .update(waitHeartbeat)
               .eq('id', jobId);
 
-            // IMPORTANT: Do NOT self-schedule here.
-            // Multiple concurrent invocations can otherwise stack up and create a 429 loop.
-            return new Response(JSON.stringify({ 
-              success: true, waiting: true, waitSeconds: Math.ceil(waitMs / 1000) 
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            console.log(`[WORKER] Sleeping ${Math.ceil(waitMs / 1000)}s for next_attempt_at (keeping isolate alive)`);
+            await sleep(waitMs);
           }
         }
 
@@ -1050,15 +1052,14 @@ Deno.serve(async (req) => {
 
         // Schedule next batch or start next entity
         if (hasMore) {
-          // IMPORTANT: if we are rate-limited, schedule AFTER next_attempt_at (with a small safety buffer)
-          // so we don't call too early and accidentally create a 429 loop.
-          const baseDelay = job.entity_type === 'orders' ? ORDERS_SCHEDULE_DELAY_MS : WORKER_SCHEDULE_DELAY_MS;
-          const delayMs = scheduledRetryMs != null
-            ? Math.max(scheduledRetryMs + 250, baseDelay)
-            : baseDelay;
+          // Fire self-schedule IMMEDIATELY (no sleep in background – isolate may die).
+          // The next invocation will respect next_attempt_at by sleeping at the start.
+          // For orders without rate limiting, add a small delay via next_attempt_at.
+          if (!scheduledRetryMs && job.entity_type === 'orders') {
+            updateData.next_attempt_at = new Date(Date.now() + ORDERS_SCHEDULE_DELAY_MS).toISOString();
+          }
 
           runInBackground((async () => {
-            await sleep(delayMs);
             const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
             await fetch(functionUrl, {
               method: 'POST',
