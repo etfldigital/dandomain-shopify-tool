@@ -26,7 +26,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
-  orders: 30, // Sequential processing with 300ms spacing, cached lookups = ~30 orders per batch within 50s budget
+  orders: 15, // Sequential processing with 600ms spacing, single-worker mutex
 };
 
 // Enforce strict upload order for dependent entities.
@@ -429,6 +429,39 @@ Deno.serve(async (req) => {
 
         if (jobError || !job) throw new Error('Job not found');
 
+        // ==================== ORDERS MUTEX LOCK ====================
+        // Only ONE worker may process orders at a time. This prevents
+        // the watchdog + self-scheduling from spawning duplicate workers
+        // that exhaust the Shopify API bucket (2 req/s leak rate).
+        // Other entity types are NOT affected by this lock.
+        let workerLockId: string | null = null;
+        if (job.entity_type === 'orders') {
+          workerLockId = crypto.randomUUID();
+          const lockUntil = new Date(Date.now() + 60_000).toISOString();
+          
+          // Atomic conditional UPDATE: acquire lock only if no valid lock exists
+          const { data: lockResult, error: lockErr } = await supabase
+            .from('upload_jobs')
+            .update({ 
+              worker_lock_id: workerLockId, 
+              worker_locked_until: lockUntil,
+              last_heartbeat_at: new Date().toISOString(),
+            })
+            .eq('id', jobId)
+            .or(`worker_lock_id.is.null,worker_locked_until.lt.${new Date().toISOString()}`)
+            .select('id');
+
+          if (!lockResult || lockResult.length === 0) {
+            // Another worker holds the lock — exit immediately
+            console.log(`[WORKER] Orders mutex: another worker holds the lock for job ${jobId}, exiting`);
+            return new Response(JSON.stringify({ success: true, message: 'Lock held by another worker' }), {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+          }
+          console.log(`[WORKER] Orders mutex: acquired lock ${workerLockId} for job ${jobId}`);
+        }
+        // ===========================================================
+
         // ================= SEQUENCING GATE =================
         // IMPORTANT: Sequencing only applies when MULTIPLE entities are being uploaded together.
         // If the user clicks "Test 3 stk" on a SINGLE entity type (e.g. just products),
@@ -634,10 +667,17 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Clear next_attempt_at and update heartbeat
+        // Clear next_attempt_at and update heartbeat (+ refresh mutex for orders)
+        const heartbeatUpdate: Record<string, any> = { 
+          last_heartbeat_at: new Date().toISOString(), 
+          next_attempt_at: null 
+        };
+        if (workerLockId) {
+          heartbeatUpdate.worker_locked_until = new Date(Date.now() + 60_000).toISOString();
+        }
         await supabase
           .from('upload_jobs')
-          .update({ last_heartbeat_at: new Date().toISOString(), next_attempt_at: null })
+          .update(heartbeatUpdate)
           .eq('id', jobId);
 
         // ==================== PRODUCT PREPARATION ====================
@@ -822,9 +862,17 @@ Deno.serve(async (req) => {
         console.log(`[WORKER] Batch: processed=${result.processed}, skipped=${result.skipped}, errors=${result.errors}, elapsed=${elapsed}ms, speed=${batchSpeed.toFixed(1)}/min`);
 
         // Calculate rolling average speed
+        // Use overall job progress as fallback when batch speed is 0 (rate limited batches)
         let itemsPerMinute = batchSpeed;
         if (job.items_per_minute && job.items_per_minute > 0 && batchSpeed > 0) {
           itemsPerMinute = job.items_per_minute * 0.7 + batchSpeed * 0.3;
+        } else if (batchSpeed === 0 && job.started_at) {
+          // Fallback: calculate from total job progress
+          const jobElapsedMs = Date.now() - new Date(job.started_at).getTime();
+          if (jobElapsedMs > 0 && (job.processed_count || 0) > 0) {
+            const overallSpeed = (job.processed_count / (jobElapsedMs / 60000));
+            itemsPerMinute = overallSpeed;
+          }
         }
 
         // Get actual database counts using reliable method
@@ -923,6 +971,12 @@ Deno.serve(async (req) => {
           // Clear cache on completion to free storage
           updateData.lookup_cache = null;
           updateData.lookup_cache_built_at = null;
+        }
+
+        // Release orders mutex before saving (next invocation will re-acquire)
+        if (workerLockId) {
+          updateData.worker_lock_id = null;
+          updateData.worker_locked_until = null;
         }
 
         await supabase.from('upload_jobs').update(updateData).eq('id', jobId);

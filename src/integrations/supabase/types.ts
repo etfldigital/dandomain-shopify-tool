@@ -615,6 +615,8 @@ export type Database = {
           total_count: number
           trigger_mode: string
           updated_at: string
+          worker_lock_id: string | null
+          worker_locked_until: string | null
         }
         Insert: {
           batch_size?: number
@@ -644,6 +646,8 @@ export type Database = {
           total_count?: number
           trigger_mode?: string
           updated_at?: string
+          worker_lock_id?: string | null
+          worker_locked_until?: string | null
         }
         Update: {
           batch_size?: number
@@ -673,6 +677,8 @@ export type Database = {
           total_count?: number
           trigger_mode?: string
           updated_at?: string
+          worker_lock_id?: string | null
+          worker_locked_until?: string | null
         }
         Relationships: [
           {

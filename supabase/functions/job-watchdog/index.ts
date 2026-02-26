@@ -153,6 +153,19 @@ Deno.serve(async (req) => {
       }
       // =====================================
 
+      // ========== ORDERS MUTEX CHECK ==========
+      // If this is an orders job with a valid lock, another worker is active.
+      // Do NOT spawn a duplicate — the lock holder will self-schedule.
+      if (job.entity_type === 'orders' && job.worker_lock_id && job.worker_locked_until) {
+        const lockExpiry = new Date(job.worker_locked_until).getTime();
+        if (lockExpiry > Date.now()) {
+          console.log(`[WATCHDOG] Skipping orders job ${job.id} - worker mutex lock valid until ${job.worker_locked_until}`);
+          continue;
+        }
+        console.log(`[WATCHDOG] Orders job ${job.id} - worker mutex lock EXPIRED, will restart`);
+      }
+      // ========================================
+
       const lastHeartbeat = new Date(job.last_heartbeat_at).getTime();
       const stalledForMs = now - lastHeartbeat;
       const stalledForMinutes = Math.round(stalledForMs / 60000 * 10) / 10;
@@ -160,12 +173,18 @@ Deno.serve(async (req) => {
       console.log(`[WATCHDOG] Job ${job.id} (${job.entity_type}) stalled for ${stalledForMinutes} minutes. Restarting...`);
 
       // Update heartbeat to prevent immediate re-trigger
+      // For orders: clear the expired lock so the new worker can acquire it
+      const restartUpdate: Record<string, any> = {
+        last_heartbeat_at: new Date().toISOString(),
+        next_attempt_at: null,
+      };
+      if (job.entity_type === 'orders') {
+        restartUpdate.worker_lock_id = null;
+        restartUpdate.worker_locked_until = null;
+      }
       await supabase
         .from('upload_jobs')
-        .update({ 
-          last_heartbeat_at: new Date().toISOString(),
-          next_attempt_at: null,
-        })
+        .update(restartUpdate)
         .eq('id', job.id);
 
       // Re-trigger the worker (fire-and-forget)
