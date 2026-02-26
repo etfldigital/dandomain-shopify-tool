@@ -33,21 +33,46 @@ Deno.serve(async (req) => {
     const now = Date.now();
     const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
     const nowIso = new Date(now).toISOString();
+    // A job is only considered truly stalled if heartbeat is old.
+    // Jobs with recent heartbeat are still being handled by the self-scheduling chain.
+    // This prevents the watchdog from creating duplicate invocations.
+    const recentHeartbeatCutoff = new Date(now - 10_000).toISOString(); // 10s grace
 
     // Retry helper for transient network errors
     const fetchWithRetry = async (retries = 3, delay = 500) => {
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
+          // Find running jobs that are ACTUALLY stalled:
+          // 1. Heartbeat is older than stall threshold (genuinely stuck), OR
+          // 2. next_attempt_at has passed AND heartbeat is older than 10s
+          //    (the self-scheduling chain likely broke)
           const { data, error } = await supabase
             .from('upload_jobs')
             .select('*')
             .eq('status', 'running')
-            .or(
-              `last_heartbeat_at.lt.${stallCutoff},and(next_attempt_at.not.is.null,next_attempt_at.lte.${nowIso})`
-            );
+            .lt('last_heartbeat_at', stallCutoff);
           
           if (error) throw error;
-          return data;
+
+          // Also find jobs where next_attempt_at passed but no worker picked them up
+          // (heartbeat must be stale to avoid duplicating an active worker)
+          const { data: retryJobs, error: retryErr } = await supabase
+            .from('upload_jobs')
+            .select('*')
+            .eq('status', 'running')
+            .not('next_attempt_at', 'is', null)
+            .lte('next_attempt_at', nowIso)
+            .lt('last_heartbeat_at', recentHeartbeatCutoff);
+
+          if (retryErr) throw retryErr;
+
+          // Merge and deduplicate
+          const allJobs = [...(data || [])];
+          const seenIds = new Set(allJobs.map(j => j.id));
+          for (const j of (retryJobs || [])) {
+            if (!seenIds.has(j.id)) allJobs.push(j);
+          }
+          return allJobs;
         } catch (err) {
           const isTransient = err instanceof Error && 
             (err.message.includes('connection reset') || err.message.includes('SendRequest'));
