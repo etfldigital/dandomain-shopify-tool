@@ -9,10 +9,10 @@ const corsHeaders = {
 const STALL_THRESHOLD_MS = 30 * 1000;
 
 // Minimum interval between watchdog executions (database-enforced)
-const MIN_EXECUTION_INTERVAL_MS = 25_000;
+const MIN_EXECUTION_INTERVAL_MS = 8_000;
 
-// Self-scheduling interval
-const SELF_SCHEDULE_INTERVAL_MS = 25_000;
+// Self-scheduling interval (watchdog IS the scheduler for orders)
+const SELF_SCHEDULE_INTERVAL_MS = 8_000;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -60,7 +60,51 @@ Deno.serve(async (req) => {
     // ============================================================================
 
     const now = Date.now();
+    const currentIso = new Date().toISOString();
     const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
+
+    // ============================================================================
+    // 1. READY JOBS: trigger jobs where next_attempt_at <= now (DB-driven scheduling)
+    //    These are jobs that completed a batch and are waiting for the watchdog
+    //    to trigger the next batch. The worker_lock_id is still set (valid mutex).
+    // ============================================================================
+    const { data: readyJobs } = await supabase
+      .from('upload_jobs')
+      .select('id, entity_type, next_attempt_at')
+      .eq('status', 'running')
+      .not('next_attempt_at', 'is', null)
+      .lte('next_attempt_at', currentIso);
+
+    const triggeredJobs: string[] = [];
+    for (const rj of (readyJobs || [])) {
+      console.log(`[WATCHDOG] Triggering ready job ${rj.id} (${rj.entity_type}), next_attempt_at was ${rj.next_attempt_at}`);
+      
+      // Clear next_attempt_at so we don't double-trigger
+      await supabase
+        .from('upload_jobs')
+        .update({ next_attempt_at: null, last_heartbeat_at: currentIso })
+        .eq('id', rj.id);
+
+      // Fire upload-worker
+      const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+      runInBackground(
+        fetch(functionUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseServiceKey}`,
+          },
+          body: JSON.stringify({ jobId: rj.id, action: 'process' }),
+        })
+          .then(() => console.log(`[WATCHDOG] Triggered ready job ${rj.id}`))
+          .catch((e) => console.error(`[WATCHDOG] Failed to trigger ready job ${rj.id}:`, e))
+      );
+      triggeredJobs.push(rj.id);
+    }
+
+    // ============================================================================
+    // 2. STALLED JOBS: find running jobs that are genuinely stuck
+    // ============================================================================
 
     // Find running jobs that are ACTUALLY stalled:
     // Both conditions must be true:
@@ -72,16 +116,17 @@ Deno.serve(async (req) => {
       .select('*')
       .eq('status', 'running')
       .lt('last_heartbeat_at', stallCutoff)
-      .is('worker_lock_id', null);
+      .is('worker_lock_id', null)
+      .is('next_attempt_at', null);  // Don't stall-check jobs waiting for next_attempt_at
 
     if (fetchError) {
       console.warn('[WATCHDOG] Could not fetch stalled jobs:', fetchError.message);
-      // Self-schedule to try again
       selfSchedule(supabaseUrl, supabaseServiceKey, runInBackground);
       return new Response(JSON.stringify({
         success: true,
         message: 'Skipped due to query error, will retry',
         warning: fetchError.message,
+        triggered: triggeredJobs,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
@@ -92,7 +137,8 @@ Deno.serve(async (req) => {
       .eq('status', 'running')
       .lt('last_heartbeat_at', stallCutoff)
       .not('worker_lock_id', 'is', null)
-      .lt('worker_locked_until', new Date().toISOString());
+      .lt('worker_locked_until', new Date().toISOString())
+      .is('next_attempt_at', null);
 
     // Merge and deduplicate
     const allStalled = [...(stalledJobs || [])];
@@ -120,10 +166,20 @@ Deno.serve(async (req) => {
     }
     // ============================================================================
 
+    if ((!allStalled || allStalled.length === 0) && triggeredJobs.length === 0) {
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'No stalled or ready jobs found',
+        checked_at: new Date().toISOString(),
+        selfScheduled: hasActiveJobs,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     if (!allStalled || allStalled.length === 0) {
       return new Response(JSON.stringify({
         success: true,
-        message: 'No stalled jobs found',
+        message: `Triggered ${triggeredJobs.length} ready job(s), no stalled jobs`,
+        triggered: triggeredJobs,
         checked_at: new Date().toISOString(),
         selfScheduled: hasActiveJobs,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -187,8 +243,9 @@ Deno.serve(async (req) => {
 
     return new Response(JSON.stringify({
       success: true,
-      message: `Restarted ${restartedJobs.length} stalled job(s)`,
+      message: `Restarted ${restartedJobs.length} stalled job(s), triggered ${triggeredJobs.length} ready job(s)`,
       restarted_jobs: restartedJobs,
+      triggered: triggeredJobs,
       checked_at: new Date().toISOString(),
       selfScheduled: hasActiveJobs,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
