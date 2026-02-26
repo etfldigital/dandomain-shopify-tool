@@ -436,28 +436,73 @@ Deno.serve(async (req) => {
         // Other entity types are NOT affected by this lock.
         let workerLockId: string | null = null;
         if (job.entity_type === 'orders') {
-          workerLockId = crypto.randomUUID();
-          const lockUntil = new Date(Date.now() + 60_000).toISOString();
-          
-          // Atomic conditional UPDATE: acquire lock only if no valid lock exists
-          const { data: lockResult, error: lockErr } = await supabase
-            .from('upload_jobs')
-            .update({ 
-              worker_lock_id: workerLockId, 
-              worker_locked_until: lockUntil,
-              last_heartbeat_at: new Date().toISOString(),
-            })
-            .eq('id', jobId)
-            .or(`worker_lock_id.is.null,worker_locked_until.lt.${new Date().toISOString()}`)
-            .select('id');
+          const nowMs = Date.now();
+          const nowIsoString = new Date(nowMs).toISOString();
 
-          if (!lockResult || lockResult.length === 0) {
-            // Another worker holds the lock — exit immediately
+          // Read lock state directly from DB on every invocation (never from memory)
+          const { data: mutexState, error: mutexReadErr } = await supabase
+            .from('upload_jobs')
+            .select('worker_lock_id, worker_locked_until')
+            .eq('id', jobId)
+            .eq('entity_type', 'orders')
+            .single();
+
+          if (mutexReadErr || !mutexState) {
+            throw new Error(`Orders mutex read failed for job ${jobId}: ${mutexReadErr?.message || 'No row returned'}`);
+          }
+
+          // Raw DB values at check moment (requested for debugging)
+          console.log(
+            `[WORKER] Orders mutex DB state for job ${jobId}: worker_lock_id=${mutexState.worker_lock_id ?? 'null'}, worker_locked_until=${mutexState.worker_locked_until ?? 'null'}`
+          );
+
+          const lockExpired =
+            !!mutexState.worker_locked_until &&
+            new Date(mutexState.worker_locked_until).getTime() <= nowMs;
+          const lockAvailable = mutexState.worker_lock_id === null || lockExpired;
+
+          if (!lockAvailable) {
             console.log(`[WORKER] Orders mutex: another worker holds the lock for job ${jobId}, exiting`);
             return new Response(JSON.stringify({ success: true, message: 'Lock held by another worker' }), {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' }
             });
           }
+
+          workerLockId = crypto.randomUUID();
+          const lockUntil = new Date(nowMs + 60_000).toISOString();
+
+          // Atomic compare-and-swap based on raw DB values read above
+          let casQuery = supabase
+            .from('upload_jobs')
+            .update({
+              worker_lock_id: workerLockId,
+              worker_locked_until: lockUntil,
+              last_heartbeat_at: nowIsoString,
+            })
+            .eq('id', jobId)
+            .eq('entity_type', 'orders');
+
+          casQuery = mutexState.worker_lock_id === null
+            ? casQuery.is('worker_lock_id', null)
+            : casQuery.eq('worker_lock_id', mutexState.worker_lock_id);
+
+          casQuery = mutexState.worker_locked_until === null
+            ? casQuery.is('worker_locked_until', null)
+            : casQuery.eq('worker_locked_until', mutexState.worker_locked_until);
+
+          const { data: casResult, error: casErr } = await casQuery.select('id');
+
+          if (casErr) {
+            throw new Error(`Orders mutex CAS failed for job ${jobId}: ${casErr.message}`);
+          }
+
+          if (!casResult || casResult.length === 0) {
+            console.log(`[WORKER] Orders mutex: CAS lost race for job ${jobId}, exiting`);
+            return new Response(JSON.stringify({ success: true, message: 'Lock held by another worker' }), {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+          }
+
           console.log(`[WORKER] Orders mutex: acquired lock ${workerLockId} for job ${jobId}`);
         }
         // ===========================================================
