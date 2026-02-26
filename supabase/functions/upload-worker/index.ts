@@ -698,7 +698,8 @@ Deno.serve(async (req) => {
           return Math.min(Math.max(raw, backoff) + jitter, 30_000);
         };
 
-        // If scheduled retry is in future, SLEEP here (keep isolate alive)
+        // If scheduled retry is in future, exit cleanly.
+        // The watchdog will re-trigger this job when next_attempt_at <= now().
         if (job.next_attempt_at) {
           const waitMs = new Date(job.next_attempt_at).getTime() - Date.now();
           if (waitMs > 0) {
@@ -712,8 +713,10 @@ Deno.serve(async (req) => {
               .update(waitHeartbeat)
               .eq('id', jobId);
 
-            console.log(`[WORKER] Sleeping ${Math.ceil(waitMs / 1000)}s for next_attempt_at (keeping isolate alive)`);
-            await sleep(waitMs);
+            console.log(`[WORKER] next_attempt_at is ${Math.ceil(waitMs / 1000)}s in future – exiting, watchdog will re-trigger`);
+            return new Response(JSON.stringify({ 
+              success: true, waiting: true, waitSeconds: Math.ceil(waitMs / 1000) 
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
           }
         }
 
@@ -1048,25 +1051,32 @@ Deno.serve(async (req) => {
           }
         }
 
+        // For orders with hasMore: set next_attempt_at so watchdog triggers the next batch
+        // DO NOT use runInBackground(fetch()) – isolate dies before the request is sent
+        if (hasMore && job.entity_type === 'orders') {
+          const delayMs = scheduledRetryMs || ORDERS_SCHEDULE_DELAY_MS;
+          updateData.next_attempt_at = new Date(Date.now() + delayMs).toISOString();
+          console.log(`[WORKER] Orders batch done, next_attempt_at set to +${Math.ceil(delayMs / 1000)}s – watchdog will trigger`);
+        }
+
         await supabase.from('upload_jobs').update(updateData).eq('id', jobId);
 
         // Schedule next batch or start next entity
         if (hasMore) {
-          // Fire self-schedule IMMEDIATELY (no sleep in background – isolate may die).
-          // The next invocation will respect next_attempt_at by sleeping at the start.
-          // For orders without rate limiting, add a small delay via next_attempt_at.
-          if (!scheduledRetryMs && job.entity_type === 'orders') {
-            updateData.next_attempt_at = new Date(Date.now() + ORDERS_SCHEDULE_DELAY_MS).toISOString();
+          if (job.entity_type === 'orders') {
+            // Nothing to do – watchdog will pick up next_attempt_at
+          } else {
+            // Non-orders: fire-and-forget (existing behavior)
+            runInBackground((async () => {
+              await sleep(WORKER_SCHEDULE_DELAY_MS);
+              const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
+              await fetch(functionUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
+                body: JSON.stringify({ jobId, action: 'process' }),
+              });
+            })());
           }
-
-          runInBackground((async () => {
-            const functionUrl = `${supabaseUrl}/functions/v1/upload-worker`;
-            await fetch(functionUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-              body: JSON.stringify({ jobId, action: 'process' }),
-            });
-          })());
         } else {
           if (job.is_test_mode) {
             // In test mode: continue with the next *test* job (3 stk each).
