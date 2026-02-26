@@ -11,7 +11,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const WORKER_SCHEDULE_DELAY_MS = 500;
 // Orders need a longer delay: each batch uses ~15 Shopify API calls at 2 req/s leak rate.
 // 15s gives the bucket time to recover fully between batches.
-const ORDERS_SCHEDULE_DELAY_MS = 15_000;
+const ORDERS_SCHEDULE_DELAY_MS = 2_000;
 
 // Fire-and-forget background task runner
 const runInBackground = (task: Promise<unknown>) => {
@@ -1029,10 +1029,21 @@ Deno.serve(async (req) => {
           updateData.duplicate_cache = null;
         }
 
-        // Release orders mutex before saving (next invocation will re-acquire)
+        // MUTEX STRATEGY FOR ORDERS:
+        // - If hasMore: KEEP the lock (update worker_locked_until = now+60s)
+        //   so the watchdog never sees a gap and spawns a duplicate worker.
+        // - If job is done: RELEASE the lock (set null).
+        // Other entity types are unaffected.
         if (workerLockId) {
-          updateData.worker_lock_id = null;
-          updateData.worker_locked_until = null;
+          if (hasMore) {
+            // Keep mutex locked between batches – extend the lease
+            updateData.worker_locked_until = new Date(Date.now() + 60_000).toISOString();
+            // Do NOT set worker_lock_id to null
+          } else {
+            // Job complete – release the lock
+            updateData.worker_lock_id = null;
+            updateData.worker_locked_until = null;
+          }
         }
 
         await supabase.from('upload_jobs').update(updateData).eq('id', jobId);
