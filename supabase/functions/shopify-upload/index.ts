@@ -2124,14 +2124,13 @@ async function uploadOrders(
   let retryAfterSecondsGlobal = 0;
 
   // ============================================================================
-  // SEQUENTIAL ORDER PROCESSING with mandatory spacing
-  // Shopify REST = 2 req/s leak rate, 40 bucket. Only 1 API call per order.
-  // 300ms spacing = ~3.3 req/s burst but bucket tracking handles limits reactively.
+  // ADAPTIVE THROTTLE for order processing
+  // Automatically finds the fastest safe speed without manual tuning.
   // ============================================================================
   const ORDER_MAX_RETRIES = 3;
-  // Hard floor: 600ms between orders = ~1.67 req/s, safely under Shopify's 2 req/s leak rate.
-  // This prevents bucket exhaustion even when bucket state is unknown at invocation start.
-  const INTER_ORDER_DELAY_MS = 600;
+  const DELAY_FLOOR_MS = 300;
+  let adaptiveDelayMs = 500; // Start each batch at 500ms
+  let batchHad429 = false;
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
@@ -2165,28 +2164,9 @@ async function uploadOrders(
       return;
     }
 
-    // Secondary check: fingerprint match (email + total_price)
-    const fpEmail = (data.customer_email || data.email || '').toLowerCase().trim();
-    const fpTotal = parseFloat(String(data.total_price || '0')).toFixed(2);
-    if (fpEmail) {
-      const fp = `${fpEmail}|${fpTotal}`;
-      const fpMatchId = knownFingerprints.get(fp);
-      if (fpMatchId) {
-        const dupeMsg = `Duplicate (fingerprint): email=${fpEmail} total=${fpTotal} matches Shopify order ${fpMatchId}`;
-        console.log(`[ORDERS] DUPLICATE SKIPPED: ${dupeMsg}`);
-        await supabase
-          .from('canonical_orders')
-          .update({
-            status: 'duplicate',
-            shopify_id: fpMatchId,
-            error_message: dupeMsg,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', item.id);
-        skipped++;
-        return;
-      }
-    }
+    // Fingerprint-based duplicate check REMOVED – it caused false positives.
+    // Same customer can have multiple orders with the same total_price.
+    // Only dandomain_order_id (above) is a reliable duplicate signal.
 
     const lineItems = data.line_items || [];
 
@@ -2273,10 +2253,13 @@ async function uploadOrders(
         );
 
         if ('rateLimited' in result) {
-          // On rate limit, wait and retry (don't immediately fail the order)
+          // Adaptive: increase delay by 500ms on 429
+          adaptiveDelayMs = Math.min(adaptiveDelayMs + 500, 3000);
+          batchHad429 = true;
+          // On rate limit, back off 5s then retry
           if (attempt < ORDER_MAX_RETRIES) {
-            const waitMs = Math.max(result.retryAfterMs, 2000 * Math.pow(2, attempt - 1));
-            console.log(`[ORDERS] Order ${item.external_id} rate limited, retry ${attempt}/${ORDER_MAX_RETRIES} in ${Math.ceil(waitMs/1000)}s`);
+            const waitMs = 5000;
+            console.log(`[ORDERS] Order ${item.external_id} rate limited, retry ${attempt}/${ORDER_MAX_RETRIES} in 5s (delay now ${adaptiveDelayMs}ms)`);
             await sleep(waitMs);
             continue;
           }
@@ -2337,7 +2320,7 @@ async function uploadOrders(
     errorDetails.push({ externalId: item.external_id, message: errorMsg, step: failedStep });
   };
 
-  // Process orders sequentially with spacing
+  // Process orders sequentially with adaptive spacing
   let orderIndex = 0;
   for (const item of items) {
     if (rateLimitedGlobal) break;
@@ -2349,7 +2332,7 @@ async function uploadOrders(
     // If bucket is hot (>20/40), pause to let it recover before continuing.
     if (orderIndex === 1) {
       const bucketAfterFirst = getCurrentBucketUsage();
-      console.log(`[ORDERS] Bucket after first order: ${bucketAfterFirst}/40`);
+      console.log(`[ORDERS] Bucket after first order: ${bucketAfterFirst}/40, adaptive delay: ${adaptiveDelayMs}ms`);
       if (bucketAfterFirst > 20) {
         const recoveryMs = (bucketAfterFirst - 20) * 500;
         console.log(`[ORDERS] Bucket recovery pause: ${recoveryMs}ms (bucket=${bucketAfterFirst}/40)`);
@@ -2357,8 +2340,20 @@ async function uploadOrders(
       }
     }
 
-    // Mandatory spacing between orders to avoid bucket exhaustion
-    if (!rateLimitedGlobal) await sleep(INTER_ORDER_DELAY_MS);
+    // Adaptive delay: reduce if bucket is healthy
+    if (!rateLimitedGlobal) {
+      const usage = getCurrentBucketUsage();
+      if (usage < 20) {
+        adaptiveDelayMs = Math.max(adaptiveDelayMs - 50, DELAY_FLOOR_MS);
+      }
+      await sleep(adaptiveDelayMs);
+    }
+  }
+
+  // After a 429-free batch, reduce delay for next batch
+  if (!batchHad429 && adaptiveDelayMs > DELAY_FLOOR_MS) {
+    adaptiveDelayMs = Math.max(adaptiveDelayMs - 100, DELAY_FLOOR_MS);
+    console.log(`[ORDERS] 429-free batch, reducing delay to ${adaptiveDelayMs}ms for next batch`);
   }
 
   const { count: remainingCount } = await supabase
