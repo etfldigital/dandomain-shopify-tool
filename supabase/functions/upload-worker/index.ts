@@ -318,6 +318,7 @@ Deno.serve(async (req) => {
           let pendingCount = await countCanonicalStatus(entityType, 'pending');
           const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
           const failedCount = await countCanonicalStatus(entityType, 'failed');
+          const duplicateCount = entityType === 'orders' ? await countCanonicalStatus(entityType, 'duplicate') : 0;
 
           // PRODUCTS FALLBACK:
           // If products haven't been prepared yet, primary-only counting returns 0.
@@ -339,11 +340,10 @@ Deno.serve(async (req) => {
             }
           }
 
-          const totalCount = pendingCount + uploadedCount + failedCount;
-          const alreadyProcessedCount = uploadedCount + failedCount;
+          const totalCount = pendingCount + uploadedCount + failedCount + duplicateCount;
+          const alreadyProcessedCount = uploadedCount + failedCount + duplicateCount;
           
-          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
-          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, total=${totalCount}`);
+          console.log(`[WORKER] ${entityType}: pending=${pendingCount}, uploaded=${uploadedCount}, failed=${failedCount}, duplicate=${duplicateCount}, total=${totalCount}`);
           
            if (pendingCount && pendingCount > 0) {
             const batchSize = isTestMode ? 3 : (DEFAULT_BATCH_SIZE[entityType] || 10);
@@ -885,11 +885,13 @@ Deno.serve(async (req) => {
         const actualPending = await countCanonicalStatus(job.entity_type, 'pending');
         const actualUploaded = await countCanonicalStatus(job.entity_type, 'uploaded');
         const actualFailed = await countCanonicalStatus(job.entity_type, 'failed');
+        // Count duplicates as "processed" (deliberately skipped, not pending)
+        const actualDuplicate = job.entity_type === 'orders' ? await countCanonicalStatus(job.entity_type, 'duplicate') : 0;
         
-        console.log(`[WORKER] Counts for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}`);
+        console.log(`[WORKER] Counts for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}, duplicate=${actualDuplicate}`);
 
-        const actualTotal = actualPending + actualUploaded + actualFailed;
-        const actualProcessed = actualUploaded + actualFailed;
+        const actualTotal = actualPending + actualUploaded + actualFailed + actualDuplicate;
+        const actualProcessed = actualUploaded + actualFailed + actualDuplicate;
 
         // For test mode: track how many items we've uploaded in this job specifically
         // Test mode should ONLY upload up to 3 items total, then stop

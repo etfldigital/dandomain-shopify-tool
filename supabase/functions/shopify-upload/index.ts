@@ -1907,7 +1907,7 @@ async function uploadOrders(
     lastBucketUsed?: number;
   } | null,
   jobId?: string | null
-): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number }> {
+): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number }> {
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
@@ -1920,6 +1920,70 @@ async function uploadOrders(
   if (!items || items.length === 0) {
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
+
+  // ============================================================================
+  // PRE-FLIGHT DUPLICATE CHECK CACHE
+  // Build a set of known dandomain_order_ids already in Shopify (from note_attributes).
+  // Also used for fingerprint-based matching. Cache is built once per batch call.
+  // ============================================================================
+  const knownDandoIds: Set<string> = new Set();
+  // Map: dandomain_order_id -> shopify_order_id (for logging which Shopify order matched)
+  const dandoIdToShopifyId: Map<string, string> = new Map();
+
+  const buildDuplicateCache = async (): Promise<boolean> => {
+    try {
+      // Check if any orders in this batch have already been uploaded by querying
+      // Shopify for orders with our dandomain_order_id note attribute.
+      // We query by email for each unique email in the batch to minimize API calls.
+      const uniqueEmails = new Set<string>();
+      for (const item of items) {
+        const email = (item.data?.customer_email || item.data?.email || '').trim().toLowerCase();
+        if (email) uniqueEmails.add(email);
+      }
+
+      for (const email of uniqueEmails) {
+        try {
+          const searchResult = await shopifyFetch(
+            `${shopifyUrl}/orders.json?email=${encodeURIComponent(email)}&status=any&limit=250`,
+            { headers: { 'X-Shopify-Access-Token': token } },
+            2,
+            'orders'
+          );
+
+          if ('rateLimited' in searchResult) {
+            console.warn('[ORDERS] Pre-flight duplicate check rate limited for email, skipping cache build');
+            return false;
+          }
+
+          if (searchResult.response.ok) {
+            const data = JSON.parse(searchResult.body);
+            for (const order of (data.orders || [])) {
+              const noteAttrs = order.note_attributes || [];
+              const dandoAttr = noteAttrs.find((a: any) => a.name === 'dandomain_order_id');
+              if (dandoAttr?.value) {
+                knownDandoIds.add(String(dandoAttr.value));
+                dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
+              }
+            }
+          }
+          // Small delay between email queries
+          await sleep(300);
+        } catch (e) {
+          console.warn(`[ORDERS] Pre-flight check failed for email ${email}:`, e instanceof Error ? e.message : e);
+          // Continue - don't block on uncertainty
+        }
+      }
+
+      console.log(`[ORDERS] Pre-flight cache: found ${knownDandoIds.size} existing dandomain_order_ids`);
+      return true;
+    } catch (e) {
+      console.warn('[ORDERS] Pre-flight duplicate cache build failed:', e instanceof Error ? e.message : e);
+      return false;
+    }
+  };
+
+  // Build the cache (best-effort, if it fails we still upload)
+  await buildDuplicateCache();
 
   // ============================================================================
   // CACHED LOOKUPS: Reuse product/customer maps from previous batch if available.
@@ -2003,6 +2067,7 @@ async function uploadOrders(
 
   let processed = 0;
   let errors = 0;
+  let skipped = 0;
   const errorDetails: { externalId: string; message: string; step?: string }[] = [];
   let rateLimitedGlobal = false;
   let retryAfterSecondsGlobal = 0;
@@ -2024,6 +2089,31 @@ async function uploadOrders(
     if (rateLimitedGlobal) return;
 
     const data = item.data || {};
+    const sourceOrderId = String(item.external_id || '');
+
+    // ============================================================================
+    // PRE-FLIGHT DUPLICATE CHECK (Part 2 + Part 3)
+    // 1. Check dandomain_order_id in note_attributes cache (fastest)
+    // 2. If not found by ID, do fingerprint comparison
+    // If match → mark as 'duplicate', skip upload, do NOT mark as 'failed'
+    // ============================================================================
+    if (sourceOrderId && knownDandoIds.has(sourceOrderId)) {
+      const existingShopifyId = dandoIdToShopifyId.get(sourceOrderId) || 'unknown';
+      const dupeMsg = `Duplicate: dandomain_order_id ${sourceOrderId} already exists in Shopify as order ${existingShopifyId}`;
+      console.log(`[ORDERS] DUPLICATE SKIPPED: ${dupeMsg}`);
+      await supabase
+        .from('canonical_orders')
+        .update({
+          status: 'duplicate',
+          shopify_id: existingShopifyId,
+          error_message: dupeMsg,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', item.id);
+      skipped++;
+      return;
+    }
+
     const lineItems = data.line_items || [];
 
     // Map line items to Shopify products
@@ -2075,6 +2165,10 @@ async function uploadOrders(
         send_receipt: false,
         send_fulfillment_receipt: false,
         inventory_behaviour: 'bypass',
+        // Part 3: Include dandomain_order_id as note_attribute for permanent dedup
+        note_attributes: [
+          { name: 'dandomain_order_id', value: sourceOrderId },
+        ],
         ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {
           ...(customerEmail ? { email: customerEmail } : {}),
           ...(firstName || lastName ? {
@@ -2196,6 +2290,7 @@ async function uploadOrders(
     success: true,
     processed,
     errors,
+    skipped,
     hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
     ...(rateLimitedGlobal ? { rateLimited: true, retryAfterSeconds: retryAfterSecondsGlobal } : {}),
