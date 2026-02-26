@@ -1,0 +1,1 @@
+UPDATE projects SET uploads_paused = true WHERE id = '900674e0-5eef-450e-bda4-5246ae5190d0';
