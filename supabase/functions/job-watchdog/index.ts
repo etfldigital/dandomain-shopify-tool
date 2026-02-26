@@ -79,10 +79,15 @@ Deno.serve(async (req) => {
     for (const rj of (readyJobs || [])) {
       console.log(`[WATCHDOG] Triggering ready job ${rj.id} (${rj.entity_type}), next_attempt_at was ${rj.next_attempt_at}`);
       
-      // Clear next_attempt_at so we don't double-trigger
+      // Clear next_attempt_at and release old mutex so new worker can acquire fresh lock
       await supabase
         .from('upload_jobs')
-        .update({ next_attempt_at: null, last_heartbeat_at: currentIso })
+        .update({ 
+          next_attempt_at: null, 
+          last_heartbeat_at: currentIso,
+          worker_lock_id: null,
+          worker_locked_until: null,
+        })
         .eq('id', rj.id);
 
       // Fire upload-worker
