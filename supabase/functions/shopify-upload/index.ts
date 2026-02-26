@@ -2059,15 +2059,11 @@ async function uploadOrders(
     cacheWasUsed = true;
     console.log(`[ORDERS] Restored lookup cache: ${productLookup.size} products, ${customerLookup.size} customers (built ${lookupCache.builtAt})`);
     
-    // Restore bucket state from cache
-    if (typeof lookupCache.lastBucketUsed === 'number') {
-      shopifyBucketUsed = lookupCache.lastBucketUsed;
-      lastBucketUpdate = Date.now();
-      console.log(`[ORDERS] Restored bucket state: ${shopifyBucketUsed}/40`);
-    } else {
-      shopifyBucketUsed = 0;
-      lastBucketUpdate = Date.now();
-    }
+    // Always start with bucket at 0 – never restore stale values.
+    // Trust exclusively X-Shopify-Shop-Api-Call-Limit headers from actual responses.
+    shopifyBucketUsed = 0;
+    lastBucketUpdate = Date.now();
+    console.log(`[ORDERS] Bucket initialized at 0/40 (trusting response headers only)`);
   } else {
     // Build from scratch (first batch only)
     const LOOKUP_PAGE_SIZE = 1000;

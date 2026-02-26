@@ -73,6 +73,32 @@ Deno.serve(async (req) => {
     const typesToFetch = entityTypes || ["products"];
     const counts: Record<string, number | null> = {};
 
+    // ============================================================================
+    // CHECK FOR ACTIVE UPLOAD JOBS: If any upload job is running, skip Shopify
+    // REST API calls entirely to avoid stealing API credits from the uploader.
+    // The uploader shares the same 40-request REST bucket.
+    // ============================================================================
+    const { data: activeJobs } = await supabase
+      .from('upload_jobs')
+      .select('id, entity_type')
+      .eq('project_id', projectId)
+      .eq('status', 'running')
+      .limit(1);
+
+    if (activeJobs && activeJobs.length > 0) {
+      console.log(`[shopify-counts] Skipping Shopify count fetch – upload job is active (job ${activeJobs[0].id}, type=${activeJobs[0].entity_type})`);
+      // Return nulls so the frontend shows cached/previous values
+      for (const et of typesToFetch) {
+        counts[et] = null;
+      }
+
+      const response: Record<string, any> = { success: true, counts, skipped: true };
+      return new Response(JSON.stringify(response), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    // ============================================================================
+
     // Fetch SEQUENTIALLY to avoid Shopify 429 rate limits
     for (const et of typesToFetch) {
       try {
