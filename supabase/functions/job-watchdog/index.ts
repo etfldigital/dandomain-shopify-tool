@@ -5,11 +5,14 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Stall threshold: 30 seconds without heartbeat (reduced for faster recovery)
+// Stall threshold: 30 seconds without heartbeat
 const STALL_THRESHOLD_MS = 30 * 1000;
 
-// Self-scheduling interval: how often the watchdog re-invokes itself
-const SELF_SCHEDULE_INTERVAL_MS = 25_000; // 25 seconds
+// Minimum interval between watchdog executions (database-enforced)
+const MIN_EXECUTION_INTERVAL_MS = 25_000;
+
+// Self-scheduling interval
+const SELF_SCHEDULE_INTERVAL_MS = 25_000;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -30,88 +33,77 @@ Deno.serve(async (req) => {
   };
 
   try {
-    const now = Date.now();
-    const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
-    const nowIso = new Date(now).toISOString();
-    // A job is only considered truly stalled if heartbeat is old.
-    // Jobs with recent heartbeat are still being handled by the self-scheduling chain.
-    // This prevents the watchdog from creating duplicate invocations.
-    const recentHeartbeatCutoff = new Date(now - 10_000).toISOString(); // 10s grace
+    // ============================================================================
+    // ATOMIC THROTTLE GUARD: Only execute if 25+ seconds since last execution.
+    // Uses atomic compare-and-swap to prevent race conditions where multiple
+    // concurrent invocations all pass the check simultaneously.
+    // ============================================================================
+    const cutoffTime = new Date(Date.now() - MIN_EXECUTION_INTERVAL_MS).toISOString();
+    const nowIso = new Date().toISOString();
+    
+    // Atomic CAS: update only if last_execution_at is old enough
+    const { data: lockResult } = await supabase
+      .from('watchdog_state')
+      .update({ last_execution_at: nowIso })
+      .eq('id', 'singleton')
+      .lt('last_execution_at', cutoffTime)
+      .select('id');
 
-    // Retry helper for transient network errors
-    const fetchWithRetry = async (retries = 3, delay = 500) => {
-      for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-          // Find running jobs that are ACTUALLY stalled:
-          // 1. Heartbeat is older than stall threshold (genuinely stuck), OR
-          // 2. next_attempt_at has passed AND heartbeat is older than 10s
-          //    (the self-scheduling chain likely broke)
-          const { data, error } = await supabase
-            .from('upload_jobs')
-            .select('*')
-            .eq('status', 'running')
-            .lt('last_heartbeat_at', stallCutoff);
-          
-          if (error) throw error;
-
-          // Also find jobs where next_attempt_at passed but no worker picked them up
-          // (heartbeat must be stale to avoid duplicating an active worker)
-          const { data: retryJobs, error: retryErr } = await supabase
-            .from('upload_jobs')
-            .select('*')
-            .eq('status', 'running')
-            .not('next_attempt_at', 'is', null)
-            .lte('next_attempt_at', nowIso)
-            .lt('last_heartbeat_at', recentHeartbeatCutoff);
-
-          if (retryErr) throw retryErr;
-
-          // Merge and deduplicate
-          const allJobs = [...(data || [])];
-          const seenIds = new Set(allJobs.map(j => j.id));
-          for (const j of (retryJobs || [])) {
-            if (!seenIds.has(j.id)) allJobs.push(j);
-          }
-          return allJobs;
-        } catch (err) {
-          const isTransient = err instanceof Error && 
-            (err.message.includes('connection reset') || err.message.includes('SendRequest'));
-          
-          if (isTransient && attempt < retries) {
-            console.log(`[WATCHDOG] Transient error on attempt ${attempt}, retrying in ${delay}ms...`);
-            await new Promise(r => setTimeout(r, delay));
-            delay *= 2;
-          } else {
-            throw err;
-          }
-        }
-      }
-      return null;
-    };
-
-    // Find running jobs with stale heartbeat
-    let stalledJobs;
-    try {
-      stalledJobs = await fetchWithRetry();
-    } catch (fetchError) {
-      const msg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      console.warn('[WATCHDOG] Could not fetch stalled jobs (will retry next run):', msg);
-      
-      // Even on error, self-schedule to try again
-      selfSchedule(supabaseUrl, supabaseServiceKey, runInBackground);
-      
+    if (!lockResult || lockResult.length === 0) {
+      // Another invocation already claimed this window — exit without self-scheduling
       return new Response(JSON.stringify({
         success: true,
-        message: 'Skipped due to transient network error, will retry next run',
-        warning: msg,
-        checked_at: new Date().toISOString(),
+        message: 'Throttled: another watchdog instance is handling this window',
+        throttled: true,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+    // ============================================================================
+
+    const now = Date.now();
+    const stallCutoff = new Date(now - STALL_THRESHOLD_MS).toISOString();
+
+    // Find running jobs that are ACTUALLY stalled:
+    // Both conditions must be true:
+    // 1. last_heartbeat_at is older than 30 seconds (genuinely stuck)
+    // 2. worker_lock_id IS NULL (no active worker holds the mutex)
+    // If a lock is held, the worker is still active — don't interfere.
+    const { data: stalledJobs, error: fetchError } = await supabase
+      .from('upload_jobs')
+      .select('*')
+      .eq('status', 'running')
+      .lt('last_heartbeat_at', stallCutoff)
+      .is('worker_lock_id', null);
+
+    if (fetchError) {
+      console.warn('[WATCHDOG] Could not fetch stalled jobs:', fetchError.message);
+      // Self-schedule to try again
+      selfSchedule(supabaseUrl, supabaseServiceKey, runInBackground);
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Skipped due to query error, will retry',
+        warning: fetchError.message,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    // Also find jobs where the mutex lock has EXPIRED (worker crashed while holding lock)
+    const { data: expiredLockJobs } = await supabase
+      .from('upload_jobs')
+      .select('*')
+      .eq('status', 'running')
+      .lt('last_heartbeat_at', stallCutoff)
+      .not('worker_lock_id', 'is', null)
+      .lt('worker_locked_until', new Date().toISOString());
+
+    // Merge and deduplicate
+    const allStalled = [...(stalledJobs || [])];
+    const seenIds = new Set(allStalled.map(j => j.id));
+    for (const j of (expiredLockJobs || [])) {
+      if (!seenIds.has(j.id)) allStalled.push(j);
+    }
+
     // ============================================================================
-    // SELF-SCHEDULING: Check if there are ANY active jobs (running/pending/paused).
-    // If yes, re-invoke this watchdog after a delay. This creates a server-side 
-    // polling loop that's completely independent of the browser.
+    // SELF-SCHEDULING: Check if there are ANY active jobs.
+    // If yes, re-invoke this watchdog after a delay.
     // ============================================================================
     const { data: activeJobs } = await supabase
       .from('upload_jobs')
@@ -128,7 +120,7 @@ Deno.serve(async (req) => {
     }
     // ============================================================================
 
-    if (!stalledJobs || stalledJobs.length === 0) {
+    if (!allStalled || allStalled.length === 0) {
       return new Response(JSON.stringify({
         success: true,
         message: 'No stalled jobs found',
@@ -139,32 +131,19 @@ Deno.serve(async (req) => {
 
     const restartedJobs: Array<{ id: string; entity_type: string; stalled_for_minutes: number }> = [];
 
-    for (const job of stalledJobs) {
+    for (const job of allStalled) {
       // ========== HARD STOP CHECK ==========
       const { data: projectCheck } = await supabase
         .from('projects')
         .select('uploads_paused')
         .eq('id', job.project_id)
         .single();
-      
+
       if (projectCheck?.uploads_paused === true) {
         console.log(`[WATCHDOG] Skipping job ${job.id} - project has uploads_paused=true`);
         continue;
       }
       // =====================================
-
-      // ========== ORDERS MUTEX CHECK ==========
-      // If this is an orders job with a valid lock, another worker is active.
-      // Do NOT spawn a duplicate — the lock holder will self-schedule.
-      if (job.entity_type === 'orders' && job.worker_lock_id && job.worker_locked_until) {
-        const lockExpiry = new Date(job.worker_locked_until).getTime();
-        if (lockExpiry > Date.now()) {
-          console.log(`[WATCHDOG] Skipping orders job ${job.id} - worker mutex lock valid until ${job.worker_locked_until}`);
-          continue;
-        }
-        console.log(`[WATCHDOG] Orders job ${job.id} - worker mutex lock EXPIRED, will restart`);
-      }
-      // ========================================
 
       const lastHeartbeat = new Date(job.last_heartbeat_at).getTime();
       const stalledForMs = now - lastHeartbeat;
@@ -172,16 +151,13 @@ Deno.serve(async (req) => {
 
       console.log(`[WATCHDOG] Job ${job.id} (${job.entity_type}) stalled for ${stalledForMinutes} minutes. Restarting...`);
 
-      // Update heartbeat to prevent immediate re-trigger
-      // For orders: clear the expired lock so the new worker can acquire it
+      // Update heartbeat and clear expired lock
       const restartUpdate: Record<string, any> = {
         last_heartbeat_at: new Date().toISOString(),
         next_attempt_at: null,
+        worker_lock_id: null,
+        worker_locked_until: null,
       };
-      if (job.entity_type === 'orders') {
-        restartUpdate.worker_lock_id = null;
-        restartUpdate.worker_locked_until = null;
-      }
       await supabase
         .from('upload_jobs')
         .update(restartUpdate)
@@ -227,21 +203,19 @@ Deno.serve(async (req) => {
       errorMessage = error;
     }
     console.error('[WATCHDOG] Error:', errorMessage, error);
-    
+
     return new Response(JSON.stringify({
       success: false,
       error: errorMessage,
-    }), { 
+    }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 });
 
 /**
  * Self-schedule: After a delay, re-invoke this watchdog function.
- * This creates a server-side loop that keeps running as long as there are active jobs,
- * completely independent of the browser.
  */
 function selfSchedule(
   supabaseUrl: string,
