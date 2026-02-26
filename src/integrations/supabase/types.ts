@@ -690,6 +690,21 @@ export type Database = {
           },
         ]
       }
+      watchdog_state: {
+        Row: {
+          id: string
+          last_execution_at: string
+        }
+        Insert: {
+          id?: string
+          last_execution_at?: string
+        }
+        Update: {
+          id?: string
+          last_execution_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

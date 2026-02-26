@@ -1924,24 +1924,35 @@ async function uploadOrders(
   // ============================================================================
   // PRE-FLIGHT DUPLICATE CHECK CACHE
   // Build a set of known dandomain_order_ids already in Shopify (from note_attributes).
-  // Also used for fingerprint-based matching. Cache is built once per batch call.
+  // Uses per-email caching: each unique email is queried at most ONCE per batch.
+  // Cache is built once per batch call.
   // ============================================================================
   const knownDandoIds: Set<string> = new Set();
   // Map: dandomain_order_id -> shopify_order_id (for logging which Shopify order matched)
   const dandoIdToShopifyId: Map<string, string> = new Map();
+  // Per-email cache: track which emails have already been queried in this batch
+  const emailQueryCache: Set<string> = new Set();
 
   const buildDuplicateCache = async (): Promise<boolean> => {
+    const cacheStartTime = Date.now();
     try {
-      // Check if any orders in this batch have already been uploaded by querying
-      // Shopify for orders with our dandomain_order_id note attribute.
-      // We query by email for each unique email in the batch to minimize API calls.
+      // Collect unique emails from this batch
       const uniqueEmails = new Set<string>();
       for (const item of items) {
         const email = (item.data?.customer_email || item.data?.email || '').trim().toLowerCase();
         if (email) uniqueEmails.add(email);
       }
 
+      let queriedCount = 0;
+      let skippedCount = 0;
+
       for (const email of uniqueEmails) {
+        // Skip if this email was already queried (within this batch invocation)
+        if (emailQueryCache.has(email)) {
+          skippedCount++;
+          continue;
+        }
+
         try {
           const searchResult = await shopifyFetch(
             `${shopifyUrl}/orders.json?email=${encodeURIComponent(email)}&status=any&limit=250`,
@@ -1951,8 +1962,8 @@ async function uploadOrders(
           );
 
           if ('rateLimited' in searchResult) {
-            console.warn('[ORDERS] Pre-flight duplicate check rate limited for email, skipping cache build');
-            return false;
+            console.warn('[ORDERS] Pre-flight duplicate check rate limited, skipping remaining emails');
+            break; // Stop querying but don't fail — use what we have
           }
 
           if (searchResult.response.ok) {
@@ -1966,18 +1977,28 @@ async function uploadOrders(
               }
             }
           }
-          // Small delay between email queries
-          await sleep(300);
+
+          // Mark this email as queried so it's not queried again
+          emailQueryCache.add(email);
+          queriedCount++;
+
+          // Minimal delay between email queries (200ms instead of 300ms)
+          if (queriedCount < uniqueEmails.size - skippedCount) {
+            await sleep(200);
+          }
         } catch (e) {
           console.warn(`[ORDERS] Pre-flight check failed for email ${email}:`, e instanceof Error ? e.message : e);
-          // Continue - don't block on uncertainty
+          // Mark as queried anyway to avoid retrying a failing email
+          emailQueryCache.add(email);
         }
       }
 
-      console.log(`[ORDERS] Pre-flight cache: found ${knownDandoIds.size} existing dandomain_order_ids`);
+      const elapsed = Date.now() - cacheStartTime;
+      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} known IDs, queried ${queriedCount} emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
       return true;
     } catch (e) {
-      console.warn('[ORDERS] Pre-flight duplicate cache build failed:', e instanceof Error ? e.message : e);
+      const elapsed = Date.now() - cacheStartTime;
+      console.warn(`[ORDERS] Pre-flight duplicate cache build failed (${elapsed}ms):`, e instanceof Error ? e.message : e);
       return false;
     }
   };
