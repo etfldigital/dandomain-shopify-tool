@@ -1,0 +1,1 @@
+ALTER TABLE public.upload_jobs ADD COLUMN IF NOT EXISTS duplicate_cache jsonb DEFAULT NULL;

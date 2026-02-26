@@ -26,7 +26,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
-  orders: 15, // Sequential processing with 600ms spacing, single-worker mutex
+  orders: 25, // Sequential processing with 400ms spacing, single-worker mutex
 };
 
 // Enforce strict upload order for dependent entities.
@@ -1001,6 +1001,11 @@ Deno.serve(async (req) => {
           updateData.last_bucket_used = result.lastBucketUsed || 0;
         }
 
+        // Persist duplicate cache for orders (eliminates redundant pre-flight API calls)
+        if (job.entity_type === 'orders' && result.newDuplicateCache) {
+          updateData.duplicate_cache = result.newDuplicateCache;
+        }
+
         // Check if job is complete:
         // - Normal mode: complete when no pending items remain
         // - Test mode: complete after processing up to 3 items (one batch with batchSize=3)
@@ -1018,6 +1023,7 @@ Deno.serve(async (req) => {
           // Clear cache on completion to free storage
           updateData.lookup_cache = null;
           updateData.lookup_cache_built_at = null;
+          updateData.duplicate_cache = null;
         }
 
         // Release orders mutex before saving (next invocation will re-acquire)
