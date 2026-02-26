@@ -592,6 +592,7 @@ export type Database = {
           completed_at: string | null
           created_at: string
           current_batch: number
+          duplicate_cache: Json | null
           entity_type: string
           error_count: number
           error_details: Json | null
@@ -623,6 +624,7 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_batch?: number
+          duplicate_cache?: Json | null
           entity_type: string
           error_count?: number
           error_details?: Json | null
@@ -654,6 +656,7 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_batch?: number
+          duplicate_cache?: Json | null
           entity_type?: string
           error_count?: number
           error_details?: Json | null
