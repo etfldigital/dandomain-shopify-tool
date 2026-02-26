@@ -2013,7 +2013,9 @@ async function uploadOrders(
   // 300ms spacing = ~3.3 req/s burst but bucket tracking handles limits reactively.
   // ============================================================================
   const ORDER_MAX_RETRIES = 3;
-  const INTER_ORDER_DELAY_MS = 300; // Reduced from 550ms – bucket tracking handles limits
+  // Spacing between orders: 600ms gives bucket time to regenerate (2 req/s = 1 token per 500ms)
+  // This means max ~1.7 orders/second = ~100/min theoretical, but with retries and overhead ~30-40/min
+  const INTER_ORDER_DELAY_MS = 600;
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
