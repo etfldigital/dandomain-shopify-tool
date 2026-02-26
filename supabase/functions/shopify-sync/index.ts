@@ -334,10 +334,11 @@ Deno.serve(async (req) => {
       }
       if (entityType === "orders") {
         if (rec.dandoId) shopifyByDandoId.set(rec.dandoId, String(rec.id));
-        // Build fingerprint: email + total_price (no date — Shopify overrides created_at)
+        // Build fingerprint: email + total_price (normalized to 2 decimals)
         // Use a multimap approach: same email+price can have multiple orders
         if (rec.email) {
-          const fp = `${rec.email}|${rec.totalPrice}`;
+          const normalizedPrice = parseFloat(rec.totalPrice || "0").toFixed(2);
+          const fp = `${rec.email}|${normalizedPrice}`;
           if (!shopifyByFingerprint.has(fp)) {
             shopifyByFingerprint.set(fp, String(rec.id));
           }
@@ -387,9 +388,8 @@ Deno.serve(async (req) => {
         const dl = allLocalRecords[di];
         if (dl.status === "uploaded") continue;
         const de = (dl.data?.customer_email || dl.data?.email || "").toLowerCase().trim();
-        const dd = (dl.data?.order_date || dl.data?.created_at || "").substring(0, 10);
-        const dt = String(dl.data?.total_price || "");
-        console.log(`[SYNC] Sample local order ext=${dl.external_id}: fp="${de}|${dd}|${dt}"`);
+        const dt = parseFloat(String(dl.data?.total_price || "0")).toFixed(2);
+        console.log(`[SYNC] Sample local order ext=${dl.external_id}: fp="${de}|${dt}"`);
       }
     }
 
@@ -442,10 +442,10 @@ Deno.serve(async (req) => {
         if (extId) shopifyId = shopifyByDandoId.get(extId);
         if (shopifyId) { matchedByDandoId++; }
 
-        // Strategy 2: fingerprint match (email + total_price, no date)
+        // Strategy 2: fingerprint match (email + total_price normalized to 2 decimals)
         if (!shopifyId) {
           const email = (local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
-          const totalPrice = String(local.data?.total_price || "");
+          const totalPrice = parseFloat(String(local.data?.total_price || "0")).toFixed(2);
           if (email) {
             const fp = `${email}|${totalPrice}`;
             shopifyId = shopifyByFingerprint.get(fp);
