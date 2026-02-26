@@ -1924,12 +1924,12 @@ async function uploadOrders(
   // ============================================================================
   // PRE-FLIGHT DUPLICATE CHECK CACHE (PERSISTED ACROSS BATCHES)
   // The duplicate cache is stored in upload_jobs.duplicate_cache as JSONB.
-  // It contains all known dandomain_order_ids and fingerprints from Shopify,
+  // It contains all known dandomain_order_ids from Shopify,
   // plus a set of emails already queried. This eliminates redundant API calls.
+  // Fingerprint-based matching was REMOVED (caused false positives).
   // ============================================================================
   const knownDandoIds: Set<string> = new Set();
   const dandoIdToShopifyId: Map<string, string> = new Map();
-  const knownFingerprints: Map<string, string> = new Map();
   // Persisted email cache: emails already queried in previous batches
   const emailQueryCache: Set<string> = new Set();
 
@@ -1950,15 +1950,12 @@ async function uploadOrders(
       knownDandoIds.add(k);
       dandoIdToShopifyId.set(k, String(v));
     }
-    // Restore fingerprints
-    for (const [k, v] of Object.entries(duplicateCacheFromJob.fingerprints || {})) {
-      knownFingerprints.set(k, String(v));
-    }
+    // (fingerprints no longer restored – removed to prevent false positives)
     // Restore queried emails
     for (const email of (duplicateCacheFromJob.queriedEmails || [])) {
       emailQueryCache.add(email);
     }
-    console.log(`[ORDERS] Restored duplicate cache: ${knownDandoIds.size} IDs, ${knownFingerprints.size} fingerprints, ${emailQueryCache.size} queried emails`);
+    console.log(`[ORDERS] Restored duplicate cache: ${knownDandoIds.size} IDs, ${emailQueryCache.size} queried emails`);
   }
 
   // Only query Shopify for NEW emails not already in the persisted cache
@@ -2003,14 +2000,7 @@ async function uploadOrders(
                 knownDandoIds.add(String(dandoAttr.value));
                 dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
               }
-              const orderEmail = (order.email || '').toLowerCase().trim();
-              const orderTotal = parseFloat(String(order.total_price || '0')).toFixed(2);
-              if (orderEmail) {
-                const fp = `${orderEmail}|${orderTotal}`;
-                if (!knownFingerprints.has(fp)) {
-                  knownFingerprints.set(fp, String(order.id));
-                }
-              }
+              // (fingerprint collection removed – only dandomain_order_id is used)
             }
           }
 
@@ -2028,7 +2018,7 @@ async function uploadOrders(
       }
 
       const elapsed = Date.now() - cacheStartTime;
-      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} IDs, ${knownFingerprints.size} fps, queried ${queriedCount} NEW emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
+      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} IDs, queried ${queriedCount} NEW emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
       return true;
     } catch (e) {
       const elapsed = Date.now() - cacheStartTime;
@@ -2142,10 +2132,9 @@ async function uploadOrders(
     const sourceOrderId = String(item.external_id || '');
 
     // ============================================================================
-    // PRE-FLIGHT DUPLICATE CHECK (Part 2 + Part 3)
-    // 1. Check dandomain_order_id in note_attributes cache (fastest)
-    // 2. If not found by ID, do fingerprint comparison
-    // If match → mark as 'duplicate', skip upload, do NOT mark as 'failed'
+    // PRE-FLIGHT DUPLICATE CHECK
+    // Only dandomain_order_id in note_attributes is checked.
+    // Fingerprint matching was removed (caused false positives).
     // ============================================================================
     if (sourceOrderId && knownDandoIds.has(sourceOrderId)) {
       const existingShopifyId = dandoIdToShopifyId.get(sourceOrderId) || 'unknown';
@@ -2373,7 +2362,6 @@ async function uploadOrders(
   // Serialize duplicate cache for persistence across batches
   const serializedDuplicateCache: any = {
     dandoIds: Object.fromEntries(dandoIdToShopifyId),
-    fingerprints: Object.fromEntries(knownFingerprints),
     queriedEmails: Array.from(emailQueryCache),
   };
 
