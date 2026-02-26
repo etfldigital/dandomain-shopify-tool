@@ -2,7 +2,7 @@ export type JobType = 'extract' | 'normalize' | 'upload';
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type EntityType = 'products' | 'customers' | 'orders' | 'categories' | 'pages';
 export type ProjectStatus = 'draft' | 'connected' | 'extracted' | 'mapped' | 'migrating' | 'completed';
-export type CanonicalStatus = 'pending' | 'mapped' | 'uploaded' | 'failed';
+export type CanonicalStatus = 'pending' | 'mapped' | 'uploaded' | 'failed' | 'duplicate';
 
 export interface Profile {
   id: string;

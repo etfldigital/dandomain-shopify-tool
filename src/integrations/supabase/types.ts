@@ -704,7 +704,12 @@ export type Database = {
       }
     }
     Enums: {
-      canonical_status: "pending" | "mapped" | "uploaded" | "failed"
+      canonical_status:
+        | "pending"
+        | "mapped"
+        | "uploaded"
+        | "failed"
+        | "duplicate"
       entity_type: "products" | "customers" | "orders" | "categories" | "pages"
       job_status: "pending" | "running" | "completed" | "failed" | "cancelled"
       job_type: "extract" | "normalize" | "upload"
@@ -842,7 +847,13 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      canonical_status: ["pending", "mapped", "uploaded", "failed"],
+      canonical_status: [
+        "pending",
+        "mapped",
+        "uploaded",
+        "failed",
+        "duplicate",
+      ],
       entity_type: ["products", "customers", "orders", "categories", "pages"],
       job_status: ["pending", "running", "completed", "failed", "cancelled"],
       job_type: ["extract", "normalize", "upload"],
