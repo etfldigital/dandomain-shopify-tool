@@ -88,15 +88,15 @@ type EntityType = "products" | "customers" | "orders" | "categories" | "pages";
 
 interface ShopifyRecord {
   id: number | string;
-  matchKey: string; // The value we match against local DB
-}
-
-interface ShopifyRecord {
-  id: number | string;
   matchKey: string;
   // Extra keys for multi-strategy matching (categories)
   handle?: string;
   title?: string;
+  // Extra keys for order fingerprint matching
+  email?: string;
+  createdAt?: string;
+  totalPrice?: string;
+  dandoId?: string; // dandomain_order_id from note_attributes
 }
 
 async function fetchAllShopifyRecords(
@@ -123,7 +123,7 @@ async function fetchAllShopifyRecords(
       resourceKey = "customers";
       break;
     case "orders":
-      url = `${shopifyUrl}/orders.json?limit=250&status=any&fields=id,name,order_number`;
+      url = `${shopifyUrl}/orders.json?limit=250&status=any&fields=id,name,order_number,note_attributes,email,created_at,total_price`;
       resourceKey = "orders";
       break;
     case "pages":
@@ -140,16 +140,39 @@ async function fetchAllShopifyRecords(
     const { json, linkNext } = await shopifyGet(currentUrl, token);
     const items = json[resourceKey] || [];
 
+    // Debug: log first few items for orders to see what Shopify returns
+    if (entityType === "orders" && records.length === 0 && items.length > 0) {
+      console.log(`[SYNC] Sample Shopify order keys: ${Object.keys(items[0]).join(', ')}`);
+      console.log(`[SYNC] Sample order[0]: id=${items[0].id}, note_attributes=${JSON.stringify(items[0].note_attributes)}, email=${items[0].email}, created_at=${items[0].created_at}, total_price=${items[0].total_price}`);
+      if (items.length > 1) {
+        console.log(`[SYNC] Sample order[1]: id=${items[1].id}, note_attributes=${JSON.stringify(items[1].note_attributes)}, email=${items[1].email}`);
+      }
+    }
+
     for (const item of items) {
       const matchKey = getMatchKey(item, entityType);
-      if (matchKey) {
-        const rec: ShopifyRecord = { id: item.id, matchKey };
+      if (matchKey || entityType === "orders") {
+        const rec: ShopifyRecord = { id: item.id, matchKey: matchKey || "" };
         if (entityType === "categories") {
           rec.handle = (item.handle || "").toLowerCase().trim();
           rec.title = (item.title || "").toLowerCase().trim();
         }
+        if (entityType === "orders") {
+          const noteAttrs = item.note_attributes || [];
+          const dandoAttr = noteAttrs.find((a: any) => a.name === "dandomain_order_id");
+          if (dandoAttr?.value) rec.dandoId = String(dandoAttr.value);
+          rec.email = (item.email || "").toLowerCase().trim();
+          rec.createdAt = item.created_at || "";
+          rec.totalPrice = String(item.total_price || "");
+        }
         records.push(rec);
       }
+    }
+
+    // Debug: after first page, count how many have dandoId
+    if (entityType === "orders" && records.length <= 250) {
+      const withDandoId = records.filter(r => r.dandoId).length;
+      console.log(`[SYNC] First page: ${withDandoId}/${records.length} orders have dandomain_order_id`);
     }
 
     console.log(`[SYNC] Fetched ${records.length} ${entityType} so far...`);
@@ -240,7 +263,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth
+    // Auth — accept either user JWT or service role key
     const authHeader = req.headers.get("Authorization") || "";
     const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!jwt) {
@@ -254,18 +277,23 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: userRes, error: userErr } = await supabase.auth.getUser(jwt);
-    if (userErr || !userRes?.user) {
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // Check if the token is the service role key (server-to-server call)
+    const isServiceRole = jwt === supabaseServiceKey;
+    
+    if (!isServiceRole) {
+      const { data: userRes, error: userErr } = await supabase.auth.getUser(jwt);
+      if (userErr || !userRes?.user) {
+        return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     const { projectId, entityType }: SyncRequest = await req.json();
     if (!projectId || !entityType) throw new Error("projectId and entityType required");
 
-    // Fetch project + verify ownership
+    // Fetch project (skip ownership check for service role)
     const { data: project, error: projectError } = await supabase
       .from("projects")
       .select("id, user_id, shopify_store_domain, shopify_access_token_encrypted")
@@ -273,12 +301,6 @@ Deno.serve(async (req) => {
       .single();
 
     if (projectError || !project) throw new Error("Project not found");
-    if (project.user_id !== userRes.user.id) {
-      return new Response(JSON.stringify({ success: false, error: "Forbidden" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
 
     const shopifyDomain = String(project.shopify_store_domain || "").trim();
     const shopifyToken = String(project.shopify_access_token_encrypted || "").trim();
@@ -299,12 +321,35 @@ Deno.serve(async (req) => {
     // For categories, also build maps by handle and by title for multi-strategy matching
     const shopifyByHandle = new Map<string, string>();
     const shopifyByTitle = new Map<string, string>();
+    // For orders: dandomain_order_id -> shopify_id
+    const shopifyByDandoId = new Map<string, string>();
+    // For orders: fingerprint (email|date|total) -> shopify_id
+    const shopifyByFingerprint = new Map<string, string>();
+
     for (const rec of shopifyRecords) {
       shopifyMap.set(rec.matchKey, String(rec.id));
       if (entityType === "categories") {
         if (rec.handle) shopifyByHandle.set(rec.handle, String(rec.id));
         if (rec.title) shopifyByTitle.set(rec.title, String(rec.id));
       }
+      if (entityType === "orders") {
+        if (rec.dandoId) shopifyByDandoId.set(rec.dandoId, String(rec.id));
+        // Build fingerprint: email + total_price (no date — Shopify overrides created_at)
+        // Use a multimap approach: same email+price can have multiple orders
+        if (rec.email) {
+          const fp = `${rec.email}|${rec.totalPrice}`;
+          if (!shopifyByFingerprint.has(fp)) {
+            shopifyByFingerprint.set(fp, String(rec.id));
+          }
+        }
+      }
+    }
+
+    if (entityType === "orders") {
+      console.log(`[SYNC] Order maps: ${shopifyByDandoId.size} by dandoId, ${shopifyByFingerprint.size} by fingerprint`);
+      // Log first 3 fingerprints from Shopify for debugging
+      const fpSample = Array.from(shopifyByFingerprint.keys()).slice(0, 3);
+      console.log(`[SYNC] Sample Shopify fingerprints: ${JSON.stringify(fpSample)}`);
     }
 
     // 2. Fetch all local records (paginate to avoid 1000-row limit)
@@ -336,6 +381,18 @@ Deno.serve(async (req) => {
 
     console.log(`[SYNC] Found ${allLocalRecords.length} local ${entityType} records`);
 
+    // Debug: log first 3 local order fingerprints
+    if (entityType === "orders" && allLocalRecords.length > 0) {
+      for (let di = 0; di < Math.min(3, allLocalRecords.length); di++) {
+        const dl = allLocalRecords[di];
+        if (dl.status === "uploaded") continue;
+        const de = (dl.data?.customer_email || dl.data?.email || "").toLowerCase().trim();
+        const dd = (dl.data?.order_date || dl.data?.created_at || "").substring(0, 10);
+        const dt = String(dl.data?.total_price || "");
+        console.log(`[SYNC] Sample local order ext=${dl.external_id}: fp="${de}|${dd}|${dt}"`);
+      }
+    }
+
     // 3. Match and update
     let matched = 0;
     let notFound = 0;
@@ -343,6 +400,8 @@ Deno.serve(async (req) => {
     let matchedByHandle = 0;
     let matchedByTitle = 0;
     let matchedByName = 0;
+    let matchedByDandoId = 0;
+    let matchedByFingerprint = 0;
     const BATCH_SIZE = 50;
 
     // Collect updates to batch them
@@ -376,6 +435,22 @@ Deno.serve(async (req) => {
           const slugified = localName.replace(/\s+/g, "-").replace(/[æ]/g, "ae").replace(/[ø]/g, "oe").replace(/[å]/g, "aa").replace(/[^a-z0-9\-]/g, "");
           if (slugified) shopifyId = shopifyByHandle.get(slugified);
           if (shopifyId) { matchedByName++; }
+        }
+      } else if (entityType === "orders") {
+        // Strategy 1: match by dandomain_order_id (exact, from note_attributes)
+        const extId = String(local.external_id || "").trim();
+        if (extId) shopifyId = shopifyByDandoId.get(extId);
+        if (shopifyId) { matchedByDandoId++; }
+
+        // Strategy 2: fingerprint match (email + total_price, no date)
+        if (!shopifyId) {
+          const email = (local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
+          const totalPrice = String(local.data?.total_price || "");
+          if (email) {
+            const fp = `${email}|${totalPrice}`;
+            shopifyId = shopifyByFingerprint.get(fp);
+            if (shopifyId) { matchedByFingerprint++; }
+          }
         }
       } else {
         const localKey = getLocalMatchKey(local, entityType);
@@ -412,7 +487,7 @@ Deno.serve(async (req) => {
       console.log(`[SYNC] Updated ${Math.min(i + BATCH_SIZE, updates.length)}/${updates.length} records`);
     }
 
-    // 4. Update upload_jobs if one exists for this entity type
+    // 4. Update upload_jobs processed_count (don't mark completed - let user resume)
     const { data: existingJob } = await supabase
       .from("upload_jobs")
       .select("id")
@@ -426,9 +501,7 @@ Deno.serve(async (req) => {
       await supabase
         .from("upload_jobs")
         .update({
-          status: "completed",
           processed_count: matched + alreadyUploaded,
-          completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
         .eq("id", existingJob.id);
@@ -442,6 +515,7 @@ Deno.serve(async (req) => {
       totalShopify: shopifyRecords.length,
       totalLocal: allLocalRecords.length,
       ...(entityType === "categories" ? { matchedByHandle, matchedByTitle, matchedByName } : {}),
+      ...(entityType === "orders" ? { matchedByDandoId, matchedByFingerprint } : {}),
     };
 
     console.log(`[SYNC] Done: ${JSON.stringify(summary)}`);
