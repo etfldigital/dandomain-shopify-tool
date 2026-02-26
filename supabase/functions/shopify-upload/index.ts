@@ -1930,6 +1930,8 @@ async function uploadOrders(
   const knownDandoIds: Set<string> = new Set();
   // Map: dandomain_order_id -> shopify_order_id (for logging which Shopify order matched)
   const dandoIdToShopifyId: Map<string, string> = new Map();
+  // Fingerprint set: "email|totalPrice" -> shopify_order_id (secondary dedup)
+  const knownFingerprints: Map<string, string> = new Map();
   // Per-email cache: track which emails have already been queried in this batch
   const emailQueryCache: Set<string> = new Set();
 
@@ -1975,6 +1977,15 @@ async function uploadOrders(
                 knownDandoIds.add(String(dandoAttr.value));
                 dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
               }
+              // Build fingerprint: email|totalPrice (normalized)
+              const orderEmail = (order.email || '').toLowerCase().trim();
+              const orderTotal = parseFloat(String(order.total_price || '0')).toFixed(2);
+              if (orderEmail) {
+                const fp = `${orderEmail}|${orderTotal}`;
+                if (!knownFingerprints.has(fp)) {
+                  knownFingerprints.set(fp, String(order.id));
+                }
+              }
             }
           }
 
@@ -1994,7 +2005,7 @@ async function uploadOrders(
       }
 
       const elapsed = Date.now() - cacheStartTime;
-      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} known IDs, queried ${queriedCount} emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
+      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} known IDs, ${knownFingerprints.size} fingerprints, queried ${queriedCount} emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
       return true;
     } catch (e) {
       const elapsed = Date.now() - cacheStartTime;
@@ -2133,6 +2144,29 @@ async function uploadOrders(
         .eq('id', item.id);
       skipped++;
       return;
+    }
+
+    // Secondary check: fingerprint match (email + total_price)
+    const fpEmail = (data.customer_email || data.email || '').toLowerCase().trim();
+    const fpTotal = parseFloat(String(data.total_price || '0')).toFixed(2);
+    if (fpEmail) {
+      const fp = `${fpEmail}|${fpTotal}`;
+      const fpMatchId = knownFingerprints.get(fp);
+      if (fpMatchId) {
+        const dupeMsg = `Duplicate (fingerprint): email=${fpEmail} total=${fpTotal} matches Shopify order ${fpMatchId}`;
+        console.log(`[ORDERS] DUPLICATE SKIPPED: ${dupeMsg}`);
+        await supabase
+          .from('canonical_orders')
+          .update({
+            status: 'duplicate',
+            shopify_id: fpMatchId,
+            error_message: dupeMsg,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.id);
+        skipped++;
+        return;
+      }
     }
 
     const lineItems = data.line_items || [];
