@@ -2129,9 +2129,9 @@ async function uploadOrders(
   // 300ms spacing = ~3.3 req/s burst but bucket tracking handles limits reactively.
   // ============================================================================
   const ORDER_MAX_RETRIES = 3;
-  // Spacing between orders: 400ms with bucket tracking as primary safeguard.
-  // Pre-flight calls are now mostly cached, so bucket has more headroom.
-  const INTER_ORDER_DELAY_MS = 400;
+  // Hard floor: 600ms between orders = ~1.67 req/s, safely under Shopify's 2 req/s leak rate.
+  // This prevents bucket exhaustion even when bucket state is unknown at invocation start.
+  const INTER_ORDER_DELAY_MS = 600;
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
@@ -2338,10 +2338,25 @@ async function uploadOrders(
   };
 
   // Process orders sequentially with spacing
+  let orderIndex = 0;
   for (const item of items) {
     if (rateLimitedGlobal) break;
     if (Date.now() - startTime > timeBudget) break;
     await processOneOrder(item);
+    orderIndex++;
+
+    // After the first order, read the actual bucket level from response headers.
+    // If bucket is hot (>20/40), pause to let it recover before continuing.
+    if (orderIndex === 1) {
+      const bucketAfterFirst = getCurrentBucketUsage();
+      console.log(`[ORDERS] Bucket after first order: ${bucketAfterFirst}/40`);
+      if (bucketAfterFirst > 20) {
+        const recoveryMs = (bucketAfterFirst - 20) * 500;
+        console.log(`[ORDERS] Bucket recovery pause: ${recoveryMs}ms (bucket=${bucketAfterFirst}/40)`);
+        await sleep(recoveryMs);
+      }
+    }
+
     // Mandatory spacing between orders to avoid bucket exhaustion
     if (!rateLimitedGlobal) await sleep(INTER_ORDER_DELAY_MS);
   }
