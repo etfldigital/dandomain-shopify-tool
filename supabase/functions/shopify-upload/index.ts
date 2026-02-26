@@ -128,6 +128,13 @@ interface ShopifyUploadRequest {
   projectId: string;
   entityType: 'products' | 'customers' | 'orders' | 'categories' | 'pages';
   batchSize?: number;
+  lookupCache?: {
+    products: Record<string, { shopifyProductId: string; shopifyVariantId: string }>;
+    customers: Record<string, string>;
+    builtAt: string;
+    lastBucketUsed?: number;
+  } | null;
+  jobId?: string;
 }
 
 Deno.serve(async (req) => {
@@ -143,7 +150,7 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { projectId, entityType, batchSize = 10 }: ShopifyUploadRequest = await req.json();
+    const { projectId, entityType, batchSize = 10, lookupCache, jobId: reqJobId }: ShopifyUploadRequest = await req.json();
 
     const { data: project, error: projectError } = await supabase
       .from('projects')
@@ -177,7 +184,7 @@ Deno.serve(async (req) => {
     }
     
     if (entityType === 'orders') {
-      const result = await uploadOrders(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS);
+      const result = await uploadOrders(supabase, projectId, shopifyUrl, shopifyToken, batchSize, requestStartTime, TIME_BUDGET_MS, lookupCache, reqJobId);
       return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
@@ -1892,8 +1899,15 @@ async function uploadOrders(
   token: string,
   batchSize: number,
   startTime: number,
-  timeBudget: number
-): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
+  timeBudget: number,
+  lookupCache?: {
+    products: Record<string, { shopifyProductId: string; shopifyVariantId: string }>;
+    customers: Record<string, string>;
+    builtAt: string;
+    lastBucketUsed?: number;
+  } | null,
+  jobId?: string | null
+): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number }> {
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
@@ -1907,55 +1921,85 @@ async function uploadOrders(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  // Build product lookup - OPTIMIZED: Only fetch external_id and shopify_id
-  // Avoid fetching the heavy 'data' JSONB column (contains body_html, images, etc.)
-  // For 10K+ products this saves megabytes of unnecessary data transfer per batch.
+  // ============================================================================
+  // CACHED LOOKUPS: Reuse product/customer maps from previous batch if available.
+  // Only rebuild if no cache exists. Cache is stored in upload_jobs.lookup_cache.
+  // ============================================================================
   const productLookup: Map<string, { shopifyProductId: string; shopifyVariantId: string }> = new Map();
-  let productOffset = 0;
-  const LOOKUP_PAGE_SIZE = 1000;
-  while (true) {
-    const { data: productPage } = await supabase
-      .from('canonical_products')
-      .select('external_id, shopify_id')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded')
-      .not('shopify_id', 'is', null)
-      .range(productOffset, productOffset + LOOKUP_PAGE_SIZE - 1);
-    
-    if (!productPage || productPage.length === 0) break;
-    for (const p of productPage) {
-      if (p.shopify_id) {
-        productLookup.set(p.external_id, { shopifyProductId: p.shopify_id, shopifyVariantId: '' });
-      }
-    }
-    if (productPage.length < LOOKUP_PAGE_SIZE) break;
-    productOffset += LOOKUP_PAGE_SIZE;
-  }
-  console.log(`[ORDERS] Built product lookup with ${productLookup.size} entries`);
-
-  // Build customer lookup - OPTIMIZED: paginate and only select needed fields
   const customerLookup: Map<string, string> = new Map();
-  let customerOffset = 0;
-  while (true) {
-    const { data: customerPage } = await supabase
-      .from('canonical_customers')
-      .select('external_id, shopify_id, data')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded')
-      .not('shopify_id', 'is', null)
-      .range(customerOffset, customerOffset + LOOKUP_PAGE_SIZE - 1);
-    
-    if (!customerPage || customerPage.length === 0) break;
-    for (const c of customerPage) {
-      if (c.shopify_id) {
-        customerLookup.set(c.external_id, c.shopify_id);
-        if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
-      }
+  let cacheWasUsed = false;
+
+  if (lookupCache && lookupCache.products && lookupCache.customers) {
+    // Restore from cache
+    for (const [k, v] of Object.entries(lookupCache.products)) {
+      productLookup.set(k, v);
     }
-    if (customerPage.length < LOOKUP_PAGE_SIZE) break;
-    customerOffset += LOOKUP_PAGE_SIZE;
+    for (const [k, v] of Object.entries(lookupCache.customers)) {
+      customerLookup.set(k, v);
+    }
+    cacheWasUsed = true;
+    console.log(`[ORDERS] Restored lookup cache: ${productLookup.size} products, ${customerLookup.size} customers (built ${lookupCache.builtAt})`);
+    
+    // Restore bucket state from cache
+    if (typeof lookupCache.lastBucketUsed === 'number') {
+      shopifyBucketUsed = lookupCache.lastBucketUsed;
+      lastBucketUpdate = Date.now();
+      console.log(`[ORDERS] Restored bucket state: ${shopifyBucketUsed}/40`);
+    } else {
+      shopifyBucketUsed = 0;
+      lastBucketUpdate = Date.now();
+    }
+  } else {
+    // Build from scratch (first batch only)
+    const LOOKUP_PAGE_SIZE = 1000;
+
+    let productOffset = 0;
+    while (true) {
+      const { data: productPage } = await supabase
+        .from('canonical_products')
+        .select('external_id, shopify_id')
+        .eq('project_id', projectId)
+        .eq('status', 'uploaded')
+        .not('shopify_id', 'is', null)
+        .range(productOffset, productOffset + LOOKUP_PAGE_SIZE - 1);
+      
+      if (!productPage || productPage.length === 0) break;
+      for (const p of productPage) {
+        if (p.shopify_id) {
+          productLookup.set(p.external_id, { shopifyProductId: p.shopify_id, shopifyVariantId: '' });
+        }
+      }
+      if (productPage.length < LOOKUP_PAGE_SIZE) break;
+      productOffset += LOOKUP_PAGE_SIZE;
+    }
+    console.log(`[ORDERS] Built product lookup with ${productLookup.size} entries`);
+
+    let customerOffset = 0;
+    while (true) {
+      const { data: customerPage } = await supabase
+        .from('canonical_customers')
+        .select('external_id, shopify_id, data')
+        .eq('project_id', projectId)
+        .eq('status', 'uploaded')
+        .not('shopify_id', 'is', null)
+        .range(customerOffset, customerOffset + LOOKUP_PAGE_SIZE - 1);
+      
+      if (!customerPage || customerPage.length === 0) break;
+      for (const c of customerPage) {
+        if (c.shopify_id) {
+          customerLookup.set(c.external_id, c.shopify_id);
+          if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
+        }
+      }
+      if (customerPage.length < LOOKUP_PAGE_SIZE) break;
+      customerOffset += LOOKUP_PAGE_SIZE;
+    }
+    console.log(`[ORDERS] Built customer lookup with ${customerLookup.size} entries`);
+
+    // Start bucket at 0 when building fresh (no assumed usage)
+    shopifyBucketUsed = 0;
+    lastBucketUpdate = Date.now();
   }
-  console.log(`[ORDERS] Built customer lookup with ${customerLookup.size} entries`);
 
   let processed = 0;
   let errors = 0;
@@ -1965,17 +2009,11 @@ async function uploadOrders(
 
   // ============================================================================
   // SEQUENTIAL ORDER PROCESSING with mandatory spacing
-  // Shopify REST = 2 req/s leak rate, 40 bucket. Edge functions are stateless so
-  // bucket tracking resets each invocation. Concurrency causes instant 429 storms.
-  // Solution: process orders one at a time with 550ms spacing between API calls.
-  // This yields ~1.8 req/s = safe headroom. ~108 orders/min theoretical max.
+  // Shopify REST = 2 req/s leak rate, 40 bucket. Only 1 API call per order.
+  // 300ms spacing = ~3.3 req/s burst but bucket tracking handles limits reactively.
   // ============================================================================
   const ORDER_MAX_RETRIES = 3;
-  const INTER_ORDER_DELAY_MS = 550; // ~1.8 req/s, under 2 req/s limit
-
-  // Assume bucket is partially filled from previous invocation (conservative start)
-  shopifyBucketUsed = Math.max(shopifyBucketUsed, 20);
-  lastBucketUpdate = Date.now();
+  const INTER_ORDER_DELAY_MS = 300; // Reduced from 550ms – bucket tracking handles limits
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
@@ -2144,6 +2182,14 @@ async function uploadOrders(
     .eq('project_id', projectId)
     .eq('status', 'pending');
 
+  // Serialize lookup cache for persistence in upload_jobs
+  const serializedCache: any = {
+    products: Object.fromEntries(productLookup),
+    customers: Object.fromEntries(customerLookup),
+    builtAt: cacheWasUsed ? lookupCache!.builtAt : new Date().toISOString(),
+    lastBucketUsed: getCurrentBucketUsage(),
+  };
+
   return {
     success: true,
     processed,
@@ -2151,6 +2197,8 @@ async function uploadOrders(
     hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
     ...(rateLimitedGlobal ? { rateLimited: true, retryAfterSeconds: retryAfterSecondsGlobal } : {}),
+    newLookupCache: serializedCache,
+    lastBucketUsed: getCurrentBucketUsage(),
   };
 }
 

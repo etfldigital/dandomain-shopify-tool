@@ -601,7 +601,10 @@ export type Database = {
           last_batch_duration_ms: number | null
           last_batch_items: number | null
           last_batch_speed: number | null
+          last_bucket_used: number | null
           last_heartbeat_at: string | null
+          lookup_cache: Json | null
+          lookup_cache_built_at: string | null
           next_attempt_at: string | null
           prepare_offset: number
           processed_count: number
@@ -627,7 +630,10 @@ export type Database = {
           last_batch_duration_ms?: number | null
           last_batch_items?: number | null
           last_batch_speed?: number | null
+          last_bucket_used?: number | null
           last_heartbeat_at?: string | null
+          lookup_cache?: Json | null
+          lookup_cache_built_at?: string | null
           next_attempt_at?: string | null
           prepare_offset?: number
           processed_count?: number
@@ -653,7 +659,10 @@ export type Database = {
           last_batch_duration_ms?: number | null
           last_batch_items?: number | null
           last_batch_speed?: number | null
+          last_bucket_used?: number | null
           last_heartbeat_at?: string | null
+          lookup_cache?: Json | null
+          lookup_cache_built_at?: string | null
           next_attempt_at?: string | null
           prepare_offset?: number
           processed_count?: number

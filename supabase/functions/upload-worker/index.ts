@@ -26,7 +26,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
-  orders: 10, // Sequential processing with 550ms spacing = ~10 orders per batch within time budget
+  orders: 30, // Sequential processing with 300ms spacing, cached lookups = ~30 orders per batch within 50s budget
 };
 
 // Enforce strict upload order for dependent entities.
@@ -750,14 +750,22 @@ Deno.serve(async (req) => {
         let result: any;
 
         try {
+          // For orders: pass cached lookup tables to avoid rebuilding every batch
+          const uploadBody: any = {
+            projectId: job.project_id,
+            entityType: job.entity_type,
+            batchSize: job.batch_size,
+          };
+          if (job.entity_type === 'orders' && job.lookup_cache) {
+            uploadBody.lookupCache = job.lookup_cache;
+            uploadBody.jobId = job.id;
+            console.log(`[WORKER] Passing cached lookups to shopify-upload (built ${job.lookup_cache?.builtAt || 'unknown'})`);
+          }
+
           const response = await fetch(`${supabaseUrl}/functions/v1/shopify-upload`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supabaseServiceKey}` },
-            body: JSON.stringify({
-              projectId: job.project_id,
-              entityType: job.entity_type,
-              batchSize: job.batch_size,
-            }),
+            body: JSON.stringify(uploadBody),
           });
 
           const responseText = await response.text();
@@ -891,6 +899,13 @@ Deno.serve(async (req) => {
         );
         updateData.error_details = [...existingErrors, ...newErrors].slice(-100);
 
+        // Persist lookup cache for orders (saves ~2-3s per batch)
+        if (job.entity_type === 'orders' && result.newLookupCache) {
+          updateData.lookup_cache = result.newLookupCache;
+          updateData.lookup_cache_built_at = result.newLookupCache.builtAt || new Date().toISOString();
+          updateData.last_bucket_used = result.lastBucketUsed || 0;
+        }
+
         // Check if job is complete:
         // - Normal mode: complete when no pending items remain
         // - Test mode: complete after processing up to 3 items (one batch with batchSize=3)
@@ -905,6 +920,9 @@ Deno.serve(async (req) => {
           console.log(`[WORKER] Job ${jobId} complete (${reason})`);
           updateData.status = 'completed';
           updateData.completed_at = new Date().toISOString();
+          // Clear cache on completion to free storage
+          updateData.lookup_cache = null;
+          updateData.lookup_cache_built_at = null;
         }
 
         await supabase.from('upload_jobs').update(updateData).eq('id', jobId);
