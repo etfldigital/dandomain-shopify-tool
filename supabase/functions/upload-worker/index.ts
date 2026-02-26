@@ -7,8 +7,11 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Minimal scheduling delay between batches
+// Minimal scheduling delay between batches (per entity type)
 const WORKER_SCHEDULE_DELAY_MS = 500;
+// Orders need a longer delay: each batch uses ~15 Shopify API calls at 2 req/s leak rate.
+// 15s gives the bucket time to recover fully between batches.
+const ORDERS_SCHEDULE_DELAY_MS = 15_000;
 
 // Fire-and-forget background task runner
 const runInBackground = (task: Promise<unknown>) => {
@@ -1038,9 +1041,10 @@ Deno.serve(async (req) => {
         if (hasMore) {
           // IMPORTANT: if we are rate-limited, schedule AFTER next_attempt_at (with a small safety buffer)
           // so we don't call too early and accidentally create a 429 loop.
+          const baseDelay = job.entity_type === 'orders' ? ORDERS_SCHEDULE_DELAY_MS : WORKER_SCHEDULE_DELAY_MS;
           const delayMs = scheduledRetryMs != null
-            ? scheduledRetryMs + 250
-            : WORKER_SCHEDULE_DELAY_MS;
+            ? Math.max(scheduledRetryMs + 250, baseDelay)
+            : baseDelay;
 
           runInBackground((async () => {
             await sleep(delayMs);
