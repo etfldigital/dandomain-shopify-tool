@@ -1907,7 +1907,7 @@ async function uploadOrders(
     lastBucketUsed?: number;
   } | null,
   jobId?: string | null
-): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number }> {
+): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number; newDuplicateCache?: any }> {
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
@@ -1918,27 +1918,53 @@ async function uploadOrders(
 
   if (fetchError) throw new Error(`Failed to fetch orders: ${fetchError.message}`);
   if (!items || items.length === 0) {
-    return { success: true, processed: 0, errors: 0, hasMore: false };
+    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
   // ============================================================================
-  // PRE-FLIGHT DUPLICATE CHECK CACHE
-  // Build a set of known dandomain_order_ids already in Shopify (from note_attributes).
-  // Uses per-email caching: each unique email is queried at most ONCE per batch.
-  // Cache is built once per batch call.
+  // PRE-FLIGHT DUPLICATE CHECK CACHE (PERSISTED ACROSS BATCHES)
+  // The duplicate cache is stored in upload_jobs.duplicate_cache as JSONB.
+  // It contains all known dandomain_order_ids and fingerprints from Shopify,
+  // plus a set of emails already queried. This eliminates redundant API calls.
   // ============================================================================
   const knownDandoIds: Set<string> = new Set();
-  // Map: dandomain_order_id -> shopify_order_id (for logging which Shopify order matched)
   const dandoIdToShopifyId: Map<string, string> = new Map();
-  // Fingerprint set: "email|totalPrice" -> shopify_order_id (secondary dedup)
   const knownFingerprints: Map<string, string> = new Map();
-  // Per-email cache: track which emails have already been queried in this batch
+  // Persisted email cache: emails already queried in previous batches
   const emailQueryCache: Set<string> = new Set();
 
+  // Restore persisted duplicate cache from upload_jobs (if available)
+  let duplicateCacheFromJob: any = null;
+  if (jobId) {
+    const { data: jobRow } = await supabase
+      .from('upload_jobs')
+      .select('duplicate_cache')
+      .eq('id', jobId)
+      .single();
+    duplicateCacheFromJob = jobRow?.duplicate_cache;
+  }
+
+  if (duplicateCacheFromJob) {
+    // Restore dandomain IDs
+    for (const [k, v] of Object.entries(duplicateCacheFromJob.dandoIds || {})) {
+      knownDandoIds.add(k);
+      dandoIdToShopifyId.set(k, String(v));
+    }
+    // Restore fingerprints
+    for (const [k, v] of Object.entries(duplicateCacheFromJob.fingerprints || {})) {
+      knownFingerprints.set(k, String(v));
+    }
+    // Restore queried emails
+    for (const email of (duplicateCacheFromJob.queriedEmails || [])) {
+      emailQueryCache.add(email);
+    }
+    console.log(`[ORDERS] Restored duplicate cache: ${knownDandoIds.size} IDs, ${knownFingerprints.size} fingerprints, ${emailQueryCache.size} queried emails`);
+  }
+
+  // Only query Shopify for NEW emails not already in the persisted cache
   const buildDuplicateCache = async (): Promise<boolean> => {
     const cacheStartTime = Date.now();
     try {
-      // Collect unique emails from this batch
       const uniqueEmails = new Set<string>();
       for (const item of items) {
         const email = (item.data?.customer_email || item.data?.email || '').trim().toLowerCase();
@@ -1949,7 +1975,7 @@ async function uploadOrders(
       let skippedCount = 0;
 
       for (const email of uniqueEmails) {
-        // Skip if this email was already queried (within this batch invocation)
+        // Skip if this email was already queried (persisted from previous batch)
         if (emailQueryCache.has(email)) {
           skippedCount++;
           continue;
@@ -1965,7 +1991,7 @@ async function uploadOrders(
 
           if ('rateLimited' in searchResult) {
             console.warn('[ORDERS] Pre-flight duplicate check rate limited, skipping remaining emails');
-            break; // Stop querying but don't fail — use what we have
+            break;
           }
 
           if (searchResult.response.ok) {
@@ -1977,7 +2003,6 @@ async function uploadOrders(
                 knownDandoIds.add(String(dandoAttr.value));
                 dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
               }
-              // Build fingerprint: email|totalPrice (normalized)
               const orderEmail = (order.email || '').toLowerCase().trim();
               const orderTotal = parseFloat(String(order.total_price || '0')).toFixed(2);
               if (orderEmail) {
@@ -1989,23 +2014,21 @@ async function uploadOrders(
             }
           }
 
-          // Mark this email as queried so it's not queried again
           emailQueryCache.add(email);
           queriedCount++;
 
-          // Minimal delay between email queries (200ms instead of 300ms)
+          // Small delay only if we actually queried
           if (queriedCount < uniqueEmails.size - skippedCount) {
-            await sleep(200);
+            await sleep(150);
           }
         } catch (e) {
           console.warn(`[ORDERS] Pre-flight check failed for email ${email}:`, e instanceof Error ? e.message : e);
-          // Mark as queried anyway to avoid retrying a failing email
           emailQueryCache.add(email);
         }
       }
 
       const elapsed = Date.now() - cacheStartTime;
-      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} known IDs, ${knownFingerprints.size} fingerprints, queried ${queriedCount} emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
+      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} IDs, ${knownFingerprints.size} fps, queried ${queriedCount} NEW emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
       return true;
     } catch (e) {
       const elapsed = Date.now() - cacheStartTime;
@@ -2110,9 +2133,9 @@ async function uploadOrders(
   // 300ms spacing = ~3.3 req/s burst but bucket tracking handles limits reactively.
   // ============================================================================
   const ORDER_MAX_RETRIES = 3;
-  // Spacing between orders: 600ms gives bucket time to regenerate (2 req/s = 1 token per 500ms)
-  // This means max ~1.7 orders/second = ~100/min theoretical, but with retries and overhead ~30-40/min
-  const INTER_ORDER_DELAY_MS = 600;
+  // Spacing between orders: 400ms with bucket tracking as primary safeguard.
+  // Pre-flight calls are now mostly cached, so bucket has more headroom.
+  const INTER_ORDER_DELAY_MS = 400;
 
   const processOneOrder = async (item: any): Promise<void> => {
     // Check time budget
@@ -2341,6 +2364,13 @@ async function uploadOrders(
     lastBucketUsed: getCurrentBucketUsage(),
   };
 
+  // Serialize duplicate cache for persistence across batches
+  const serializedDuplicateCache: any = {
+    dandoIds: Object.fromEntries(dandoIdToShopifyId),
+    fingerprints: Object.fromEntries(knownFingerprints),
+    queriedEmails: Array.from(emailQueryCache),
+  };
+
   return {
     success: true,
     processed,
@@ -2351,6 +2381,7 @@ async function uploadOrders(
     ...(rateLimitedGlobal ? { rateLimited: true, retryAfterSeconds: retryAfterSecondsGlobal } : {}),
     newLookupCache: serializedCache,
     lastBucketUsed: getCurrentBucketUsage(),
+    newDuplicateCache: serializedDuplicateCache,
   };
 }
 
