@@ -704,24 +704,47 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
 
+      // Determine if period pricing applies to this product in preview
+      const productPeriodId = data.period_id ? String(data.period_id) : null;
+      const activePeriodIdsSet = new Set(
+        (periodData?.periods || []).filter((p: any) => p.isActive).map((p: any) => p.periodId)
+      );
+      const previewHasPeriodPricing = mappingRules.applyPeriodPricing && productPeriodId && activePeriodIdsSet.has(productPeriodId) && data.special_offer_price && parseFloat(String(data.special_offer_price)) > 0;
+
       // Parse variants from _mergedVariants if available
       const mergedVariants = data._mergedVariants as any[] || [];
       const hasVariants = data._isPrimary === true && mergedVariants.length > 0;
+
+      // Helper to apply period pricing swap to a price/compareAtPrice pair
+      const applyPeriodPricingToVariant = (basePrice: number, compareAt: number | null): { price: number; compareAtPrice: number | null } => {
+        if (previewHasPeriodPricing) {
+          const salePrice = parsePrice(data.special_offer_price) || 0;
+          return { price: salePrice, compareAtPrice: basePrice };
+        }
+        return { price: basePrice, compareAtPrice: compareAt };
+      };
       
       const variants: VariantData[] = hasVariants 
-        ? mergedVariants.map((v: any) => ({
-            size: v.size || 'ONE-SIZE',
-            sku: v.sku || '',
-            price: parsePrice(v.price) || parsePrice(data.price) || 0,
-            compareAtPrice: v.compareAtPrice ? parsePrice(v.compareAtPrice) : null,
-            stockQuantity: typeof v.stockQuantity === 'number' ? v.stockQuantity : parseInt(v.stockQuantity) || 0,
-            barcode: v.barcode || null,
-          }))
+        ? mergedVariants.map((v: any) => {
+            const rawPrice = parsePrice(v.price) || parsePrice(data.price) || 0;
+            const rawCompare = v.compareAtPrice ? parsePrice(v.compareAtPrice) : null;
+            const { price: vPrice, compareAtPrice: vCompare } = applyPeriodPricingToVariant(rawPrice, rawCompare);
+            return {
+              size: v.size || 'ONE-SIZE',
+              sku: v.sku || '',
+              price: vPrice,
+              compareAtPrice: vCompare,
+              stockQuantity: typeof v.stockQuantity === 'number' ? v.stockQuantity : parseInt(v.stockQuantity) || 0,
+              barcode: v.barcode || null,
+            };
+          })
         : [{
             size: 'ONE-SIZE',
             sku: data.sku || '',
-            price: parsePrice(data.price) || 0,
-            compareAtPrice: data.compare_at_price ? parsePrice(data.compare_at_price) : null,
+            ...applyPeriodPricingToVariant(
+              parsePrice(data.price) || 0,
+              data.compare_at_price ? parsePrice(data.compare_at_price) : null
+            ),
             stockQuantity: typeof data.stock_quantity === 'number' ? data.stock_quantity : parseInt(data.stock_quantity) || 0,
             barcode: data.barcode || null,
           }];
@@ -750,13 +773,17 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           meta_title: data.meta_title || null,
           meta_description: data.meta_description || null,
         },
-        transformed: {
+        transformed: (() => {
+          const rawPrice = parsePrice(data.price) || 0;
+          const rawCompare = data.compare_at_price ? parsePrice(data.compare_at_price) : null;
+          const { price: tPrice, compareAtPrice: tCompare } = applyPeriodPricingToVariant(rawPrice, rawCompare);
+          return {
           title: transformedTitle,
           vendor: vendor,
           sku: data.sku || '',
           barcode: data.barcode || '',
-          price: parsePrice(data.price) || 0,
-          compare_at_price: data.compare_at_price ? parsePrice(data.compare_at_price) : null,
+          price: tPrice,
+          compare_at_price: tCompare,
           cost_price: data.cost_price ? parsePrice(data.cost_price) : null,
           weight: data.weight || null,
           stock_quantity: typeof data.stock_quantity === 'number' ? data.stock_quantity : parseInt(data.stock_quantity) || 0,
@@ -764,7 +791,8 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           // SEO fields - default to original or fallback to title
           meta_title: data.meta_title || null,
           meta_description: data.meta_description || null,
-        },
+          };
+        })(),
         categoryNames,
         mappedFields: [],
         variants,
@@ -854,12 +882,27 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       }
     }
 
+    // Re-apply period pricing after field mappings (field mappings set raw prices)
+    const periodRawData = product.original.rawData as any;
+    const productPeriodId = periodRawData?.period_id ? String(periodRawData.period_id) : null;
+    const activePeriodIdsSet = new Set(
+      (periodData?.periods || []).filter((p: any) => p.isActive).map((p: any) => p.periodId)
+    );
+    const shouldApplyPeriod = mappingRules.applyPeriodPricing && productPeriodId && activePeriodIdsSet.has(productPeriodId) && periodRawData?.special_offer_price && parseFloat(String(periodRawData.special_offer_price)) > 0;
+
+    if (shouldApplyPeriod) {
+      const salePrice = parseFloat(String(periodRawData.special_offer_price)) || 0;
+      const basePrice = transformed.price; // After field mapping, this is UNIT_PRICE
+      transformed.price = salePrice;
+      transformed.compare_at_price = basePrice;
+    }
+
     setProduct(prev => prev ? {
       ...prev,
       transformed,
       mappedFields,
     } : null);
-  }, [fieldMappings, product?.original.rawData]);
+  }, [fieldMappings, product?.original.rawData, mappingRules.applyPeriodPricing, periodData]);
 
   const handlePrevious = () => {
     setCurrentIndex(prev => Math.max(0, prev - 1));
