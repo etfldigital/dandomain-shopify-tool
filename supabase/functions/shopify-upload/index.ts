@@ -212,6 +212,7 @@ const sessionProductCache: Map<string, string> = new Map();
 let categoryTagCache: Map<string, string> = new Map();
 const skuToShopifyMap: Map<string, { productId: string; variantId: string }> = new Map();
 let activePeriodIds: Set<string> = new Set();
+let manufacturerNameCache: Map<string, string> = new Map();
 
 // Lock duration: 2 minutes - if a worker crashes, the lock expires and another can take over
 const LOCK_DURATION_MS = 2 * 60 * 1000;
@@ -337,6 +338,34 @@ async function loadActivePeriodIds(supabase: any, projectId: string): Promise<Se
   return ids;
 }
 
+async function loadManufacturerNames(supabase: any, projectId: string): Promise<Map<string, string>> {
+  const cache = new Map<string, string>();
+  try {
+    const { data, error } = await supabase
+      .from('canonical_manufacturers')
+      .select('external_id, name')
+      .eq('project_id', projectId);
+    
+    if (error || !data) return cache;
+    
+    for (const m of data) {
+      if (m.external_id && m.name) {
+        cache.set(String(m.external_id), String(m.name));
+      }
+    }
+    console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
+  } catch (e) {
+    console.warn('[PRODUCTS] Failed to load manufacturer names:', e);
+  }
+  return cache;
+}
+
+function resolveVendorName(vendorId: string): string {
+  if (!vendorId) return '';
+  const resolved = manufacturerNameCache.get(vendorId);
+  return resolved || vendorId; // Fallback to ID if no mapping found
+}
+
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
   const tags: string[] = [];
   for (const catId of categoryExternalIds) {
@@ -362,6 +391,7 @@ async function uploadProducts(
   activePeriodIds = transformationRules.applyPeriodPricing 
     ? await loadActivePeriodIds(supabase, projectId) 
     : new Set();
+  manufacturerNameCache = await loadManufacturerNames(supabase, projectId);
   
   // ============================================================================
   // STEP 1: Clear expired locks from crashed workers
@@ -497,7 +527,7 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
   for (const product of products) {
     const data = product.data || {};
     const title = String(data._groupTitle || data.title || '').trim();
-    const vendor = String(data.vendor || '').trim();
+    const vendor = resolveVendorName(String(data.vendor || '').trim());
 
     const preKey = String(data._groupKey || '').trim();
     if (preKey) {
@@ -593,7 +623,7 @@ async function processProductGroup(
   // If title transforms are disabled ("Brug eksisterende vendor felt"), keep the title exactly as-is.
   const title = allowTitleTransform ? groupedTitle : originalTitle;
 
-  const vendor = String(data.vendor || '').trim();
+  const vendor = resolveVendorName(String(data.vendor || '').trim());
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
   const primaryItem = items[0];
   

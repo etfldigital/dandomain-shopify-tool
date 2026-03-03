@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML } from '@/lib/xml-parser';
+import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML, parseManufacturersXML } from '@/lib/xml-parser';
 import { useAuth } from '@/hooks/useAuth';
 
 interface ExtractStepProps {
@@ -27,7 +27,7 @@ interface ExtractStepProps {
   onNext: () => void;
 }
 
-type UploadEntityType = EntityType | 'periods';
+type UploadEntityType = EntityType | 'periods' | 'manufacturers';
 
 interface UploadedFile {
   type: UploadEntityType;
@@ -55,6 +55,7 @@ const ENTITY_CONFIG: Record<UploadEntityType, { icon: typeof ShoppingBag; label:
   orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'XML fil' },
   pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'XML fil' },
   periods: { icon: Calendar, label: 'Periodestyring (priser)', acceptedLabel: 'XML fil' },
+  manufacturers: { icon: ShoppingBag, label: 'Producenter', acceptedLabel: 'XML fil' },
 };
 
 export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepProps) {
@@ -179,6 +180,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .eq('project_id', project.id);
     }
     
+    if (type === 'manufacturers') {
+      await supabase
+        .from('canonical_manufacturers')
+        .delete()
+        .eq('project_id', project.id);
+    }
+    
     await supabase
       .from('project_files')
       .delete()
@@ -237,6 +245,11 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         }
         case 'periods': {
           const res = await supabase.from('price_periods').delete().eq('project_id', project.id);
+          error = res.error;
+          break;
+        }
+        case 'manufacturers': {
+          const res = await supabase.from('canonical_manufacturers').delete().eq('project_id', project.id);
           error = res.error;
           break;
         }
@@ -469,6 +482,29 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               }
             }
             break;
+
+          case 'manufacturers':
+            const mfrParsed = parseManufacturersXML(text);
+            console.log('Parsed manufacturers:', mfrParsed.length);
+            recordCount = mfrParsed.length;
+            
+            for (let i = 0; i < mfrParsed.length; i += 100) {
+              const batch = mfrParsed.slice(i, i + 100).map(m => ({
+                project_id: project.id,
+                external_id: m.external_id,
+                name: m.name,
+              }));
+
+              const { error } = await supabase
+                .from('canonical_manufacturers')
+                .upsert(batch, { onConflict: 'project_id,external_id' });
+              
+              if (error) {
+                console.error('Error inserting manufacturers:', error);
+                throw error;
+              }
+            }
+            break;
         }
 
         // Note: 0 rækker er tilladt (fx hvis CSV'en er tom / filtreret), vi gemmer stadig status.
@@ -559,6 +595,11 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       }
       case 'periods': {
         const res = await supabase.from('price_periods').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+      case 'manufacturers': {
+        const res = await supabase.from('canonical_manufacturers').delete().eq('project_id', project.id);
         clearError = res.error;
         break;
       }
@@ -676,6 +717,18 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               start_date: p.start_date, end_date: p.end_date, disabled: p.disabled,
             }));
             const { error } = await supabase.from('price_periods').upsert(batch, { onConflict: 'project_id,period_id' });
+            if (error) throw error;
+          }
+          break;
+        }
+        case 'manufacturers': {
+          const mfrParsed = parseManufacturersXML(text);
+          recordCount = mfrParsed.length;
+          for (let i = 0; i < mfrParsed.length; i += 100) {
+            const batch = mfrParsed.slice(i, i + 100).map(m => ({
+              project_id: project.id, external_id: m.external_id, name: m.name,
+            }));
+            const { error } = await supabase.from('canonical_manufacturers').upsert(batch, { onConflict: 'project_id,external_id' });
             if (error) throw error;
           }
           break;
