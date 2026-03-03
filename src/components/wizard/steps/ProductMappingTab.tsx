@@ -413,25 +413,29 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         return;
       }
 
-      // 2. Count products per period_id from canonical_products
-      const { data: products, error: prodError } = await supabase
-        .from('canonical_products')
-        .select('data')
-        .eq('project_id', projectId)
-        .not('data->>period_id', 'is', null)
-        .neq('data->>period_id', '')
-        .limit(10000);
+      // 2. Count products per period_id from canonical_products (exact counts to avoid row-limit truncation)
+      const normalizePeriodId = (value: unknown) => String(value ?? '').trim();
+      const periodIds = Array.from(
+        new Set(
+          (uploadedPeriods || [])
+            .map((p: any) => normalizePeriodId(p.period_id))
+            .filter(Boolean)
+        )
+      );
 
       const periodCounts = new Map<string, number>();
-      if (!prodError && products) {
-        for (const p of products) {
-          const data = p.data as any;
-          const pid = data?.period_id;
-          if (pid) {
-            periodCounts.set(pid, (periodCounts.get(pid) || 0) + 1);
-          }
-        }
-      }
+      await Promise.all(
+        periodIds.map(async (pid) => {
+          const { count, error } = await supabase
+            .from('canonical_products')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', projectId)
+            .eq('data->>period_id', pid);
+
+          if (error) throw error;
+          periodCounts.set(pid, count || 0);
+        })
+      );
 
       // 3. Get total product count
       const { count: totalProducts } = await supabase
@@ -443,6 +447,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       const periods = uploadedPeriods.map((p: any) => {
         const startDate = p.start_date || null;
         const endDate = p.end_date || null;
+        const normalizedPeriodId = normalizePeriodId(p.period_id);
         let isActive = !p.disabled;
         if (isActive && startDate && endDate) {
           const start = new Date(startDate);
@@ -454,7 +459,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         return {
           periodId: p.period_id,
           title: p.title || null,
-          productCount: periodCounts.get(p.period_id) || 0,
+          productCount: periodCounts.get(normalizedPeriodId) || 0,
           startDate,
           endDate,
           isActive,
