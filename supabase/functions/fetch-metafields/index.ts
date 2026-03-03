@@ -46,17 +46,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { shopify_store_domain, shopify_access_token_encrypted } = project;
+    const { shopify_store_domain: rawDomain, shopify_access_token_encrypted } = project;
 
-    if (!shopify_store_domain || !shopify_access_token_encrypted) {
+    if (!rawDomain || !shopify_access_token_encrypted) {
       return new Response(
         JSON.stringify({ error: 'Shopify not connected' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    // Sanitize domain: strip protocol and trailing slashes
+    const cleanDomain = rawDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    
     // Use GraphQL to fetch metafield definitions for products
-    const graphqlUrl = `https://${shopify_store_domain}/admin/api/2025-01/graphql.json`;
+    const graphqlUrl = `https://${cleanDomain}/admin/api/2025-01/graphql.json`;
     
     const query = `
       query {
