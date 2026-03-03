@@ -317,6 +317,56 @@ export function parsePeriodsXML(xmlText: string): PeriodData[] {
 }
 
 /**
+ * Manufacturer data interface for XML parsing
+ */
+export interface ManufacturerData {
+  external_id: string;
+  name: string;
+}
+
+/**
+ * Parse manufacturers XML from DanDomain
+ * Structure: MANUFACTURER_EXPORT > ELEMENTS > MANUFACTURER (or similar)
+ * Fields: MANUFAC_ID, MANUFAC_NAME (or ID, NAME)
+ */
+export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
+  
+  const parseError = doc.querySelector('parsererror');
+  if (parseError) {
+    console.error('XML parse error:', parseError.textContent);
+    return [];
+  }
+  
+  // Try different possible element names
+  let manufacturers = getAllElements(doc.documentElement, 'MANUFACTURER');
+  if (manufacturers.length === 0) {
+    manufacturers = getAllElements(doc.documentElement, 'ROW');
+  }
+  if (manufacturers.length === 0) {
+    const elements = doc.documentElement.getElementsByTagName('ELEMENTS')[0];
+    if (elements) {
+      manufacturers = Array.from(elements.children);
+    }
+  }
+  
+  console.log(`Parsing ${manufacturers.length} manufacturers from XML`);
+  
+  return manufacturers
+    .map(mfr => {
+      const externalId = getElementText(mfr, 'MANUFAC_ID') || getElementText(mfr, 'ID');
+      const name = getElementText(mfr, 'MANUFAC_NAME') || getElementText(mfr, 'NAME') || getElementText(mfr, 'TITLE');
+      
+      return {
+        external_id: externalId,
+        name: name || externalId,
+      };
+    })
+    .filter(m => m.external_id);
+}
+
+/**
  * Category data interface for XML parsing
  */
 export interface CategoryData {
