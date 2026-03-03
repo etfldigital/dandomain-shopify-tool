@@ -870,10 +870,10 @@ async function processProductGroup(
       let mvCompareAtPrice = mv?.compareAtPrice ? String(mv.compareAtPrice) : null;
 
       if (hasPeriodPricing) {
-        // Period pricing: use special_offer_price as sale price, base price as compare_at_price
-        const basePrice = parseFloat(String(mv?.price ?? primaryData.price ?? '0'));
+        // Period pricing: use special_offer_price as sale price, UNIT_PRICE (primaryData.price) as compare_at_price
+        // NOTE: mv.price may already be the special_offer_price from prepare-upload, so always use primaryData.price
         mvPrice = String(primaryData.special_offer_price);
-        mvCompareAtPrice = String(basePrice);
+        mvCompareAtPrice = String(primaryData.price || '0');
       }
 
       const v: VariantCandidate = {
