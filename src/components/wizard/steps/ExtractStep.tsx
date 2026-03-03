@@ -774,29 +774,39 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                   
                   {uploadedFile ? (
                     <div className="flex items-center gap-1">
-                      {uploadedFile.status === 'success' && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleFileSelect(entityType)}
-                            disabled={processing}
-                            title="Erstat fil"
-                          >
-                            <Upload className="w-4 h-4 mr-1" />
-                            Erstat
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleProcessSingleFile(entityType)}
-                            disabled={processing}
-                            title="Kør udtræk igen for denne type"
-                          >
-                            <RefreshCw className="w-4 h-4 mr-1" />
-                            Genudtræk
-                          </Button>
-                        </>
+                      {(uploadedFile.status === 'success' || uploadedFile.status === 'error') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFileSelect(entityType)}
+                          disabled={processing}
+                          title="Erstat fil"
+                        >
+                          <Upload className="w-4 h-4 mr-1" />
+                          Erstat
+                        </Button>
+                      )}
+                      {(uploadedFile.status === 'success' || uploadedFile.status === 'error') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleProcessSingleFile(entityType)}
+                          disabled={processing}
+                          title="Kør udtræk igen for denne type"
+                        >
+                          <RefreshCw className="w-4 h-4 mr-1" />
+                          Genudtræk
+                        </Button>
+                      )}
+                      {uploadedFile.status === 'pending' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleProcessSingleFile(entityType)}
+                          disabled={processing}
+                        >
+                          Kør udtræk
+                        </Button>
                       )}
                       <Button
                         variant="ghost"
