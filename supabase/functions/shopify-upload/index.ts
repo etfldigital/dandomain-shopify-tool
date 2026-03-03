@@ -211,6 +211,7 @@ Deno.serve(async (req) => {
 const sessionProductCache: Map<string, string> = new Map();
 let categoryTagCache: Map<string, string> = new Map();
 const skuToShopifyMap: Map<string, { productId: string; variantId: string }> = new Map();
+let activePeriodIds: Set<string> = new Set();
 
 // Lock duration: 2 minutes - if a worker crashes, the lock expires and another can take over
 const LOCK_DURATION_MS = 2 * 60 * 1000;
@@ -304,6 +305,38 @@ async function loadCategoryTags(supabase: any, projectId: string): Promise<Map<s
   return cache;
 }
 
+async function loadActivePeriodIds(supabase: any, projectId: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  try {
+    const { data, error } = await supabase
+      .from('price_periods')
+      .select('period_id, start_date, end_date, disabled')
+      .eq('project_id', projectId);
+    
+    if (error || !data) return ids;
+    
+    const now = new Date();
+    for (const p of data) {
+      if (p.disabled) continue;
+      if (p.start_date && p.end_date) {
+        const start = new Date(p.start_date);
+        const end = new Date(p.end_date);
+        end.setHours(23, 59, 59, 999);
+        if (now >= start && now <= end) {
+          ids.add(p.period_id);
+        }
+      } else {
+        // No date range = assume active
+        ids.add(p.period_id);
+      }
+    }
+    console.log(`[PRODUCTS] Loaded ${ids.size} active period IDs`);
+  } catch (e) {
+    console.warn('[PRODUCTS] Failed to load period IDs:', e);
+  }
+  return ids;
+}
+
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
   const tags: string[] = [];
   for (const catId of categoryExternalIds) {
@@ -326,6 +359,9 @@ async function uploadProducts(
   
   categoryTagCache = await loadCategoryTags(supabase, projectId);
   const transformationRules = await loadProductTransformationRules(supabase, projectId);
+  activePeriodIds = transformationRules.applyPeriodPricing 
+    ? await loadActivePeriodIds(supabase, projectId) 
+    : new Set();
   
   // ============================================================================
   // STEP 1: Clear expired locks from crashed workers
@@ -797,8 +833,8 @@ async function processProductGroup(
       const dedupeKey = option1 ?? `__no_option_${sku}`;
       if (variantByOption.has(dedupeKey)) continue;
 
-      // Apply period pricing if enabled and primary product has a period_id
-      const hasPeriodPricing = rules.applyPeriodPricing && primaryData.period_id && primaryData.special_offer_price && parseFloat(String(primaryData.special_offer_price)) > 0;
+      // Apply period pricing if enabled and primary product has a period_id in an active period
+      const hasPeriodPricing = rules.applyPeriodPricing && primaryData.period_id && activePeriodIds.has(String(primaryData.period_id)) && primaryData.special_offer_price && parseFloat(String(primaryData.special_offer_price)) > 0;
 
       let mvPrice = String(mv?.price ?? '0');
       let mvCompareAtPrice = mv?.compareAtPrice ? String(mv.compareAtPrice) : null;
@@ -835,7 +871,7 @@ async function processProductGroup(
       if (variantByOption.has(option1)) continue;
 
       // Determine if period pricing applies to this item
-      const hasPeriodPricing = rules.applyPeriodPricing && itemData.period_id && itemData.special_offer_price && parseFloat(String(itemData.special_offer_price)) > 0;
+      const hasPeriodPricing = rules.applyPeriodPricing && itemData.period_id && activePeriodIds.has(String(itemData.period_id)) && itemData.special_offer_price && parseFloat(String(itemData.special_offer_price)) > 0;
 
       let variantPrice: string;
       let variantCompareAtPrice: string | null;

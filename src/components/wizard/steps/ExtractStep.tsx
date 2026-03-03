@@ -12,11 +12,12 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  X
+  X,
+  Calendar
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML } from '@/lib/xml-parser';
+import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML } from '@/lib/xml-parser';
 import { useAuth } from '@/hooks/useAuth';
 
 interface ExtractStepProps {
@@ -25,8 +26,10 @@ interface ExtractStepProps {
   onNext: () => void;
 }
 
+type UploadEntityType = EntityType | 'periods';
+
 interface UploadedFile {
-  type: EntityType;
+  type: UploadEntityType;
   file: File;
   storagePath?: string;
   status: 'pending' | 'processing' | 'success' | 'error';
@@ -44,12 +47,13 @@ interface ProjectFile {
   error_message?: string | null;
 }
 
-const ENTITY_CONFIG: Record<EntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
+const ENTITY_CONFIG: Record<UploadEntityType, { icon: typeof ShoppingBag; label: string; acceptedLabel: string }> = {
   products: { icon: ShoppingBag, label: 'Produkter', acceptedLabel: 'XML fil' },
   categories: { icon: Folder, label: 'Kategorier', acceptedLabel: 'XML fil' },
   customers: { icon: Users, label: 'Kunder', acceptedLabel: 'XML fil' },
   orders: { icon: FileText, label: 'Ordrer', acceptedLabel: 'XML fil' },
   pages: { icon: FileSpreadsheet, label: 'Sider', acceptedLabel: 'XML fil' },
+  periods: { icon: Calendar, label: 'Periodestyring (priser)', acceptedLabel: 'XML fil' },
 };
 
 export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepProps) {
@@ -59,7 +63,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
   const [progress, setProgress] = useState(0);
   const [loadingFiles, setLoadingFiles] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [currentUploadType, setCurrentUploadType] = useState<EntityType | null>(null);
+  const [currentUploadType, setCurrentUploadType] = useState<UploadEntityType | null>(null);
 
   // Load previously uploaded files on mount
   useEffect(() => {
@@ -103,7 +107,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     }
   };
 
-  const handleFileSelect = (entityType: EntityType) => {
+  const handleFileSelect = (entityType: UploadEntityType) => {
     setCurrentUploadType(entityType);
     fileInputRef.current?.click();
   };
@@ -157,13 +161,21 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     e.target.value = '';
   };
 
-  const removeFile = async (type: EntityType) => {
+  const removeFile = async (type: UploadEntityType) => {
     const fileToRemove = uploadedFiles.find(f => f.type === type);
     
     if (fileToRemove?.storagePath) {
       await supabase.storage
         .from('csv-uploads')
         .remove([fileToRemove.storagePath]);
+    }
+    
+    // For periods, also clear the price_periods table
+    if (type === 'periods') {
+      await supabase
+        .from('price_periods')
+        .delete()
+        .eq('project_id', project.id);
     }
     
     await supabase
@@ -219,6 +231,11 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         }
         case 'categories': {
           const res = await supabase.from('canonical_categories').delete().eq('project_id', project.id);
+          error = res.error;
+          break;
+        }
+        case 'periods': {
+          const res = await supabase.from('price_periods').delete().eq('project_id', project.id);
           error = res.error;
           break;
         }
@@ -425,6 +442,32 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               }
             }
             break;
+
+          case 'periods':
+            const periodsParsed = parsePeriodsXML(text);
+            console.log('Parsed periods:', periodsParsed.length);
+            recordCount = periodsParsed.length;
+            
+            for (let i = 0; i < periodsParsed.length; i += 100) {
+              const batch = periodsParsed.slice(i, i + 100).map(period => ({
+                project_id: project.id,
+                period_id: period.period_id,
+                title: period.title,
+                start_date: period.start_date,
+                end_date: period.end_date,
+                disabled: period.disabled,
+              }));
+
+              const { error } = await supabase
+                .from('price_periods')
+                .upsert(batch, { onConflict: 'project_id,period_id' });
+              
+              if (error) {
+                console.error('Error inserting periods:', error);
+                throw error;
+              }
+            }
+            break;
         }
 
         // Note: 0 rækker er tilladt (fx hvis CSV'en er tom / filtreret), vi gemmer stadig status.
@@ -508,7 +551,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       />
 
       <div className="grid gap-4">
-        {(['products', 'categories', 'customers', 'orders'] as EntityType[]).map((entityType) => {
+        {(['products', 'categories', 'customers', 'orders', 'periods'] as UploadEntityType[]).map((entityType) => {
           const config = ENTITY_CONFIG[entityType];
           const Icon = config.icon;
           const uploadedFile = uploadedFiles.find(f => f.type === entityType);

@@ -330,11 +330,12 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   // DanDomain base URL for resolving relative image paths
   const [danDomainBaseUrl, setDanDomainBaseUrl] = useState<string | null>(null);
 
-  // Period pricing (Periodestyring) state
+  // Period pricing (Periodestyring) state - loaded from price_periods table
   const [periodData, setPeriodData] = useState<{
-    periods: { periodId: string; productCount: number; startDate: string | null; endDate: string | null; isActive: boolean }[];
+    periods: { periodId: string; title: string | null; productCount: number; startDate: string | null; endDate: string | null; isActive: boolean }[];
     totalProducts: number;
     totalWithPeriod: number;
+    hasUploadedPeriods: boolean;
   } | null>(null);
   const [loadingPeriods, setLoadingPeriods] = useState(false);
   const [periodError, setPeriodError] = useState<string | null>(null);
@@ -391,18 +392,84 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     }
   }, [projectId, metafieldsLoaded]);
 
-  // Auto-fetch period data on mount
+  // Auto-fetch period data from price_periods table and canonical_products
   const fetchPeriodData = async () => {
     setLoadingPeriods(true);
     setPeriodError(null);
     try {
-      const { data, error } = await supabase.functions.invoke('fetch-dandomain-periods', {
-        body: { projectId },
-      });
-      if (error) throw error;
-      if (data) {
-        setPeriodData(data);
+      // 1. Load uploaded periods from price_periods table
+      const { data: uploadedPeriods, error: periodsError } = await supabase
+        .from('price_periods')
+        .select('*')
+        .eq('project_id', projectId);
+
+      if (periodsError) throw periodsError;
+
+      const hasUploadedPeriods = uploadedPeriods && uploadedPeriods.length > 0;
+
+      if (!hasUploadedPeriods) {
+        setPeriodData({ periods: [], totalProducts: 0, totalWithPeriod: 0, hasUploadedPeriods: false });
+        setLoadingPeriods(false);
+        return;
       }
+
+      // 2. Count products per period_id from canonical_products
+      const { data: products, error: prodError } = await supabase
+        .from('canonical_products')
+        .select('data')
+        .eq('project_id', projectId)
+        .not('data->>period_id', 'is', null)
+        .neq('data->>period_id', '')
+        .limit(10000);
+
+      const periodCounts = new Map<string, number>();
+      if (!prodError && products) {
+        for (const p of products) {
+          const data = p.data as any;
+          const pid = data?.period_id;
+          if (pid) {
+            periodCounts.set(pid, (periodCounts.get(pid) || 0) + 1);
+          }
+        }
+      }
+
+      // 3. Get total product count
+      const { count: totalProducts } = await supabase
+        .from('canonical_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', projectId);
+
+      const now = new Date();
+      const periods = uploadedPeriods.map((p: any) => {
+        const startDate = p.start_date || null;
+        const endDate = p.end_date || null;
+        let isActive = !p.disabled;
+        if (isActive && startDate && endDate) {
+          const start = new Date(startDate);
+          const end = new Date(endDate);
+          // Set end to end of day
+          end.setHours(23, 59, 59, 999);
+          isActive = now >= start && now <= end;
+        }
+        return {
+          periodId: p.period_id,
+          title: p.title || null,
+          productCount: periodCounts.get(p.period_id) || 0,
+          startDate,
+          endDate,
+          isActive,
+        };
+      });
+
+      // Sort by product count descending
+      periods.sort((a: any, b: any) => b.productCount - a.productCount);
+
+      setPeriodData({
+        periods,
+        totalProducts: totalProducts || 0,
+        totalWithPeriod: periods.reduce((sum: number, p: any) => sum + p.productCount, 0),
+        hasUploadedPeriods: true,
+      });
     } catch (e: any) {
       console.error('Error fetching period data:', e);
       setPeriodError('Kunne ikke hente periodestyring data');
@@ -1296,12 +1363,13 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     <AlertTriangle className="w-4 h-4" />
                     {periodError}
                   </div>
-                ) : periodData && periodData.periods.length > 0 ? (
+                ) : periodData && periodData.hasUploadedPeriods && periodData.periods.length > 0 ? (
                   <div className="border rounded-lg overflow-hidden">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Periode</TableHead>
+                          <TableHead>Titel</TableHead>
                           <TableHead className="text-right">Produkter</TableHead>
                           <TableHead>Datointerval</TableHead>
                           <TableHead>Status</TableHead>
@@ -1312,6 +1380,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                           <TableRow key={period.periodId}>
                             <TableCell className="font-medium font-mono text-sm">
                               {period.periodId}
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {period.title || '–'}
                             </TableCell>
                             <TableCell className="text-right">
                               <Badge variant="secondary">{period.productCount}</Badge>
@@ -1340,20 +1411,27 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                   </div>
                 ) : (
                   <div className="text-sm text-muted-foreground p-3 bg-muted/30 rounded-lg">
-                    Ingen produkter med periodestyring fundet
+                    {periodData && !periodData.hasUploadedPeriods
+                      ? 'Upload en Periodestyring XML fil i Udtræk-trinnet for at aktivere denne funktion'
+                      : 'Ingen produkter med periodestyring fundet'}
                   </div>
                 )}
 
                 {/* Toggle */}
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <Label>Anvend periodestyringspris ved migrering (udsalgspris)</Label>
+                    <Label className={!(periodData?.hasUploadedPeriods) ? 'text-muted-foreground' : ''}>
+                      Anvend periodestyringspris ved migrering (udsalgspris)
+                    </Label>
                     <p className="text-sm text-muted-foreground">
-                      Produkter med aktiv periode: periodepris → Shopify pris, basispris → sammenlign ved pris (overstreget)
+                      {!(periodData?.hasUploadedPeriods)
+                        ? 'Upload en Periodestyring XML fil først'
+                        : 'Produkter med aktiv periode: periodepris → Shopify pris, basispris → sammenlign ved pris (overstreget)'}
                     </p>
                   </div>
                   <Switch
                     checked={mappingRules.applyPeriodPricing}
+                    disabled={!(periodData?.hasUploadedPeriods)}
                     onCheckedChange={(checked) => {
                       const newRules = { ...mappingRules, applyPeriodPricing: checked };
                       setMappingRules(newRules);
