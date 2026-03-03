@@ -13,7 +13,8 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
-  Calendar
+  Calendar,
+  RefreshCw
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
@@ -523,6 +524,184 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     setProcessing(false);
   };
 
+  // Process a single entity type (for re-extracting after replacing a file)
+  const handleProcessSingleFile = async (entityType: UploadEntityType) => {
+    if (!user) return;
+    
+    const uploadedFile = uploadedFiles.find(f => f.type === entityType);
+    if (!uploadedFile) return;
+
+    setProcessing(true);
+    setProgress(0);
+
+    // Clear old data for this entity type only
+    let clearError: any = null;
+    switch (entityType) {
+      case 'products': {
+        const res = await supabase.from('canonical_products').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+      case 'customers': {
+        const res = await supabase.from('canonical_customers').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+      case 'orders': {
+        const res = await supabase.from('canonical_orders').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+      case 'categories': {
+        const res = await supabase.from('canonical_categories').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+      case 'periods': {
+        const res = await supabase.from('price_periods').delete().eq('project_id', project.id);
+        clearError = res.error;
+        break;
+      }
+    }
+
+    if (clearError) {
+      console.error('Error clearing data for', entityType, clearError);
+      setProcessing(false);
+      return;
+    }
+
+    // Process just this one file by temporarily filtering uploadedFiles
+    const originalFiles = uploadedFiles;
+    const singleFileList = [uploadedFile];
+
+    setUploadedFiles(prev =>
+      prev.map(f => f.type === entityType ? { ...f, status: 'processing' } : f)
+    );
+
+    try {
+      let text: string;
+      if (uploadedFile.storagePath && uploadedFile.file.size === 0) {
+        const { data, error } = await supabase.storage.from('csv-uploads').download(uploadedFile.storagePath);
+        if (error) throw error;
+        text = await data.text();
+      } else {
+        text = await uploadedFile.file.text();
+      }
+
+      let recordCount = 0;
+      const hasCategoriesFile = uploadedFiles.some(f => f.type === 'categories');
+
+      switch (entityType) {
+        case 'products': {
+          const parsedData = parseProductsXML(text);
+          const productMap = new Map<string, typeof parsedData[0]>();
+          parsedData.forEach(product => { if (product.sku) productMap.set(product.sku, product); });
+          const uniqueProducts = Array.from(productMap.values());
+          recordCount = uniqueProducts.length;
+          for (let i = 0; i < uniqueProducts.length; i += 100) {
+            const batch = uniqueProducts.slice(i, i + 100).map(product => ({
+              project_id: project.id, external_id: product.sku, data: product as any, status: 'pending' as const,
+            }));
+            const { error } = await supabase.from('canonical_products').upsert(batch, { onConflict: 'project_id,external_id' });
+            if (error) throw error;
+          }
+          if (!hasCategoriesFile) {
+            const categories = new Set<string>();
+            uniqueProducts.forEach(p => { if (p.category_external_ids) p.category_external_ids.forEach((c: string) => { if (c && !c.includes('#')) categories.add(c); }); });
+            const categoryData = Array.from(categories).filter(Boolean).map(cat => ({
+              project_id: project.id, external_id: cat, name: cat, shopify_tag: cat, status: 'pending' as const,
+            }));
+            if (categoryData.length > 0) {
+              await supabase.from('canonical_categories').upsert(categoryData, { onConflict: 'project_id,external_id' });
+            }
+          }
+          await onUpdateProject({ product_count: recordCount });
+          break;
+        }
+        case 'customers': {
+          const parsedData = parseCustomersXML(text);
+          const customerMap = new Map<string, typeof parsedData[0]>();
+          parsedData.forEach(c => { const key = c.external_id || c.email; if (key) customerMap.set(key, c); });
+          const unique = Array.from(customerMap.values());
+          recordCount = unique.length;
+          for (let i = 0; i < unique.length; i += 100) {
+            const batch = unique.slice(i, i + 100).map(c => ({
+              project_id: project.id, external_id: c.external_id || c.email, data: c as any, status: 'pending' as const,
+            }));
+            const { error } = await supabase.from('canonical_customers').upsert(batch, { onConflict: 'project_id,external_id' });
+            if (error) throw error;
+          }
+          await onUpdateProject({ customer_count: recordCount });
+          break;
+        }
+        case 'orders': {
+          const parsedData = parseOrdersXML(text);
+          const orderMap = new Map<string, typeof parsedData[0]>();
+          parsedData.forEach(o => { if (o.external_id) orderMap.set(o.external_id, o); });
+          const unique = Array.from(orderMap.values());
+          recordCount = unique.length;
+          for (let i = 0; i < unique.length; i += 100) {
+            const batch = unique.slice(i, i + 100).map(o => ({
+              project_id: project.id, external_id: o.external_id, data: o as any, status: 'pending' as const,
+            }));
+            const { error } = await supabase.from('canonical_orders').upsert(batch, { onConflict: 'project_id,external_id' });
+            if (error) throw error;
+          }
+          await onUpdateProject({ order_count: recordCount });
+          break;
+        }
+        case 'categories': {
+          const parsedData = parseCategoriesXML(text);
+          const catMap = new Map<string, typeof parsedData[0]>();
+          parsedData.forEach(c => { if (c.external_id) catMap.set(c.external_id, c); });
+          const unique = Array.from(catMap.values());
+          recordCount = unique.length;
+          for (let i = 0; i < unique.length; i += 100) {
+            const batch = unique.slice(i, i + 100).map(c => ({
+              project_id: project.id, external_id: c.external_id, name: c.name || c.external_id,
+              parent_external_id: c.parent_external_id || null, shopify_tag: c.name || c.external_id, status: 'pending' as const,
+            }));
+            const { error } = await supabase.from('canonical_categories').upsert(batch, { onConflict: 'project_id,external_id' });
+            if (error) throw error;
+          }
+          await onUpdateProject({ category_count: recordCount });
+          break;
+        }
+        case 'periods': {
+          const periodsParsed = parsePeriodsXML(text);
+          recordCount = periodsParsed.length;
+          for (let i = 0; i < periodsParsed.length; i += 100) {
+            const batch = periodsParsed.slice(i, i + 100).map(p => ({
+              project_id: project.id, period_id: p.period_id, title: p.title,
+              start_date: p.start_date, end_date: p.end_date, disabled: p.disabled,
+            }));
+            const { error } = await supabase.from('price_periods').upsert(batch, { onConflict: 'project_id,period_id' });
+            if (error) throw error;
+          }
+          break;
+        }
+      }
+
+      await supabase.from('project_files').update({ row_count: recordCount, status: 'processed', error_message: null })
+        .eq('project_id', project.id).eq('entity_type', entityType);
+
+      setUploadedFiles(prev =>
+        prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined } : f)
+      );
+    } catch (error: any) {
+      console.error('Error processing file:', error);
+      const errorMessage = error?.message || 'Ukendt fejl';
+      await supabase.from('project_files').update({ status: 'error', error_message: errorMessage })
+        .eq('project_id', project.id).eq('entity_type', entityType);
+      setUploadedFiles(prev =>
+        prev.map(f => f.type === entityType ? { ...f, status: 'error', error: errorMessage } : f)
+      );
+    }
+
+    setProgress(100);
+    setProcessing(false);
+  };
+
   const allFilesProcessed = uploadedFiles.length > 0 && uploadedFiles.every(f => f.status === 'success');
 
   if (loadingFiles) {
@@ -594,14 +773,40 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                   </div>
                   
                   {uploadedFile ? (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeFile(entityType)}
-                      disabled={processing}
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      {uploadedFile.status === 'success' && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleFileSelect(entityType)}
+                            disabled={processing}
+                            title="Erstat fil"
+                          >
+                            <Upload className="w-4 h-4 mr-1" />
+                            Erstat
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleProcessSingleFile(entityType)}
+                            disabled={processing}
+                            title="Kør udtræk igen for denne type"
+                          >
+                            <RefreshCw className="w-4 h-4 mr-1" />
+                            Genudtræk
+                          </Button>
+                        </>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeFile(entityType)}
+                        disabled={processing}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
                   ) : (
                     <Button
                       variant="outline"
