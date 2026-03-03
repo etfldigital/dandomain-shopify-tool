@@ -1356,13 +1356,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                      syncingEntity === type ? 'bg-primary/10' :
                       status === 'completed' ? 'bg-green-100 dark:bg-green-900' :
                       status === 'failed' ? 'bg-destructive/10' :
                       status === 'running' ? 'bg-primary/10' :
                       status === 'paused' ? 'bg-amber-100 dark:bg-amber-900' :
                       'bg-muted'
                     }`}>
-                      {status === 'completed' ? (
+                      {syncingEntity === type ? (
+                        <RefreshCw className="w-4 h-4 text-primary animate-spin" />
+                      ) : status === 'completed' ? (
                         <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400" />
                       ) : status === 'failed' ? (
                         <AlertCircle className="w-4 h-4 text-destructive" />
