@@ -658,21 +658,47 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  // Sync: fetch Shopify records and match to local DB
+  // Sync: fetch Shopify records and match to local DB (chunked/resumable)
   const handleSync = async (entityType: EntityType) => {
     setSyncingEntity(entityType);
     try {
-      const response = await supabase.functions.invoke('shopify-sync', {
-        body: { projectId: project.id, entityType },
+      // Phase 1: fetch Shopify records + first chunk
+      let response = await supabase.functions.invoke('shopify-sync', {
+        body: { projectId: project.id, entityType, phase: 'fetch' },
       });
 
       if (response.error) {
         throw new Error(response.error.message);
       }
 
-      const data = response.data;
+      let data = response.data;
       if (!data?.success) {
         throw new Error(data?.error || 'Synkronisering fejlede');
+      }
+
+      // Loop through remaining chunks
+      while (!data.done && data.shopifyData && data.nextOffset != null) {
+        const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label || entityType;
+        toast.info(`${entityLabel}: synkroniserer... (${data.nextOffset} behandlet)`, { duration: 3000 });
+
+        response = await supabase.functions.invoke('shopify-sync', {
+          body: {
+            projectId: project.id,
+            entityType,
+            phase: 'apply',
+            offset: data.nextOffset,
+            shopifyData: data.shopifyData,
+          },
+        });
+
+        if (response.error) {
+          throw new Error(response.error.message);
+        }
+
+        data = response.data;
+        if (!data?.success) {
+          throw new Error(data?.error || 'Synkronisering fejlede');
+        }
       }
 
       const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label || entityType;
@@ -683,7 +709,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       });
 
       // Refresh counts so sequencing gate re-evaluates
-      lastCountsFetchRef.current = 0; // Force refresh
+      lastCountsFetchRef.current = 0;
       await fetchStatusCounts();
       await fetchShopifyLiveCounts(true);
       await fetchJobs();
