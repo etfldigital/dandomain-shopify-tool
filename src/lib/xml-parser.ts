@@ -103,10 +103,12 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const barcode = advanced ? getElementText(advanced, 'PROD_BARCODE_NUMBER') : '';
       const internalId = advanced ? getElementText(advanced, 'INTERNAL_ID') : '';
       
-      // Period pricing (Periodestyring) - PROD_NEW_PERIOD_ID
-      const periodId = getElementText(product, 'PROD_NEW_PERIOD_ID') || 
-                       (advanced ? getElementText(advanced, 'PROD_NEW_PERIOD_ID') : '') ||
-                       '';
+      // Period pricing (Periodestyring) - support both legacy and current DanDomain field names
+      let periodId = getElementText(product, 'PRICE_PERIOD_ID') ||
+                     getElementText(product, 'PROD_NEW_PERIOD_ID') || 
+                     (advanced ? getElementText(advanced, 'PRICE_PERIOD_ID') : '') ||
+                     (advanced ? getElementText(advanced, 'PROD_NEW_PERIOD_ID') : '') ||
+                     '';
       
       // CUSTOM_FIELDS section - custom fields FIELD_1 to FIELD_20
       const customFieldsSection = product.getElementsByTagName('CUSTOM_FIELDS')[0];
@@ -141,6 +143,11 @@ export function parseProductsXML(xmlText: string): ProductData[] {
           const firstPrice = priceElements[0];
           price = parsePrice(getElementText(firstPrice, 'UNIT_PRICE'));
           const specialOffer = parsePrice(getElementText(firstPrice, 'SPECIAL_OFFER_PRICE'));
+          if (!periodId) {
+            periodId = getElementText(firstPrice, 'PRICE_PERIOD_ID') ||
+                       getElementText(firstPrice, 'PROD_NEW_PERIOD_ID') ||
+                       '';
+          }
           if (specialOffer > 0) {
             specialOfferPrice = specialOffer;
           }
