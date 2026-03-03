@@ -103,6 +103,11 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const barcode = advanced ? getElementText(advanced, 'PROD_BARCODE_NUMBER') : '';
       const internalId = advanced ? getElementText(advanced, 'INTERNAL_ID') : '';
       
+      // Period pricing (Periodestyring) - PROD_NEW_PERIOD_ID
+      const periodId = getElementText(product, 'PROD_NEW_PERIOD_ID') || 
+                       (advanced ? getElementText(advanced, 'PROD_NEW_PERIOD_ID') : '') ||
+                       '';
+      
       // CUSTOM_FIELDS section - custom fields FIELD_1 to FIELD_20
       const customFieldsSection = product.getElementsByTagName('CUSTOM_FIELDS')[0];
       // Some DanDomain exports may not nest these under <CUSTOM_FIELDS>. Be defensive and fall back
@@ -214,6 +219,8 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         meta_description: metaDescription,
         // DanDomain source path for redirects
         source_path: sourcePath,
+        // Period pricing
+        period_id: periodId || undefined,
       };
     })
     .filter(product => {
