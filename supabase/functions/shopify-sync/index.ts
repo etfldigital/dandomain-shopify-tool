@@ -397,6 +397,8 @@ Deno.serve(async (req) => {
     let matched = 0;
     let notFound = 0;
     let alreadyUploaded = 0;
+    let alreadyDuplicate = 0;
+    let markedDuplicate = 0;
     let matchedByHandle = 0;
     let matchedByTitle = 0;
     let matchedByName = 0;
@@ -406,11 +408,22 @@ Deno.serve(async (req) => {
 
     // Collect updates to batch them
     const updates: { id: string; shopify_id: string }[] = [];
+    // Track which match keys have been seen (for duplicate detection)
+    const seenMatchKeys = new Set<string>();
+    // IDs of records that are duplicates of already-matched records
+    const duplicateIds: string[] = [];
 
     for (const local of allLocalRecords) {
       const existingShopifyId = entityType === "categories" ? local.shopify_collection_id : local.shopify_id;
       if (local.status === "uploaded" && existingShopifyId) {
         alreadyUploaded++;
+        // Track match key so later duplicates get detected
+        const key = getLocalMatchKey(local, entityType);
+        if (key) seenMatchKeys.add(key);
+        continue;
+      }
+      if (local.status === "duplicate") {
+        alreadyDuplicate++;
         continue;
       }
 
@@ -460,15 +473,27 @@ Deno.serve(async (req) => {
       if (shopifyId) {
         updates.push({ id: local.id, shopify_id: shopifyId });
         matched++;
+        // Track the match key so we can detect duplicates
+        const key = getLocalMatchKey(local, entityType);
+        if (key) seenMatchKeys.add(key);
       } else {
-        notFound++;
+        // Check if this is a duplicate of an already-matched record
+        const key = getLocalMatchKey(local, entityType);
+        if (key && seenMatchKeys.has(key)) {
+          duplicateIds.push(local.id);
+          markedDuplicate++;
+        } else {
+          notFound++;
+          // Still track the key - first unmatched record with this key isn't a duplicate,
+          // but subsequent ones with the same key are
+          if (key) seenMatchKeys.add(key);
+        }
       }
     }
 
-    // Apply updates in batches
+    // Apply matched updates in batches
     for (let i = 0; i < updates.length; i += BATCH_SIZE) {
       const batch = updates.slice(i, i + BATCH_SIZE);
-      // Update each record in the batch
       for (const upd of batch) {
         const updatePayload: Record<string, any> = {
           status: "uploaded",
@@ -484,7 +509,22 @@ Deno.serve(async (req) => {
           .update(updatePayload)
           .eq("id", upd.id);
       }
-      console.log(`[SYNC] Updated ${Math.min(i + BATCH_SIZE, updates.length)}/${updates.length} records`);
+      console.log(`[SYNC] Updated ${Math.min(i + BATCH_SIZE, updates.length)}/${updates.length} matched records`);
+    }
+
+    // Mark duplicates in batches
+    for (let i = 0; i < duplicateIds.length; i += BATCH_SIZE) {
+      const batch = duplicateIds.slice(i, i + BATCH_SIZE);
+      for (const id of batch) {
+        await supabase
+          .from(table)
+          .update({
+            status: "duplicate",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", id);
+      }
+      console.log(`[SYNC] Marked ${Math.min(i + BATCH_SIZE, duplicateIds.length)}/${duplicateIds.length} as duplicate`);
     }
 
     // 4. Update upload_jobs processed_count (don't mark completed - let user resume)
@@ -512,6 +552,8 @@ Deno.serve(async (req) => {
       matched,
       notFound,
       alreadyUploaded,
+      alreadyDuplicate,
+      markedDuplicate,
       totalShopify: shopifyRecords.length,
       totalLocal: allLocalRecords.length,
       ...(entityType === "categories" ? { matchedByHandle, matchedByTitle, matchedByName } : {}),

@@ -126,6 +126,7 @@ interface StatusCounts {
   pending: number;
   uploaded: number;
   failed: number;
+  duplicate: number;
 }
 
 // Shopify live counts (fetched from API) per entity type
@@ -185,11 +186,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Status counts cached to avoid excessive DB queries
   const [statusCounts, setStatusCounts] = useState<Record<EntityType, StatusCounts>>({
-    products: { pending: 0, uploaded: 0, failed: 0 },
-    customers: { pending: 0, uploaded: 0, failed: 0 },
-    orders: { pending: 0, uploaded: 0, failed: 0 },
-    categories: { pending: 0, uploaded: 0, failed: 0 },
-    pages: { pending: 0, uploaded: 0, failed: 0 },
+    products: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+    customers: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+    orders: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+    categories: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+    pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
   });
   const lastCountsFetchRef = useRef<number>(0);
   const autoRecoverRef = useRef<Record<string, number>>({}); // jobId -> last auto recover ts
@@ -216,11 +217,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     lastCountsFetchRef.current = now;
     
     const counts: Record<EntityType, StatusCounts> = {
-      products: { pending: 0, uploaded: 0, failed: 0 },
-      customers: { pending: 0, uploaded: 0, failed: 0 },
-      orders: { pending: 0, uploaded: 0, failed: 0 },
-      categories: { pending: 0, uploaded: 0, failed: 0 },
-      pages: { pending: 0, uploaded: 0, failed: 0 },
+      products: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+      customers: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+      orders: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+      categories: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
+      pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
     };
 
     // Products - count primary products (unique titles) per status using DB function.
@@ -232,39 +233,53 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     let productPending = 0;
     let productUploaded = 0;
     let productFailed = 0;
+    let productDuplicate = 0;
     if (primaryCounts && Array.isArray(primaryCounts)) {
       for (const row of primaryCounts) {
         if (row.status === 'pending') productPending = Number(row.primary_count) || 0;
         else if (row.status === 'uploaded') productUploaded = Number(row.primary_count) || 0;
         else if (row.status === 'failed') productFailed = Number(row.primary_count) || 0;
+        else if (row.status === 'duplicate') productDuplicate = Number(row.primary_count) || 0;
       }
     }
 
-    counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed };
+    counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
 
     // Customers
-    const { count: customerPending } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
-    const { count: customerUploaded } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
-    const { count: customerFailed } = await supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
-    counts.customers = { pending: customerPending || 0, uploaded: customerUploaded || 0, failed: customerFailed || 0 };
+    const [customerPendingR, customerUploadedR, customerFailedR, customerDuplicateR] = await Promise.all([
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
+    ]);
+    counts.customers = { pending: customerPendingR.count || 0, uploaded: customerUploadedR.count || 0, failed: customerFailedR.count || 0, duplicate: customerDuplicateR.count || 0 };
 
     // Orders
-    const { count: orderPending } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
-    const { count: orderUploaded } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
-    const { count: orderFailed } = await supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
-    counts.orders = { pending: orderPending || 0, uploaded: orderUploaded || 0, failed: orderFailed || 0 };
+    const [orderPendingR, orderUploadedR, orderFailedR, orderDuplicateR] = await Promise.all([
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
+    ]);
+    counts.orders = { pending: orderPendingR.count || 0, uploaded: orderUploadedR.count || 0, failed: orderFailedR.count || 0, duplicate: orderDuplicateR.count || 0 };
 
     // Categories
-    const { count: categoryPending } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
-    const { count: categoryUploaded } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
-    const { count: categoryFailed } = await supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
-    counts.categories = { pending: categoryPending || 0, uploaded: categoryUploaded || 0, failed: categoryFailed || 0 };
+    const [categoryPendingR, categoryUploadedR, categoryFailedR, categoryDuplicateR] = await Promise.all([
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
+    ]);
+    counts.categories = { pending: categoryPendingR.count || 0, uploaded: categoryUploadedR.count || 0, failed: categoryFailedR.count || 0, duplicate: categoryDuplicateR.count || 0 };
 
     // Pages
-    const { count: pagePending } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending');
-    const { count: pageUploaded } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded');
-    const { count: pageFailed } = await supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed');
-    counts.pages = { pending: pagePending || 0, uploaded: pageUploaded || 0, failed: pageFailed || 0 };
+    const [pagePendingR, pageUploadedR, pageFailedR, pageDuplicateR] = await Promise.all([
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
+    ]);
+    counts.pages = { pending: pagePendingR.count || 0, uploaded: pageUploadedR.count || 0, failed: pageFailedR.count || 0, duplicate: pageDuplicateR.count || 0 };
 
     setStatusCounts(counts);
     return counts;
@@ -661,8 +676,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       }
 
       const entityLabel = ENTITY_CONFIG.find(e => e.type === entityType)?.label || entityType;
+      const dupText = data.markedDuplicate > 0 ? `, ${data.markedDuplicate} duplikater markeret` : '';
       toast.success(`${entityLabel} synkroniseret`, {
-        description: `${data.matched} matchet, ${data.alreadyUploaded} allerede uploadet, ${data.notFound} ikke fundet i Shopify`,
+        description: `${data.matched} matchet, ${data.alreadyUploaded} allerede uploadet${dupText}, ${data.notFound} ikke fundet i Shopify`,
         duration: 8000,
       });
 
@@ -750,7 +766,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     let count = 0;
     
     if (scope === 'all') {
-      count = counts.pending + counts.uploaded + counts.failed;
+      count = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
     } else if (scope === 'failed') {
       count = counts.failed;
     } else if (scope === 'uploaded') {
@@ -822,7 +838,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   
   // Calculate totals from statusCounts (the source of truth from database) - EARLY for allCompleted
   const fixedTotalItems = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed, 
+    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed + counts.duplicate, 
     0
   );
   const fixedTotalUploaded = Object.values(statusCounts).reduce(
@@ -1276,14 +1292,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             const counts = statusCounts[type];
             
             // Database counts are the SOURCE OF TRUTH for progress
-            const totalFromDb = counts.pending + counts.uploaded + counts.failed;
+            const totalFromDb = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
             const skipped = job?.skipped_count || 0;
             const errors = counts.failed; // Use DB failed count, not job error_count
             
             // CRITICAL: Progress is based on database state
-            // - Processed = uploaded + failed (items no longer pending)
+            // - Processed = uploaded + failed + duplicate (items no longer pending)
             // - Total = all items in database + skipped (for percentage calculation)
-            const processedFromDb = counts.uploaded + counts.failed;
+            const processedFromDb = counts.uploaded + counts.failed + counts.duplicate;
             const total = totalFromDb + skipped;
             const processedActual = processedFromDb + skipped;
             
@@ -1341,9 +1357,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
                               {counts.uploaded > 0 && ` (${counts.uploaded.toLocaleString('da-DK')} ny`}
+                              {counts.duplicate > 0 && `, ${counts.duplicate.toLocaleString('da-DK')} duplikater`}
                               {skipped > 0 && `, ${skipped.toLocaleString('da-DK')} eksisterende`}
                               {counts.failed > 0 && `, ${counts.failed.toLocaleString('da-DK')} fejlet`}
-                              {(counts.uploaded > 0 || skipped > 0 || counts.failed > 0) && ')'}
+                              {(counts.uploaded > 0 || counts.duplicate > 0 || skipped > 0 || counts.failed > 0) && ')'}
                             </span>
                           ) : (
                             <span>
@@ -1387,6 +1404,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                 }
                                 return null;
                               })()}
+                              {counts.duplicate > 0 && <span className="text-amber-600 mr-2">{counts.duplicate.toLocaleString('da-DK')} duplikater</span>}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
                               {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
@@ -1555,17 +1573,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       { 
                         value: counts.uploaded, 
                         className: "bg-green-500",
-                        label: `${counts.uploaded} uploadet` 
+                        label: `${counts.uploaded.toLocaleString('da-DK')} uploadet` 
+                      },
+                      { 
+                        value: counts.duplicate, 
+                        className: "bg-amber-400",
+                        label: `${counts.duplicate.toLocaleString('da-DK')} duplikater` 
                       },
                       { 
                         value: skipped, 
-                        className: "bg-amber-400",
+                        className: "bg-yellow-300",
                         label: `${skipped} sprunget over (allerede i Shopify)` 
                       },
                       { 
                         value: counts.failed, 
                         className: "bg-destructive",
-                        label: `${counts.failed} fejlet` 
+                        label: `${counts.failed.toLocaleString('da-DK')} fejlet` 
                       },
                     ]}
                   />
