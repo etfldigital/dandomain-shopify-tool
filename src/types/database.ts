@@ -108,6 +108,9 @@ export interface ProductData {
   meta_description?: string;
   // DanDomain source path for redirects
   source_path?: string | null;
+  // DanDomain period pricing (Periodestyring)
+  period_id?: string;
+  special_offer_price?: number | null;
 }
 
 export interface CanonicalCustomer {

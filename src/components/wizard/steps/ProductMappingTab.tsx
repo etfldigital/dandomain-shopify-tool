@@ -39,6 +39,8 @@ interface MappingRules {
   vendorExtractionMode: VendorExtractionMode;
   // Barcode inheritance: apply primary product barcode to variants missing one
   inheritProductBarcode: boolean;
+  // Period pricing (Periodestyring): apply period prices as sale prices
+  applyPeriodPricing: boolean;
 }
 
 // Known compound product types (two words) for vendor extraction
@@ -220,6 +222,7 @@ const defaultMappingRules: MappingRules = {
   excludeNoImages: false,
   vendorExtractionMode: 'none',
   inheritProductBarcode: false,
+  applyPeriodPricing: false,
 };
 
 /**
@@ -327,6 +330,15 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   // DanDomain base URL for resolving relative image paths
   const [danDomainBaseUrl, setDanDomainBaseUrl] = useState<string | null>(null);
 
+  // Period pricing (Periodestyring) state
+  const [periodData, setPeriodData] = useState<{
+    periods: { periodId: string; productCount: number; startDate: string | null; endDate: string | null; isActive: boolean }[];
+    totalProducts: number;
+    totalWithPeriod: number;
+  } | null>(null);
+  const [loadingPeriods, setLoadingPeriods] = useState(false);
+  const [periodError, setPeriodError] = useState<string | null>(null);
+
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
     ...BASE_SHOPIFY_FIELDS,
@@ -378,6 +390,32 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       fetchShopifyMetafields(true); // silent mode
     }
   }, [projectId, metafieldsLoaded]);
+
+  // Auto-fetch period data on mount
+  const fetchPeriodData = async () => {
+    setLoadingPeriods(true);
+    setPeriodError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke('fetch-dandomain-periods', {
+        body: { projectId },
+      });
+      if (error) throw error;
+      if (data) {
+        setPeriodData(data);
+      }
+    } catch (e: any) {
+      console.error('Error fetching period data:', e);
+      setPeriodError('Kunne ikke hente periodestyring data');
+    } finally {
+      setLoadingPeriods(false);
+    }
+  };
+
+  useEffect(() => {
+    if (projectId) {
+      fetchPeriodData();
+    }
+  }, [projectId]);
 
   useEffect(() => {
     if (productIds.length > 0) {
@@ -1229,6 +1267,95 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     checked={mappingRules.inheritProductBarcode}
                     onCheckedChange={(checked) => {
                       const newRules = { ...mappingRules, inheritProductBarcode: checked };
+                      setMappingRules(newRules);
+                      saveTransformationRules(newRules);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Periodestyring (Period Pricing) */}
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">Periodestyring</Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    DanDomain periodebaserede priser – anvend udsalgspriser fra aktive perioder
+                  </p>
+                </div>
+
+                {/* Period overview */}
+                {loadingPeriods ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Henter periodestyring data...
+                  </div>
+                ) : periodError ? (
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+                    <AlertTriangle className="w-4 h-4" />
+                    {periodError}
+                  </div>
+                ) : periodData && periodData.periods.length > 0 ? (
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Periode</TableHead>
+                          <TableHead className="text-right">Produkter</TableHead>
+                          <TableHead>Datointerval</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {periodData.periods.map((period) => (
+                          <TableRow key={period.periodId}>
+                            <TableCell className="font-medium font-mono text-sm">
+                              {period.periodId}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Badge variant="secondary">{period.productCount}</Badge>
+                            </TableCell>
+                            <TableCell className="text-sm text-muted-foreground">
+                              {period.startDate && period.endDate
+                                ? `${new Date(period.startDate).toLocaleDateString('da-DK')} → ${new Date(period.endDate).toLocaleDateString('da-DK')}`
+                                : 'Ukendt'}
+                            </TableCell>
+                            <TableCell>
+                              {period.isActive ? (
+                                <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300">
+                                  Aktiv
+                                </Badge>
+                              ) : (
+                                <Badge variant="secondary">Inaktiv</Badge>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    <div className="px-4 py-2 bg-muted/30 text-xs text-muted-foreground border-t">
+                      {periodData.totalWithPeriod} af {periodData.totalProducts} produkter har en tildelt periode
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground p-3 bg-muted/30 rounded-lg">
+                    Ingen produkter med periodestyring fundet
+                  </div>
+                )}
+
+                {/* Toggle */}
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Anvend periodestyringspris ved migrering (udsalgspris)</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Produkter med aktiv periode: periodepris → Shopify pris, basispris → sammenlign ved pris (overstreget)
+                    </p>
+                  </div>
+                  <Switch
+                    checked={mappingRules.applyPeriodPricing}
+                    onCheckedChange={(checked) => {
+                      const newRules = { ...mappingRules, applyPeriodPricing: checked };
                       setMappingRules(newRules);
                       saveTransformationRules(newRules);
                     }}

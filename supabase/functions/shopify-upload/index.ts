@@ -223,6 +223,7 @@ type ProductTransformationRules = {
   vendorExtractionMode: VendorExtractionMode;
   useSpecialOfferPrice: boolean;
   inheritProductBarcode: boolean;
+  applyPeriodPricing: boolean;
 };
 
 const defaultProductTransformationRules: ProductTransformationRules = {
@@ -231,6 +232,7 @@ const defaultProductTransformationRules: ProductTransformationRules = {
   vendorExtractionMode: 'none',
   useSpecialOfferPrice: false,
   inheritProductBarcode: false,
+  applyPeriodPricing: false,
 };
 
 async function loadProductTransformationRules(supabase: any, projectId: string): Promise<ProductTransformationRules> {
@@ -269,7 +271,12 @@ async function loadProductTransformationRules(supabase: any, projectId: string):
         ? rules.inheritProductBarcode
         : defaultProductTransformationRules.inheritProductBarcode;
 
-    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode, useSpecialOfferPrice, inheritProductBarcode };
+    const applyPeriodPricing =
+      typeof rules?.applyPeriodPricing === 'boolean'
+        ? rules.applyPeriodPricing
+        : defaultProductTransformationRules.applyPeriodPricing;
+
+    return { stripVendorFromTitle, vendorSeparator, vendorExtractionMode, useSpecialOfferPrice, inheritProductBarcode, applyPeriodPricing };
   } catch (e) {
     console.warn('[PRODUCTS] Failed to load transformation rules, using defaults:', e);
     return defaultProductTransformationRules;
@@ -790,11 +797,24 @@ async function processProductGroup(
       const dedupeKey = option1 ?? `__no_option_${sku}`;
       if (variantByOption.has(dedupeKey)) continue;
 
+      // Apply period pricing if enabled and primary product has a period_id
+      const hasPeriodPricing = rules.applyPeriodPricing && primaryData.period_id && primaryData.special_offer_price && parseFloat(String(primaryData.special_offer_price)) > 0;
+
+      let mvPrice = String(mv?.price ?? '0');
+      let mvCompareAtPrice = mv?.compareAtPrice ? String(mv.compareAtPrice) : null;
+
+      if (hasPeriodPricing) {
+        // Period pricing: use special_offer_price as sale price, base price as compare_at_price
+        const basePrice = parseFloat(String(mv?.price ?? primaryData.price ?? '0'));
+        mvPrice = String(primaryData.special_offer_price);
+        mvCompareAtPrice = String(basePrice);
+      }
+
       const v: VariantCandidate = {
         option1,
         sku,
-        price: String(mv?.price ?? '0'),
-        compare_at_price: mv?.compareAtPrice ? String(mv.compareAtPrice) : null,
+        price: mvPrice,
+        compare_at_price: mvCompareAtPrice,
         inventory_quantity: parseInt(String(mv?.stockQuantity ?? 0), 10),
         weight: mv?.weight ? parseFloat(String(mv.weight)) : 0,
         noVariantOption: hasNoVariantOption,
@@ -814,19 +834,33 @@ async function processProductGroup(
 
       if (variantByOption.has(option1)) continue;
 
+      // Determine if period pricing applies to this item
+      const hasPeriodPricing = rules.applyPeriodPricing && itemData.period_id && itemData.special_offer_price && parseFloat(String(itemData.special_offer_price)) > 0;
+
+      let variantPrice: string;
+      let variantCompareAtPrice: string | null;
+
+      if (hasPeriodPricing) {
+        // Period pricing: special_offer_price = sale price (Shopify price), base price = compare_at_price (strikethrough)
+        variantPrice = String(itemData.special_offer_price);
+        variantCompareAtPrice = String(itemData.price || '0');
+      } else if (rules.useSpecialOfferPrice) {
+        variantPrice = String(itemData.special_offer_price || itemData.price || '0');
+        variantCompareAtPrice = itemData.special_offer_price ? String(itemData.compare_at_price || itemData.price || '0') : null;
+      } else {
+        variantPrice = String(
+          itemData.compare_at_price && parseFloat(String(itemData.compare_at_price)) > parseFloat(String(itemData.price || '0'))
+            ? itemData.compare_at_price
+            : itemData.price || '0'
+        );
+        variantCompareAtPrice = null;
+      }
+
       const v: VariantCandidate = {
         option1,
         sku,
-        price: rules.useSpecialOfferPrice
-          ? String(itemData.special_offer_price || itemData.price || '0')
-          : String(
-              itemData.compare_at_price && parseFloat(String(itemData.compare_at_price)) > parseFloat(String(itemData.price || '0'))
-                ? itemData.compare_at_price
-                : itemData.price || '0'
-            ),
-        compare_at_price: rules.useSpecialOfferPrice
-          ? (itemData.special_offer_price ? String(itemData.compare_at_price || itemData.price || '0') : null)
-          : null,
+        price: variantPrice,
+        compare_at_price: variantCompareAtPrice,
         inventory_quantity: parseInt(String(itemData.stock_quantity || 0), 10),
         weight: itemData.weight ? parseFloat(String(itemData.weight)) : 0,
       };
