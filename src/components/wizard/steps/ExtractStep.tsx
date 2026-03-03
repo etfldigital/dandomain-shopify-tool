@@ -783,7 +783,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       />
 
       <div className="grid gap-4">
-        {(['products', 'categories', 'customers', 'orders', 'periods'] as UploadEntityType[]).map((entityType) => {
+        {(['products', 'categories', 'customers', 'orders', 'periods', 'manufacturers'] as UploadEntityType[]).map((entityType) => {
           const config = ENTITY_CONFIG[entityType];
           const Icon = config.icon;
           const uploadedFile = uploadedFiles.find(f => f.type === entityType);
