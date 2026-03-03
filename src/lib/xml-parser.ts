@@ -50,6 +50,19 @@ function getElementText(element: Element, tagName: string): string {
 }
 
 /**
+ * Sanitize XML text by removing invalid XML character references (e.g. &#8;)
+ * XML 1.0 only allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]
+ */
+function sanitizeXml(xml: string): string {
+  return xml.replace(/&#(?:(\d+)|x([0-9a-fA-F]+));/g, (match, dec, hex) => {
+    const code = dec ? parseInt(dec, 10) : parseInt(hex!, 16);
+    if (code === 0x9 || code === 0xA || code === 0xD) return match;
+    if (code >= 0x20) return match;
+    return '';
+  });
+}
+
+/**
  * Get all elements with a specific tag name as an array
  */
 function getAllElements(element: Element, tagName: string): Element[] {
@@ -62,7 +75,7 @@ function getAllElements(element: Element, tagName: string): Element[] {
  */
 export function parseProductsXML(xmlText: string): ProductData[] {
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
   // Check for parse errors
   const parseError = doc.querySelector('parsererror');
@@ -239,7 +252,7 @@ export interface CategoryData {
  */
 export function parseCategoriesXML(xmlText: string): CategoryData[] {
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
@@ -292,7 +305,7 @@ export function parseCategoriesXML(xmlText: string): CategoryData[] {
  */
 export function parseOrdersXML(xmlText: string): (OrderData & { external_id: string })[] {
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
@@ -447,7 +460,7 @@ export function parseOrdersXML(xmlText: string): (OrderData & { external_id: str
  */
 export function parseCustomersFromOrdersXML(xmlText: string): (CustomerData & { external_id: string })[] {
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
@@ -523,7 +536,7 @@ export function parseCustomersXML(xmlText: string): (CustomerData & { external_i
   
   // Otherwise try to parse as customer export
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
