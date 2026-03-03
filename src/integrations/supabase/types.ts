@@ -390,6 +390,50 @@ export type Database = {
           },
         ]
       }
+      price_periods: {
+        Row: {
+          created_at: string
+          disabled: boolean
+          end_date: string | null
+          id: string
+          period_id: string
+          project_id: string
+          start_date: string | null
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          disabled?: boolean
+          end_date?: string | null
+          id?: string
+          period_id: string
+          project_id: string
+          start_date?: string | null
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          disabled?: boolean
+          end_date?: string | null
+          id?: string
+          period_id?: string
+          project_id?: string
+          start_date?: string | null
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "price_periods_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           created_at: string

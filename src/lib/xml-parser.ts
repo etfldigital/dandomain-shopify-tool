@@ -242,6 +242,74 @@ export function parseProductsXML(xmlText: string): ProductData[] {
 }
 
 /**
+ * Period data interface for XML parsing (Periodestyring)
+ */
+export interface PeriodData {
+  period_id: string;
+  title: string | null;
+  start_date: string | null; // ISO date string (YYYY-MM-DD)
+  end_date: string | null;   // ISO date string (YYYY-MM-DD)
+  disabled: boolean;
+}
+
+/**
+ * Parse periods XML from DanDomain (Periodestyring)
+ * Structure: PERIOD_EXPORT > ELEMENTS > PERIOD (or similar)
+ * Fields: ID, TITLE, START_DATE (dd-mm-yyyy), END_DATE (dd-mm-yyyy), DISABLED
+ */
+export function parsePeriodsXML(xmlText: string): PeriodData[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
+  
+  const parseError = doc.querySelector('parsererror');
+  if (parseError) {
+    console.error('XML parse error:', parseError.textContent);
+    return [];
+  }
+  
+  // Try different possible root element names
+  let periods = getAllElements(doc.documentElement, 'PERIOD');
+  if (periods.length === 0) {
+    periods = getAllElements(doc.documentElement, 'ROW');
+  }
+  if (periods.length === 0) {
+    // Fallback: try direct children of ELEMENTS
+    const elements = doc.documentElement.getElementsByTagName('ELEMENTS')[0];
+    if (elements) {
+      periods = Array.from(elements.children);
+    }
+  }
+  
+  console.log(`Parsing ${periods.length} periods from XML`);
+  
+  return periods
+    .map(period => {
+      const periodId = getElementText(period, 'ID');
+      const title = getElementText(period, 'TITLE') || null;
+      const startDateStr = getElementText(period, 'START_DATE');
+      const endDateStr = getElementText(period, 'END_DATE');
+      const disabled = parseBoolean(getElementText(period, 'DISABLED'));
+      
+      // Parse dd-mm-yyyy to YYYY-MM-DD
+      const parseShortDate = (s: string): string | null => {
+        if (!s) return null;
+        const match = s.match(/(\d{2})-(\d{2})-(\d{4})/);
+        if (!match) return null;
+        return `${match[3]}-${match[2]}-${match[1]}`;
+      };
+      
+      return {
+        period_id: periodId,
+        title,
+        start_date: parseShortDate(startDateStr),
+        end_date: parseShortDate(endDateStr),
+        disabled,
+      };
+    })
+    .filter(p => p.period_id);
+}
+
+/**
  * Category data interface for XML parsing
  */
 export interface CategoryData {
