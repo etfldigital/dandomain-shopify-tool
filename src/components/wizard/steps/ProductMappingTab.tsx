@@ -1128,6 +1128,24 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     );
   }
 
+  const pricingPreview = product ? (() => {
+    const normalizePreviewPrice = (price: number, compareAtPrice: number | null) => {
+      if (compareAtPrice !== null && compareAtPrice < price) {
+        return { price: compareAtPrice, compareAtPrice: price };
+      }
+      return { price, compareAtPrice };
+    };
+
+    if (product.hasVariants && product.variants.length > 0) {
+      const cheapestVariant = product.variants.reduce((lowest, variant) =>
+        variant.price < lowest.price ? variant : lowest
+      );
+      return normalizePreviewPrice(cheapestVariant.price, cheapestVariant.compareAtPrice);
+    }
+
+    return normalizePreviewPrice(product.transformed.price, product.transformed.compare_at_price);
+  })() : null;
+
   return (
     <div className="space-y-6">
       {/* Inner Tabs for Transformation, Mapping, Preview */}
@@ -1985,16 +2003,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                         <div className="flex items-center gap-4">
                           <div>
                             <Input 
-                              value={product.transformed.price.toFixed(2)} 
+                              value={pricingPreview ? pricingPreview.price.toFixed(2) : '0.00'} 
                               readOnly 
                               className="w-32 bg-background"
                             />
                           </div>
                           <span className="text-muted-foreground">kr.</span>
-                          {product.transformed.compare_at_price && (
+                          {pricingPreview && pricingPreview.compareAtPrice !== null && (
                             <div className="text-muted-foreground">
                               <span className="text-xs">Før: </span>
-                              <span className="line-through">{product.transformed.compare_at_price.toFixed(2)} kr.</span>
+                              <span className="line-through">{pricingPreview.compareAtPrice.toFixed(2)} kr.</span>
                             </div>
                           )}
                         </div>
