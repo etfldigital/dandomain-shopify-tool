@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,16 +30,30 @@ export function ConnectShopifyStep({ project, onUpdateProject, onNext }: Connect
     setErrorMessage('');
 
     try {
-      // For MVP, we'll just save the credentials
-      // In production, this would call an edge function to test the Shopify API
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
+      const { data, error } = await supabase.functions.invoke('test-shopify-connection', {
+        body: { storeDomain, accessToken },
+      });
+
+      if (error) {
+        setTestResult('error');
+        setErrorMessage('Kunne ikke kontakte serveren. Prøv igen.');
+        return;
+      }
+
+      if (!data.success) {
+        setTestResult('error');
+        setErrorMessage(data.error || 'Ukendt fejl ved forbindelse til Shopify.');
+        return;
+      }
+
+      // Connection valid — save credentials
       await onUpdateProject({
         shopify_store_domain: storeDomain,
-        shopify_access_token_encrypted: accessToken, // In production, encrypt this
+        shopify_access_token_encrypted: accessToken,
       });
-      
+
       setTestResult('success');
+      toast.success(`Forbundet til ${data.shopName || 'Shopify'}!`);
     } catch (error) {
       setTestResult('error');
       setErrorMessage('Kunne ikke oprette forbindelse til Shopify.');
