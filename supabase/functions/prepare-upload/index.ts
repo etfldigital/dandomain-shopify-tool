@@ -85,6 +85,10 @@ function isValidSizeVariant(option: string): boolean {
     if (numMatch[1].length >= 4) {
       return false;
     }
+    // Leading-zero 2-digit numbers (01-09) are product codes, not sizes
+    if (numMatch[1].length === 2 && numMatch[1].startsWith('0')) {
+      return false;
+    }
     return isValidNumericSize(num);
   }
   return false;
