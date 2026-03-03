@@ -1146,9 +1146,13 @@ async function processProductGroup(
     const IMAGE_CONCURRENCY = 3;
     const imageLimit = createConcurrencyLimiter(IMAGE_CONCURRENCY);
 
-    const imagePromises = allImages.map((imageUrl) =>
+    const imagePromises = allImages.map((imageUrl, imgIndex) =>
       imageLimit(async () => {
         const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
+        // Explicitly set position to preserve DanDomain image order.
+        // position 1 = main image in Shopify. This guarantees correct order
+        // even when images are uploaded concurrently (max 3 at a time).
+        const imagePosition = imgIndex + 1;
 
         try {
           const srcUploadResult = await shopifyFetch(
@@ -1156,7 +1160,7 @@ async function processProductGroup(
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-              body: JSON.stringify({ image: { src: normalizedUrl } }),
+              body: JSON.stringify({ image: { src: normalizedUrl, position: imagePosition } }),
             }
           );
 
@@ -1178,7 +1182,8 @@ async function processProductGroup(
             shopifyId,
             token,
             normalizedUrl,
-            dandomainBaseUrl
+            dandomainBaseUrl,
+            imagePosition
           );
 
           if (attachmentFallback.rateLimited) {
@@ -1383,7 +1388,8 @@ async function uploadProductImageAsAttachment(
   shopifyId: string,
   token: string,
   normalizedUrl: string,
-  dandomainBaseUrl: string
+  dandomainBaseUrl: string,
+  position?: number
 ): Promise<{ uploaded: boolean; rateLimited?: true; retryAfterMs?: number; error?: string }> {
   const sourceHeaders: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -1437,7 +1443,7 @@ async function uploadProductImageAsAttachment(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-      body: JSON.stringify({ image: { attachment: attachmentPayload, filename } }),
+      body: JSON.stringify({ image: { attachment: attachmentPayload, filename, ...(position ? { position } : {}) } }),
     }
   );
 
