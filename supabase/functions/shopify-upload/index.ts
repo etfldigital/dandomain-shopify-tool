@@ -904,23 +904,22 @@ async function processProductGroup(
     if (existingInGroup && existingInGroup.length > 0 && existingInGroup[0].shopify_id) {
       const existingShopifyId = existingInGroup[0].shopify_id;
       console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
-        
-        // Release lock and mark as uploaded
-        await supabase
-          .from('canonical_products')
-          .update({ 
-            status: 'uploaded', 
-            shopify_id: existingShopifyId, 
-            error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
-            upload_lock_id: null,
-            upload_locked_at: null,
-            upload_locked_until: null,
-            updated_at: new Date().toISOString() 
-          })
-          .eq('id', primaryItem.id);
-        
-        return { skipped: true };
-      }
+      
+      // Release lock and mark as uploaded
+      await supabase
+        .from('canonical_products')
+        .update({ 
+          status: 'uploaded', 
+          shopify_id: existingShopifyId, 
+          error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
+          upload_lock_id: null,
+          upload_locked_at: null,
+          upload_locked_until: null,
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', primaryItem.id);
+      
+      return { skipped: true };
     }
   }
   
