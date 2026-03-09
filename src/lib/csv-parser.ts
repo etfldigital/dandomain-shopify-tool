@@ -287,7 +287,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       const hasSku = product.sku && product.sku.trim() !== '';
 
       if (!hasTitle && !hasSku) {
-        console.log('Skipping empty product row - no title or SKU');
+        
         return false;
       }
 
