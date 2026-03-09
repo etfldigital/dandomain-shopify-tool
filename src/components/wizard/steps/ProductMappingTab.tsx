@@ -712,7 +712,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
     } catch (error) {
-      console.error('Error loading field mappings:', error);
+      
     }
   };
 
