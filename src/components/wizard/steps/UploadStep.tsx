@@ -261,7 +261,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     let anyFailed = false;
 
     // Helper: fetch count for a single entity+status, with timeout protection
-    const safeCount = async (table: string, status: string): Promise<number> => {
+    const safeCount = async (table: 'canonical_customers' | 'canonical_orders' | 'canonical_categories' | 'canonical_pages', status: string): Promise<number> => {
       try {
         const { count, error } = await supabase
           .from(table)
