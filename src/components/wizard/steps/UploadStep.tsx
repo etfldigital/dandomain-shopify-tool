@@ -1548,8 +1548,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </div>
                     <div>
                       <span className="font-medium">{label}</span>
-                      {/* Clean summary showing processed breakdown */}
-                      {(totalFromDb > 0 || dbTimedOut) && (
+                      {/* Always show entity status - even when counts are 0 */}
+                      {(() => {
+                        return (
                         <div className="text-xs text-muted-foreground">
                           {/* Show raw vs grouped count for products */}
                           {type === 'products' && rawEntityCounts.products > 0 && rawEntityCounts.products !== total && (
@@ -1619,7 +1620,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             </span>
                           )}
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Live progress during uploads */}
                       {isUploading && job?.status === 'running' && (
