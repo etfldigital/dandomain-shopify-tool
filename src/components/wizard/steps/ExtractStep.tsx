@@ -501,7 +501,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'manufacturers':
             const mfrParsed = parseManufacturersXML(text);
-            console.log('Parsed manufacturers:', mfrParsed.length);
+            
             recordCount = mfrParsed.length;
 
             // Replace entire manufacturer mapping for the project to avoid stale/wrong keys
