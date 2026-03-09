@@ -214,6 +214,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Shopify live counts (actual product count from Shopify API)
   const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
+  // Per-entity loading state for the refresh button spinner
+  const [entityLoading, setEntityLoading] = useState<Record<string, boolean>>({});
 
   // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
   // This lets us show "1536 rækker → 1137 Shopify-produkter"
