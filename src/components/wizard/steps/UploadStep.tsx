@@ -1826,20 +1826,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     )}
                   </div>
                 </div>
-                {(isUploading || job || totalFromDb > 0) && (
+                {(isUploading || job || totalFromDb > 0 || dbTimedOut) && (
                   <MultiProgress 
                     className="h-2"
                     total={total}
                     segments={[
                       { 
-                        value: counts.uploaded, 
+                        value: effectiveUploaded, 
                         className: "bg-green-500",
-                        label: `${counts.uploaded.toLocaleString('da-DK')} uploadet` 
+                        label: `${effectiveUploaded.toLocaleString('da-DK')} uploadet` 
                       },
                       { 
-                        value: counts.duplicate, 
+                        value: effectiveDuplicate, 
                         className: "bg-amber-400",
-                        label: `${counts.duplicate.toLocaleString('da-DK')} duplikater` 
+                        label: `${effectiveDuplicate.toLocaleString('da-DK')} duplikater` 
                       },
                       { 
                         value: skipped, 
@@ -1847,9 +1847,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         label: `${skipped} sprunget over (allerede i Shopify)` 
                       },
                       { 
-                        value: counts.failed, 
+                        value: effectiveFailed, 
                         className: "bg-destructive",
-                        label: `${counts.failed.toLocaleString('da-DK')} fejlet` 
+                        label: `${effectiveFailed.toLocaleString('da-DK')} fejlet` 
                       },
                     ]}
                   />
