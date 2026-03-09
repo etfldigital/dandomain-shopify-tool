@@ -415,7 +415,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         }));
       }
     } catch (e) {
-      console.warn(`[UploadStep] Failed to fetch Shopify live count for ${entityType}:`, e);
+      
       setShopifyLiveCounts(prev => ({
         ...prev,
         [entityType]: null,
