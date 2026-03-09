@@ -705,7 +705,8 @@ function groupProductsByTitle(products: any[]): Map<string, any[]> {
   for (const product of products) {
     const data = product.data || {};
     const title = String(data._groupTitle || data.title || '').trim();
-    const vendor = resolveVendorName(String(data.vendor || '').trim(), title);
+    const originalTitle = String(data.title || '').trim();
+    const vendor = resolveVendorName(String(data.vendor || '').trim(), originalTitle, title);
 
     const preKey = String(data._groupKey || '').trim();
     if (preKey) {
