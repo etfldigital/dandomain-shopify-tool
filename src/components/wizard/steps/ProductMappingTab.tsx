@@ -500,7 +500,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     if (productIds.length > 0) {
       loadProduct(productIds[currentIndex].id);
     }
-  }, [currentIndex, productIds, mappingRules]);
+  }, [currentIndex, productIds, mappingRules, manufacturerNameMap]);
 
   const loadData = async () => {
     setLoading(true);
