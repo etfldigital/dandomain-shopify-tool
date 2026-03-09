@@ -1543,6 +1543,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       {/* Clean summary showing processed breakdown */}
                       {(totalFromDb > 0 || dbTimedOut) && (
                         <div className="text-xs text-muted-foreground">
+                          {/* Show raw vs grouped count for products */}
+                          {type === 'products' && rawEntityCounts.products > 0 && rawEntityCounts.products !== total && (
+                            <span className="block text-muted-foreground/70 mb-0.5">
+                              {rawEntityCounts.products.toLocaleString('da-DK')} rækker i DB → {total.toLocaleString('da-DK')} Shopify-produkter (varianter sammenlagt)
+                            </span>
+                          )}
                           {isComplete ? (
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
