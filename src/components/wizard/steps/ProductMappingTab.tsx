@@ -341,6 +341,47 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const [periodError, setPeriodError] = useState<string | null>(null);
   const [manufacturerNameMap, setManufacturerNameMap] = useState<Map<string, string>>(new Map());
 
+  const normalizeManufacturerKey = (value: string): string =>
+    value.trim().replace(/\s+/g, ' ').toLowerCase();
+
+  const resolveVendorName = (rawVendor: unknown): string => {
+    const manufacturerId = String(rawVendor ?? '').trim();
+    const normalizedId = normalizeManufacturerKey(manufacturerId);
+    if (!manufacturerId) return '';
+
+    const directMatch =
+      manufacturerNameMap.get(manufacturerId) ??
+      manufacturerNameMap.get(normalizedId);
+
+    if (directMatch) return directMatch;
+
+    const candidateNames = Array.from(new Set(manufacturerNameMap.values()));
+
+    // Fallback 1: If ID is a prefix of exactly one manufacturer name, use that
+    const prefixMatches = candidateNames.filter((name) => {
+      const normalizedName = normalizeManufacturerKey(name);
+      return normalizedName === normalizedId || normalizedName.startsWith(`${normalizedId} `);
+    });
+
+    if (prefixMatches.length === 1) return prefixMatches[0];
+
+    // Fallback 2: Abbreviation -> initials (e.g. SA -> Stine A)
+    if (normalizedId.length <= 5 && /^[a-z0-9]+$/i.test(normalizedId)) {
+      const initialMatches = candidateNames.filter((name) => {
+        const initials = normalizeManufacturerKey(name)
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0])
+          .join('');
+        return initials === normalizedId;
+      });
+
+      if (initialMatches.length === 1) return initialMatches[0];
+    }
+
+    return manufacturerId;
+  };
+
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
     ...BASE_SHOPIFY_FIELDS,
@@ -350,12 +391,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       isMetafield: true,
     })),
   ];
-
-  const resolveVendorName = (rawVendor: unknown): string => {
-    const manufacturerId = String(rawVendor ?? '').trim();
-    if (!manufacturerId) return '';
-    return manufacturerNameMap.get(manufacturerId) ?? manufacturerId;
-  };
 
   const findNewMetafields = (mappings: FieldMapping[]) => {
     const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
@@ -527,10 +562,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     } else {
       const nextMap = new Map<string, string>();
       for (const manufacturer of manufacturers || []) {
-        const id = String(manufacturer.external_id || '').trim();
-        const name = String(manufacturer.name || '').trim();
+        const id = String(manufacturer.external_id || '').trim().replace(/\s+/g, ' ');
+        const name = String(manufacturer.name || '').trim().replace(/\s+/g, ' ');
         if (id && name) {
           nextMap.set(id, name);
+          nextMap.set(normalizeManufacturerKey(id), name);
         }
       }
       setManufacturerNameMap(nextMap);
