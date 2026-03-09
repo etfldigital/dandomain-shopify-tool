@@ -471,26 +471,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Fetch raw entity counts (total rows in DB, unfiltered) for transparency
   const fetchRawEntityCounts = async () => {
-    const tables: { type: EntityType; table: string }[] = [
-      { type: 'products', table: 'canonical_products' },
-      { type: 'customers', table: 'canonical_customers' },
-      { type: 'orders', table: 'canonical_orders' },
-      { type: 'categories', table: 'canonical_categories' },
-      { type: 'pages', table: 'canonical_pages' },
-    ];
-    const results = await Promise.all(
-      tables.map(({ table }) =>
-        supabase
-          .from(table)
-          .select('*', { count: 'exact', head: true })
-          .eq('project_id', project.id)
-      )
-    );
-    const counts: Record<EntityType, number> = { products: 0, customers: 0, orders: 0, categories: 0, pages: 0 };
-    tables.forEach(({ type }, i) => {
-      counts[type] = results[i].count || 0;
+    const [prodR, custR, ordR, catR, pageR] = await Promise.all([
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+    ]);
+    setRawEntityCounts({
+      products: prodR.count || 0,
+      customers: custR.count || 0,
+      orders: ordR.count || 0,
+      categories: catR.count || 0,
+      pages: pageR.count || 0,
     });
-    setRawEntityCounts(counts);
   };
 
   useEffect(() => {
