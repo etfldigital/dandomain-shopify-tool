@@ -1617,15 +1617,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         </div>
                       )}
 
-                      {/* Extra clarity during uploads: DB-confirmed vs worker progress */}
+                      {/* Live progress during uploads */}
                       {isUploading && job?.status === 'running' && (
                         <div className="mt-1 text-[11px] text-muted-foreground/80">
-                          <span className="tabular-nums">
-                            Server: {job.processed_count.toLocaleString('da-DK')} / {job.total_count.toLocaleString('da-DK')} gennemløbet
-                          </span>
-                          <span className="mx-2">•</span>
-                          <span className="tabular-nums">
-                            Bekræftet: {processedActual.toLocaleString('da-DK')} / {total.toLocaleString('da-DK')}
+                          <span className="tabular-nums font-medium text-primary">
+                            Uploader {displayProcessed.toLocaleString('da-DK')} / {displayTotal.toLocaleString('da-DK')}
                           </span>
                           {isWaiting && (
                             <>
