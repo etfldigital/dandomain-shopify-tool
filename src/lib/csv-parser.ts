@@ -524,11 +524,6 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
   
   // Log available headers for debugging
   if (rows.length > 0) {
-    console.log('Category CSV headers:', Object.keys(rows[0]));
-    console.log('First 3 rows:', rows.slice(0, 3));
-  } else {
-    console.log('No rows parsed from category CSV');
-    console.log('Raw CSV preview (first 500 chars):', csvText.substring(0, 500));
   }
   
   return rows
