@@ -407,7 +407,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           fetchFailed: false,
         }));
       } else {
-        console.warn(`[UploadStep] Shopify fetch failed for ${entityType}:`, response.data?.error || 'unknown');
+        
         setShopifyLiveCounts(prev => ({
           ...prev,
           [entityType]: null,
