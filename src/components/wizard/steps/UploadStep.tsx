@@ -627,7 +627,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         // If the function signals more work to do, keep calling
         if (result.continue) {
           currentOffset = result.progress;
-          console.log(`[Prepare] Progress: ${result.progress}/${result.total}`);
+          
           continue;
         }
 
