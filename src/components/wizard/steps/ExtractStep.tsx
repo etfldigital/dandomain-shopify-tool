@@ -296,7 +296,16 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         
         switch (uploadedFile.type) {
           case 'products':
-            parsedData = parseProductsXML(text);
+            const productStats: ParseStats = {
+              xmlCharLength: 0,
+              totalElementsFound: 0,
+              totalProcessed: 0,
+              skippedNoTitle: 0,
+              skippedNoTitleOrSku: 0,
+              duplicateSkus: 0,
+              uniqueAfterDedup: 0,
+            };
+            parsedData = parseProductsXML(text, productStats);
             
             // Deduplicate by SKU - keep last occurrence
             const productMap = new Map<string, typeof parsedData[0]>();
@@ -306,8 +315,12 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               }
             });
             const uniqueProducts = Array.from(productMap.values());
+            productStats.duplicateSkus = parsedData.length - uniqueProducts.length;
+            productStats.uniqueAfterDedup = uniqueProducts.length;
             productCount = uniqueProducts.length;
             recordCount = uniqueProducts.length;
+            
+            console.log(`[Extract] Product stats:`, productStats);
             
             // Insert into canonical_products in batches
             for (let i = 0; i < uniqueProducts.length; i += 100) {
