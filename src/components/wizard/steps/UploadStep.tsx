@@ -206,6 +206,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
 
+  const [manufacturerLookupStatus, setManufacturerLookupStatus] = useState<ManufacturerLookupStatus>({
+    fileName: null,
+    fileStatus: 'missing',
+    parsedCount: 0,
+    mappingCount: 0,
+  });
+
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
     open: boolean;
