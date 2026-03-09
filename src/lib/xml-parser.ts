@@ -343,28 +343,67 @@ export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
     return [];
   }
 
-  const getDirectChildText = (parent: Element, tagName: string): string => {
-    const child = Array.from(parent.children).find((el) => el.tagName === tagName);
-    return child?.textContent?.trim() || '';
+  const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').trim();
+  const getLocalTagName = (tagName: string): string => tagName.split(':').pop()?.toUpperCase() || tagName.toUpperCase();
+
+  const getFieldValue = (manufacturer: Element, fieldName: string): string => {
+    const expectedTag = fieldName.toUpperCase();
+
+    // Prefer direct children first (correct for normal DanDomain manufacturer exports)
+    const directMatch = Array.from(manufacturer.children).find(
+      (child) => getLocalTagName(child.tagName) === expectedTag
+    );
+    if (directMatch?.textContent) {
+      return normalizeText(directMatch.textContent);
+    }
+
+    // Fallback to any descendant (handles wrapped/namespaced variants)
+    const descendantMatch = Array.from(manufacturer.getElementsByTagName('*')).find(
+      (child) => getLocalTagName(child.tagName) === expectedTag && child.textContent
+    );
+
+    return descendantMatch?.textContent ? normalizeText(descendantMatch.textContent) : '';
   };
 
-  // Build lookup by DIRECT child tags only: MANUFAC_ID -> MANUFAC_NAME
-  // (avoids accidentally picking nested MANUFAC_ID values in child nodes)
-  const manufacturerMap: Record<string, string> = {};
+  const pickPreferredName = (externalId: string, currentName: string, nextName: string): string => {
+    const normalizedId = externalId.toLowerCase();
+    const currentIsId = currentName.toLowerCase() === normalizedId;
+    const nextIsId = nextName.toLowerCase() === normalizedId;
 
-  doc.querySelectorAll('MANUFACTURER').forEach((manufacturer) => {
-    const id = getDirectChildText(manufacturer, 'MANUFAC_ID');
-    const name = getDirectChildText(manufacturer, 'MANUFAC_NAME');
+    if (currentIsId && !nextIsId) return nextName;
+    if (!currentIsId && nextIsId) return currentName;
 
-    if (id && name) {
-      manufacturerMap[id] = name;
+    return nextName.length > currentName.length ? nextName : currentName;
+  };
+
+  let manufacturerNodes = getAllElements(doc.documentElement, 'MANUFACTURER');
+  if (manufacturerNodes.length === 0) {
+    manufacturerNodes = getAllElements(doc.documentElement, 'ROW');
+  }
+
+  const manufacturerMap = new Map<string, ManufacturerData>();
+
+  manufacturerNodes.forEach((manufacturer) => {
+    const externalId = normalizeText(getFieldValue(manufacturer, 'MANUFAC_ID'));
+    const resolvedName = normalizeText(getFieldValue(manufacturer, 'MANUFAC_NAME') || externalId);
+
+    if (!externalId || !resolvedName) return;
+
+    const normalizedKey = externalId.toLowerCase();
+    const existing = manufacturerMap.get(normalizedKey);
+
+    if (!existing) {
+      manufacturerMap.set(normalizedKey, { external_id: externalId, name: resolvedName });
+      return;
     }
+
+    manufacturerMap.set(normalizedKey, {
+      external_id: existing.external_id,
+      name: pickPreferredName(existing.external_id, existing.name, resolvedName),
+    });
   });
 
-  const parsed = Object.entries(manufacturerMap).map(([external_id, name]) => ({
-    external_id,
-    name,
-  }));
+  const parsed = Array.from(manufacturerMap.values());
 
   console.log(`[Manufacturers] Parsed ${parsed.length} MANUFAC_ID -> MANUFAC_NAME mappings`);
   return parsed;
