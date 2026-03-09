@@ -19,16 +19,23 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const authHeader = req.headers.get("Authorization") || "";
-    if (!authHeader.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const { projectId, entityTypes }: Body = await req.json();
     if (!projectId) throw new Error("projectId required");
+
+    const typesToFetch = entityTypes || ["products"];
+
+    const skippedResponse = (reason: string) => {
+      const counts: Record<string, number | null> = {};
+      for (const et of typesToFetch) counts[et] = null;
+      return new Response(JSON.stringify({ success: true, counts, skipped: true, reason }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    };
+
+    const authHeader = req.headers.get("Authorization") || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return skippedResponse("missing_or_invalid_auth_header");
+    }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -50,10 +57,7 @@ Deno.serve(async (req) => {
 
     if (ownershipError) {
       console.error("[shopify-counts] ownership check failed:", ownershipError.message);
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return skippedResponse("auth_validation_failed");
     }
 
     if (!ownedProject) {
