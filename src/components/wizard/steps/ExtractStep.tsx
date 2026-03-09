@@ -639,7 +639,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     }
 
     if (clearError) {
-      console.error('Error clearing data for', entityType, clearError);
+      
       setProcessing(false);
       return;
     }
