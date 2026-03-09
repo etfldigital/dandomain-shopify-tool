@@ -861,14 +861,30 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                     <div>
                       <h4 className="font-medium">{config.label}</h4>
                       {uploadedFile ? (
-                        <p className="text-sm text-muted-foreground">
-                          {uploadedFile.status === 'success' 
-                            ? `${uploadedFile.count?.toLocaleString('da-DK')} rækker importeret`
-                            : uploadedFile.status === 'error'
-                            ? uploadedFile.error
-                            : uploadedFile.file.name || config.acceptedLabel
-                          }
-                        </p>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {uploadedFile.status === 'success' 
+                              ? `${uploadedFile.count?.toLocaleString('da-DK')} rækker importeret`
+                              : uploadedFile.status === 'error'
+                              ? uploadedFile.error
+                              : uploadedFile.file.name || config.acceptedLabel
+                            }
+                          </p>
+                          {uploadedFile.parseStats && uploadedFile.status === 'success' && (
+                            <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                              <p>📄 XML: {uploadedFile.parseStats.xmlCharLength.toLocaleString('da-DK')} tegn</p>
+                              <p>📦 &lt;PRODUCT&gt; elementer i XML: <span className="font-medium text-foreground">{uploadedFile.parseStats.totalElementsFound.toLocaleString('da-DK')}</span></p>
+                              <p>✅ Gyldige produkter (med titel): <span className="font-medium text-foreground">{uploadedFile.parseStats.totalProcessed.toLocaleString('da-DK')}</span></p>
+                              {uploadedFile.parseStats.duplicateSkus > 0 && (
+                                <p>🔄 Varianter (duplikat-SKU, slået sammen): <span className="font-medium text-foreground">{uploadedFile.parseStats.duplicateSkus.toLocaleString('da-DK')}</span></p>
+                              )}
+                              {(uploadedFile.parseStats.skippedNoTitle + uploadedFile.parseStats.skippedNoTitleOrSku) > 0 && (
+                                <p>⚠️ Sprunget over (mangler titel/SKU): <span className="font-medium text-amber-600">{(uploadedFile.parseStats.skippedNoTitle + uploadedFile.parseStats.skippedNoTitleOrSku).toLocaleString('da-DK')}</span></p>
+                              )}
+                              <p>🎯 Unikke produktrækker importeret: <span className="font-medium text-foreground">{uploadedFile.parseStats.uniqueAfterDedup.toLocaleString('da-DK')}</span></p>
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <p className="text-sm text-muted-foreground">{config.acceptedLabel}</p>
                       )}
