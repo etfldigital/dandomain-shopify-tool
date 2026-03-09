@@ -1556,9 +1556,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
                     Henter periodestyring data...
                   </div>
                 ) : periodError ? (
-                  <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-400 text-sm">
                     <AlertTriangle className="w-4 h-4" />
-                    {periodError}
+                    {periodError} — periodestyring springes over, migrering kan fortsætte.
                   </div>
                 ) : periodData && periodData.hasUploadedPeriods && periodData.periods.length > 0 ? (
                   <div className="border rounded-lg overflow-hidden">
