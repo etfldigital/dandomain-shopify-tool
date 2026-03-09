@@ -299,7 +299,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
 
       // Filter out rows with HTML fragments in SKU (corrupted data)
       if (product.sku && (product.sku.includes('<') || product.sku.includes('>'))) {
-        console.warn(`Skipping product with HTML in SKU: "${product.sku.substring(0, 50)}..."`);
+        
         return false;
       }
 
