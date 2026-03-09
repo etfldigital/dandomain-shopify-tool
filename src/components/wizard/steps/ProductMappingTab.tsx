@@ -339,6 +339,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   } | null>(null);
   const [loadingPeriods, setLoadingPeriods] = useState(false);
   const [periodError, setPeriodError] = useState<string | null>(null);
+  const [manufacturerNameMap, setManufacturerNameMap] = useState<Map<string, string>>(new Map());
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
@@ -349,6 +350,12 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       isMetafield: true,
     })),
   ];
+
+  const resolveVendorName = (rawVendor: unknown): string => {
+    const manufacturerId = String(rawVendor ?? '').trim();
+    if (!manufacturerId) return '';
+    return manufacturerNameMap.get(manufacturerId) ?? manufacturerId;
+  };
 
   const findNewMetafields = (mappings: FieldMapping[]) => {
     const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
@@ -493,7 +500,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     if (productIds.length > 0) {
       loadProduct(productIds[currentIndex].id);
     }
-  }, [currentIndex, productIds, mappingRules]);
+  }, [currentIndex, productIds, mappingRules, manufacturerNameMap]);
 
   const loadData = async () => {
     setLoading(true);
@@ -507,6 +514,26 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     
     if (project?.dandomain_base_url) {
       setDanDomainBaseUrl(project.dandomain_base_url);
+    }
+
+    const { data: manufacturers, error: manufacturersError } = await supabase
+      .from('canonical_manufacturers')
+      .select('external_id, name')
+      .eq('project_id', projectId);
+
+    if (manufacturersError) {
+      console.warn('Kunne ikke hente producent-mapping til preview:', manufacturersError);
+      setManufacturerNameMap(new Map());
+    } else {
+      const nextMap = new Map<string, string>();
+      for (const manufacturer of manufacturers || []) {
+        const id = String(manufacturer.external_id || '').trim();
+        const name = String(manufacturer.name || '').trim();
+        if (id && name) {
+          nextMap.set(id, name);
+        }
+      }
+      setManufacturerNameMap(nextMap);
     }
     
     // Load product list
@@ -640,16 +667,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       // Transform title based on rules - fuzzy case-insensitive vendor stripping
       let transformedTitle = data.title || '';
-      let vendor = data.vendor || '';
+      let vendor = resolveVendorName(data.vendor);
       
       // Apply vendor extraction from title if enabled (new rule)
       // MANUFAC_ID (original vendor) takes precedence if filled, otherwise extract from title
       // Also cleans the title by removing vendor + producttype + first comma
       if (mappingRules.vendorExtractionMode === 'extract_from_title') {
-        const originalVendor = data.vendor?.trim() || '';
-        if (originalVendor) {
-          // Use the original MANUFAC_ID value as vendor (convert to Title Case)
-          vendor = toTitleCase(originalVendor);
+        const originalVendorId = String(data.vendor || '').trim();
+        if (originalVendorId) {
+          // Resolve MANUFAC_ID to manufacturer name for preview
+          vendor = resolveVendorName(originalVendorId);
           // Still clean the title by extracting and removing the prefix
           const { cleanedTitle } = extractVendorFromTitle(data.title || '');
           if (cleanedTitle) {
@@ -878,7 +905,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
             transformed.body_html = String(sourceValue);
             break;
           case 'vendor':
-            transformed.vendor = String(sourceValue);
+            transformed.vendor = resolveVendorName(sourceValue);
             break;
           case 'title':
             transformed.title = String(sourceValue);
