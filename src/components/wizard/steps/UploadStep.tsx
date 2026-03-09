@@ -694,7 +694,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (!manufacturerReady) return;
 
     
-    await logVendorResolutionPreview(freshCounts, singleEntityType);
+    
 
     setIsStarting(true);
     try {
