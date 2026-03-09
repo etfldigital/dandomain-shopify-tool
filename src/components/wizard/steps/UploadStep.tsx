@@ -215,6 +215,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
 
+  // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
+  // This lets us show "1536 rækker → 1137 Shopify-produkter"
+  const [rawEntityCounts, setRawEntityCounts] = useState<Record<EntityType, number>>({
+    products: 0, customers: 0, orders: 0, categories: 0, pages: 0,
+  });
+
   const [manufacturerLookupStatus, setManufacturerLookupStatus] = useState<ManufacturerLookupStatus>({
     fileName: null,
     fileStatus: 'missing',
