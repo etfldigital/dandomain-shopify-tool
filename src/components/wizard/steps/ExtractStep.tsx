@@ -789,7 +789,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .eq('project_id', project.id).eq('entity_type', entityType);
 
       setUploadedFiles(prev =>
-        prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined } : f)
+        prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined, parseStats: singleStats } : f)
       );
     } catch (error: any) {
       console.error('Error processing file:', error);
