@@ -16,8 +16,25 @@ export function useProjects() {
         .from('projects')
         .select('*')
         .eq('user_id', user.id)
+        .is('deleted_at', null)
         .order('updated_at', { ascending: false });
 
+      if (error) throw error;
+      return data as Project[];
+    },
+    enabled: !!user,
+  });
+
+  const { data: deletedProjects, isLoading: isLoadingDeleted } = useQuery({
+    queryKey: ['projects-deleted', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('user_id', user.id)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false });
       if (error) throw error;
       return data as Project[];
     },
