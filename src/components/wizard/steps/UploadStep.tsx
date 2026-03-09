@@ -216,6 +216,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const lastShopifyFetchRef = useRef<number>(0);
   // Per-entity loading state for the refresh button spinner
   const [entityLoading, setEntityLoading] = useState<Record<string, boolean>>({});
+  // Track whether DB count queries are timing out
+  const [dbFetchFailed, setDbFetchFailed] = useState(false);
 
   // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
   // This lets us show "1536 rækker → 1137 Shopify-produkter"
@@ -239,6 +241,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   }>({ open: false, entityType: null, scope: null, count: 0 });
 
   // Fetch status counts - CACHED to avoid overloading DB
+  // Fetches SEQUENTIALLY to avoid overwhelming the DB with parallel count queries
   const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
     // Throttle: avoid hammering DB (this was causing UI "freeze" feelings)
     const now = Date.now();
@@ -255,63 +258,66 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
     };
 
-    // Products - count primary products (unique titles) per status using DB function.
-    // This correctly counts ~3,478 primary products regardless of variant rows.
-    const { data: primaryCounts } = await supabase.rpc('count_primary_products', {
-      p_project_id: project.id,
-    });
+    let anyFailed = false;
 
-    let productPending = 0;
-    let productUploaded = 0;
-    let productFailed = 0;
-    let productDuplicate = 0;
-    if (primaryCounts && Array.isArray(primaryCounts)) {
-      for (const row of primaryCounts) {
-        if (row.status === 'pending') productPending = Number(row.primary_count) || 0;
-        else if (row.status === 'uploaded') productUploaded = Number(row.primary_count) || 0;
-        else if (row.status === 'failed') productFailed = Number(row.primary_count) || 0;
-        else if (row.status === 'duplicate') productDuplicate = Number(row.primary_count) || 0;
+    // Helper: fetch count for a single entity+status, with timeout protection
+    const safeCount = async (table: 'canonical_customers' | 'canonical_orders' | 'canonical_categories' | 'canonical_pages', status: 'pending' | 'uploaded' | 'failed' | 'duplicate'): Promise<number> => {
+      try {
+        const { count, error } = await supabase
+          .from(table)
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', project.id)
+          .eq('status', status as any);
+        if (error) { anyFailed = true; return 0; }
+        return count || 0;
+      } catch {
+        anyFailed = true;
+        return 0;
       }
+    };
+
+    // Products - count primary products (unique titles) per status using DB function.
+    try {
+      const { data: primaryCounts, error: rpcError } = await supabase.rpc('count_primary_products', {
+        p_project_id: project.id,
+      });
+
+      if (rpcError) {
+        anyFailed = true;
+      } else if (primaryCounts && Array.isArray(primaryCounts)) {
+        let productPending = 0, productUploaded = 0, productFailed = 0, productDuplicate = 0;
+        for (const row of primaryCounts) {
+          if (row.status === 'pending') productPending = Number(row.primary_count) || 0;
+          else if (row.status === 'uploaded') productUploaded = Number(row.primary_count) || 0;
+          else if (row.status === 'failed') productFailed = Number(row.primary_count) || 0;
+          else if (row.status === 'duplicate') productDuplicate = Number(row.primary_count) || 0;
+        }
+        counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
+      }
+    } catch {
+      anyFailed = true;
     }
 
-    counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
+    // Fetch remaining entities SEQUENTIALLY to reduce DB load
+    // Each entity fetches its 4 statuses in parallel (small batch), but entities are sequential
+    const entityTables = [
+      { type: 'customers' as EntityType, table: 'canonical_customers' as const },
+      { type: 'orders' as EntityType, table: 'canonical_orders' as const },
+      { type: 'categories' as EntityType, table: 'canonical_categories' as const },
+      { type: 'pages' as EntityType, table: 'canonical_pages' as const },
+    ];
 
-    // Customers
-    const [customerPendingR, customerUploadedR, customerFailedR, customerDuplicateR] = await Promise.all([
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
-    ]);
-    counts.customers = { pending: customerPendingR.count || 0, uploaded: customerUploadedR.count || 0, failed: customerFailedR.count || 0, duplicate: customerDuplicateR.count || 0 };
+    for (const { type, table } of entityTables) {
+      const [pending, uploaded, failed, duplicate] = await Promise.all([
+        safeCount(table, 'pending'),
+        safeCount(table, 'uploaded'),
+        safeCount(table, 'failed'),
+        safeCount(table, 'duplicate'),
+      ]);
+      counts[type] = { pending, uploaded, failed, duplicate };
+    }
 
-    // Orders
-    const [orderPendingR, orderUploadedR, orderFailedR, orderDuplicateR] = await Promise.all([
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
-    ]);
-    counts.orders = { pending: orderPendingR.count || 0, uploaded: orderUploadedR.count || 0, failed: orderFailedR.count || 0, duplicate: orderDuplicateR.count || 0 };
-
-    // Categories
-    const [categoryPendingR, categoryUploadedR, categoryFailedR, categoryDuplicateR] = await Promise.all([
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
-    ]);
-    counts.categories = { pending: categoryPendingR.count || 0, uploaded: categoryUploadedR.count || 0, failed: categoryFailedR.count || 0, duplicate: categoryDuplicateR.count || 0 };
-
-    // Pages
-    const [pagePendingR, pageUploadedR, pageFailedR, pageDuplicateR] = await Promise.all([
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'pending'),
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'uploaded'),
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'failed'),
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'duplicate'),
-    ]);
-    counts.pages = { pending: pagePendingR.count || 0, uploaded: pageUploadedR.count || 0, failed: pageFailedR.count || 0, duplicate: pageDuplicateR.count || 0 };
-
+    setDbFetchFailed(anyFailed);
     setStatusCounts(counts);
     return counts;
   };
@@ -1462,6 +1468,21 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           )}
         </CardHeader>
         <CardContent className="space-y-6">
+          {dbFetchFailed && (
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-sm">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Databasen er under pres — nogle tællere kan vise 0. Tryk på refresh-knappen ved "i Shopify" for at se de aktuelle tal, eller vent og prøv igen.</span>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="ml-auto shrink-0 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900"
+                onClick={() => { lastCountsFetchRef.current = 0; fetchStatusCounts(); }}
+              >
+                <RefreshCw className="w-3 h-3 mr-1" />
+                Prøv igen
+              </Button>
+            </div>
+          )}
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
