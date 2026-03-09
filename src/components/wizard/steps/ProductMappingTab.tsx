@@ -339,6 +339,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   } | null>(null);
   const [loadingPeriods, setLoadingPeriods] = useState(false);
   const [periodError, setPeriodError] = useState<string | null>(null);
+  const [manufacturerNameMap, setManufacturerNameMap] = useState<Map<string, string>>(new Map());
 
   // Combined list of Shopify fields including dynamically fetched metafields
   const allShopifyFields = [
