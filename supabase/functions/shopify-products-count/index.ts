@@ -19,43 +19,61 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const authHeader = req.headers.get("Authorization") || "";
-    const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
-    if (!jwt) {
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { data: userRes, error: userErr } = await supabase.auth.getUser(jwt);
-    if (userErr || !userRes?.user) {
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const { projectId, entityTypes }: Body = await req.json();
     if (!projectId) throw new Error("projectId required");
 
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("id,user_id,shopify_store_domain,shopify_access_token_encrypted")
-      .eq("id", projectId)
-      .single();
+    const typesToFetch = entityTypes || ["products"];
 
-    if (projectError || !project) throw new Error("Project not found");
-    if (project.user_id !== userRes.user.id) {
+    const skippedResponse = (reason: string) => {
+      const counts: Record<string, number | null> = {};
+      for (const et of typesToFetch) counts[et] = null;
+      return new Response(JSON.stringify({ success: true, counts, skipped: true, reason }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    };
+
+    const authHeader = req.headers.get("Authorization") || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return skippedResponse("missing_or_invalid_auth_header");
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    // User-scoped client for auth/ownership checks via RLS (more resilient than auth.getUser)
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    // Service client for reading encrypted Shopify credentials after ownership is validated
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { data: ownedProject, error: ownershipError } = await userClient
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .maybeSingle();
+
+    if (ownershipError) {
+      console.error("[shopify-counts] ownership check failed:", ownershipError.message);
+      return skippedResponse("auth_validation_failed");
+    }
+
+    if (!ownedProject) {
       return new Response(JSON.stringify({ success: false, error: "Forbidden" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("shopify_store_domain,shopify_access_token_encrypted")
+      .eq("id", projectId)
+      .single();
+
+    if (projectError || !project) throw new Error("Project not found");
 
     const shopifyDomain = String(project.shopify_store_domain || "").trim();
     const shopifyToken = String(project.shopify_access_token_encrypted || "").trim();
@@ -70,7 +88,6 @@ Deno.serve(async (req) => {
       Accept: "application/json",
     };
 
-    const typesToFetch = entityTypes || ["products"];
     const counts: Record<string, number | null> = {};
 
     // ============================================================================
