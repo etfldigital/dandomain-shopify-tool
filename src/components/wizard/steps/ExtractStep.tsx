@@ -736,6 +736,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         case 'manufacturers': {
           const mfrParsed = parseManufacturersXML(text);
           recordCount = mfrParsed.length;
+
+          const { error: deleteError } = await supabase
+            .from('canonical_manufacturers')
+            .delete()
+            .eq('project_id', project.id);
+          if (deleteError) throw deleteError;
+
           for (let i = 0; i < mfrParsed.length; i += 100) {
             const batch = mfrParsed.slice(i, i + 100).map(m => ({
               project_id: project.id, external_id: m.external_id, name: m.name,

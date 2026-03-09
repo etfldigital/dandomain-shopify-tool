@@ -343,12 +343,18 @@ export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
     return [];
   }
 
-  // Build lookup exactly by MANUFAC_ID -> MANUFAC_NAME
+  const getDirectChildText = (parent: Element, tagName: string): string => {
+    const child = Array.from(parent.children).find((el) => el.tagName === tagName);
+    return child?.textContent?.trim() || '';
+  };
+
+  // Build lookup by DIRECT child tags only: MANUFAC_ID -> MANUFAC_NAME
+  // (avoids accidentally picking nested MANUFAC_ID values in child nodes)
   const manufacturerMap: Record<string, string> = {};
 
   doc.querySelectorAll('MANUFACTURER').forEach((manufacturer) => {
-    const id = manufacturer.querySelector('MANUFAC_ID')?.textContent?.trim();
-    const name = manufacturer.querySelector('MANUFAC_NAME')?.textContent?.trim();
+    const id = getDirectChildText(manufacturer, 'MANUFAC_ID');
+    const name = getDirectChildText(manufacturer, 'MANUFAC_NAME');
 
     if (id && name) {
       manufacturerMap[id] = name;
