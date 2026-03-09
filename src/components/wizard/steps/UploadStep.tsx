@@ -738,6 +738,11 @@ const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus
       }
     }
     
+    const manufacturerReady = await ensureManufacturerLookupReady(freshCounts, singleEntityType);
+    if (!manufacturerReady) return;
+
+    await logVendorResolutionPreview(freshCounts, singleEntityType);
+
     setIsStarting(true);
     try {
       const shouldSkipPrepare = !isTestMode; // In test mode, let the worker run prepare-upload for products
