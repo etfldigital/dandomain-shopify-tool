@@ -216,6 +216,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const lastShopifyFetchRef = useRef<number>(0);
   // Per-entity loading state for the refresh button spinner
   const [entityLoading, setEntityLoading] = useState<Record<string, boolean>>({});
+  // Track whether DB count queries are timing out
+  const [dbFetchFailed, setDbFetchFailed] = useState(false);
 
   // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
   // This lets us show "1536 rækker → 1137 Shopify-produkter"
