@@ -104,7 +104,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         setUploadedFiles(files);
       }
     } catch (err) {
-      console.error('Error loading files:', err);
+      
     } finally {
       setLoadingFiles(false);
     }
