@@ -1523,15 +1523,26 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             const counts = statusCounts[type];
             
             // Database counts are the SOURCE OF TRUTH for progress
+            // BUT: when DB counts all return 0 (timeout), fall back to job data
             const totalFromDb = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
-            const skipped = job?.skipped_count || 0;
-            const errors = counts.failed; // Use DB failed count, not job error_count
+            const dbTimedOut = totalFromDb === 0 && job && job.total_count > 0;
             
-            // CRITICAL: Progress is based on database state
-            // - Processed = uploaded + failed + duplicate (items no longer pending)
-            // - Total = all items in database + skipped (for percentage calculation)
-            const processedFromDb = counts.uploaded + counts.failed + counts.duplicate;
-            const total = totalFromDb + skipped;
+            const skipped = job?.skipped_count || 0;
+            const errors = dbTimedOut ? (job?.error_count || 0) : counts.failed;
+            
+            // When DB timed out, derive progress from the job's own counters
+            const effectivePending = dbTimedOut 
+              ? Math.max(0, job!.total_count - job!.processed_count)
+              : counts.pending;
+            const effectiveUploaded = dbTimedOut 
+              ? job!.processed_count - (job?.error_count || 0)
+              : counts.uploaded;
+            const effectiveDuplicate = dbTimedOut ? 0 : counts.duplicate;
+            const effectiveFailed = dbTimedOut ? (job?.error_count || 0) : counts.failed;
+            
+            // CRITICAL: Progress is based on database state (or job fallback)
+            const processedFromDb = effectiveUploaded + effectiveFailed + effectiveDuplicate;
+            const total = (dbTimedOut ? job!.total_count : totalFromDb) + skipped;
             const processedActual = processedFromDb + skipped;
             
             // Live estimation for smooth UI during uploads
