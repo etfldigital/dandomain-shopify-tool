@@ -293,7 +293,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
 
       // If no title but has SKU, log a warning
       if (!hasTitle && hasSku) {
-        console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
+        
         return false;
       }
 
