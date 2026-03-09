@@ -493,7 +493,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .upsert(batch, { onConflict: 'project_id,period_id' });
               
               if (error) {
-                console.error('Error inserting periods:', error);
+                
                 throw error;
               }
             }
