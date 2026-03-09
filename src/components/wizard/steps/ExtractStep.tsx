@@ -487,6 +487,18 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             const mfrParsed = parseManufacturersXML(text);
             console.log('Parsed manufacturers:', mfrParsed.length);
             recordCount = mfrParsed.length;
+
+            // Replace entire manufacturer mapping for the project to avoid stale/wrong keys
+            {
+              const { error: deleteError } = await supabase
+                .from('canonical_manufacturers')
+                .delete()
+                .eq('project_id', project.id);
+              if (deleteError) {
+                console.error('Error clearing manufacturers before insert:', deleteError);
+                throw deleteError;
+              }
+            }
             
             for (let i = 0; i < mfrParsed.length; i += 100) {
               const batch = mfrParsed.slice(i, i + 100).map(m => ({
@@ -724,6 +736,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         case 'manufacturers': {
           const mfrParsed = parseManufacturersXML(text);
           recordCount = mfrParsed.length;
+
+          const { error: deleteError } = await supabase
+            .from('canonical_manufacturers')
+            .delete()
+            .eq('project_id', project.id);
+          if (deleteError) throw deleteError;
+
           for (let i = 0; i < mfrParsed.length; i += 100) {
             const batch = mfrParsed.slice(i, i + 100).map(m => ({
               project_id: project.id, external_id: m.external_id, name: m.name,
