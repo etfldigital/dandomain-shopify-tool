@@ -952,7 +952,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // Also refetch jobs so skipped_count/error_count in the UI reflects the reset immediately
       await fetchJobs();
     } catch (error) {
-      console.error('Reset error:', error);
+      
       toast.error(`Fejl ved nulstilling: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setResetDialog({ open: false, entityType: null, scope: null, count: 0 });
