@@ -1612,20 +1612,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     <div>
                       <span className="font-medium">{label}</span>
                       {/* Clean summary showing processed breakdown */}
-                      {totalFromDb > 0 && (
+                      {(totalFromDb > 0 || dbTimedOut) && (
                         <div className="text-xs text-muted-foreground">
                           {isComplete ? (
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
-                              {counts.uploaded > 0 && ` (${counts.uploaded.toLocaleString('da-DK')} ny`}
-                              {counts.duplicate > 0 && `, ${counts.duplicate.toLocaleString('da-DK')} duplikater`}
+                              {effectiveUploaded > 0 && ` (${effectiveUploaded.toLocaleString('da-DK')} ny`}
+                              {effectiveDuplicate > 0 && `, ${effectiveDuplicate.toLocaleString('da-DK')} duplikater`}
                               {skipped > 0 && `, ${skipped.toLocaleString('da-DK')} eksisterende`}
-                              {counts.failed > 0 && `, ${counts.failed.toLocaleString('da-DK')} fejlet`}
-                              {(counts.uploaded > 0 || counts.duplicate > 0 || skipped > 0 || counts.failed > 0) && ')'}
+                              {effectiveFailed > 0 && `, ${effectiveFailed.toLocaleString('da-DK')} fejlet`}
+                              {(effectiveUploaded > 0 || effectiveDuplicate > 0 || skipped > 0 || effectiveFailed > 0) && ')'}
                             </span>
                           ) : (
                             <span>
-                              {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
+                              {effectivePending > 0 && <span className="mr-2">{effectivePending.toLocaleString('da-DK')} afventer</span>}
                               {/* Show Shopify live count for all entity types */}
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
@@ -1634,7 +1634,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-green-600 mr-2">
                                       {liveCount.toLocaleString('da-DK')} i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
                                         title={`Opdater ${label} Shopify-tal`}
                                       >
@@ -1651,7 +1651,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-muted-foreground mr-2">
                                       – i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Retry refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center hover:text-foreground"
                                         title="Prøv igen"
                                       >
@@ -1660,14 +1660,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     </span>
                                   );
                                 }
-                                if (counts.uploaded > 0) {
-                                  return <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>;
+                                if (effectiveUploaded > 0) {
+                                  return <span className="text-green-600 mr-2">{effectiveUploaded.toLocaleString('da-DK')} uploadet</span>;
                                 }
                                 return null;
                               })()}
-                              {counts.duplicate > 0 && <span className="text-amber-600 mr-2">{counts.duplicate.toLocaleString('da-DK')} duplikater</span>}
+                              {effectiveDuplicate > 0 && <span className="text-amber-600 mr-2">{effectiveDuplicate.toLocaleString('da-DK')} duplikater</span>}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
-                              {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
+                              {effectiveFailed > 0 && <span className="text-destructive">{effectiveFailed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
                           )}
                         </div>
