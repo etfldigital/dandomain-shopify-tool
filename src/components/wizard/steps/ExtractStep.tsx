@@ -448,7 +448,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             categoryCount = uniqueCategories.length;
             recordCount = uniqueCategories.length;
             
-            console.log('Unique categories to insert:', uniqueCategories.length);
+            
             
             for (let i = 0; i < uniqueCategories.length; i += 100) {
               const batch = uniqueCategories.slice(i, i + 100).map(category => ({
