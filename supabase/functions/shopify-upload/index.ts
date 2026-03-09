@@ -616,18 +616,24 @@ async function uploadProducts(
   let errors = 0;
   let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
-  let groupsProcessed = 0;
   let rateLimited = false;
   let retryAfterSeconds = 0;
 
-  for (const [groupKey, items] of productGroups) {
-    if (Date.now() - startTime > timeBudget) {
-      console.log(`[PRODUCTS] Time budget reached after ${groupsProcessed} groups`);
-      break;
-    }
-    if (groupsProcessed >= batchSize) break;
-    groupsProcessed++;
-
+  // ============================================================================
+  // PARALLEL PRODUCT UPLOAD: Process up to 5 products concurrently.
+  // Each product uses ~2-4 Shopify API calls (1 create + 1-3 images).
+  // With 5 concurrent products, we use ~10-20 API calls in flight,
+  // well within Shopify's 40-request bucket.
+  // ============================================================================
+  const PRODUCT_CONCURRENCY = 5;
+  const productLimit = createConcurrencyLimiter(PRODUCT_CONCURRENCY);
+  
+  const entries = Array.from(productGroups.entries()).slice(0, batchSize);
+  
+  const processOne = async (groupKey: string, items: any[]) => {
+    if (rateLimited) return; // Stop processing if rate limited
+    if (Date.now() - startTime > timeBudget) return; // Time budget check
+    
     try {
       const result = await processProductGroup(
         supabase,
@@ -643,11 +649,11 @@ async function uploadProducts(
         rateLimited = true;
         retryAfterSeconds = Math.ceil((result.retryAfterMs || 2000) / 1000);
         console.log(`[PRODUCTS] Rate limited, stopping batch`);
-        break;
+        return;
       }
       
       if (result.lockBusy) {
-        // Lock busy = another worker is handling it, don't count as skipped
+        // Lock busy = another worker is handling it
       } else if (result.skipped) {
         skipped += items.length;
       } else if (result.error) {
@@ -680,7 +686,14 @@ async function uploadProducts(
         errorDetails.push({ externalId: item.external_id, message: msg });
       }
     }
-  }
+  };
+
+  // Launch all products through the concurrency limiter
+  await Promise.all(
+    entries.map(([groupKey, items]) => productLimit(() => processOne(groupKey, items)))
+  );
+
+  console.log(`[PRODUCTS] Batch complete: processed=${processed}, skipped=${skipped}, errors=${errors} (${PRODUCT_CONCURRENCY} concurrent)`);
 
   const { count: remainingCount } = await supabase
     .from('canonical_products')
@@ -878,55 +891,35 @@ async function processProductGroup(
   // completed between our fetch and lock acquisition.
   // ============================================================================
   if (dbGroupKey) {
-    const { data: groupRecords, error: groupCheckError } = await supabase
-      .from('canonical_products')
-      .select('id, shopify_id')
-      .eq('project_id', projectId)
-      .not('shopify_id', 'is', null)
-      .limit(500);
-    
-    if (!groupCheckError && groupRecords) {
-      // Filter in JS since JSONB filtering in Supabase can be tricky
-      const matchingWithShopifyId = groupRecords.filter((r: any) => {
-        // We need to check the data column - but we didn't select it
-        // Instead, we'll do a targeted query
-        return false; // Will use a different approach
-      });
-    }
-    
-    // More reliable: Query specifically for this group key
+    // Targeted query: only fetch records with the SAME _groupKey that already have a shopify_id.
+    // This replaces the old full-table scan which was a major performance bottleneck.
     const { data: existingInGroup } = await supabase
       .from('canonical_products')
-      .select('shopify_id, data')
+      .select('shopify_id')
       .eq('project_id', projectId)
-      .not('shopify_id', 'is', null);
+      .eq('data->>_groupKey', dbGroupKey)
+      .not('shopify_id', 'is', null)
+      .limit(1);
     
-    if (existingInGroup) {
-      const matchingRecord = existingInGroup.find((r: any) => {
-        const rGroupKey = String(r.data?._groupKey || '').trim().toLowerCase();
-        return rGroupKey === dbGroupKey && r.shopify_id;
-      });
+    if (existingInGroup && existingInGroup.length > 0 && existingInGroup[0].shopify_id) {
+      const existingShopifyId = existingInGroup[0].shopify_id;
+      console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
       
-      if (matchingRecord?.shopify_id) {
-        const existingShopifyId = matchingRecord.shopify_id;
-        console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
-        
-        // Release lock and mark as uploaded
-        await supabase
-          .from('canonical_products')
-          .update({ 
-            status: 'uploaded', 
-            shopify_id: existingShopifyId, 
-            error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
-            upload_lock_id: null,
-            upload_locked_at: null,
-            upload_locked_until: null,
-            updated_at: new Date().toISOString() 
-          })
-          .eq('id', primaryItem.id);
-        
-        return { skipped: true };
-      }
+      // Release lock and mark as uploaded
+      await supabase
+        .from('canonical_products')
+        .update({ 
+          status: 'uploaded', 
+          shopify_id: existingShopifyId, 
+          error_message: 'Sprunget over: Produkt allerede oprettet i Shopify',
+          upload_lock_id: null,
+          upload_locked_at: null,
+          upload_locked_until: null,
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', primaryItem.id);
+      
+      return { skipped: true };
     }
   }
   
