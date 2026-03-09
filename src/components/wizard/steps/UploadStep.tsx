@@ -1119,7 +1119,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
     (async () => {
       try {
-        console.log('[UploadStep] Auto-recover: force-restart', { jobId: runningJob.id, entity: runningJob.entity_type });
+        
         const { error } = await supabase.functions.invoke('upload-worker', {
           body: { projectId: project.id, action: 'force-restart' },
         });
