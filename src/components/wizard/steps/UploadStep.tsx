@@ -155,11 +155,6 @@ interface ManufacturerLookupStatus {
   mappingCount: number;
 }
 
-interface VendorDebugRow {
-  prodNum: string;
-  manufacId: string;
-  resolvedVendorName: string;
-}
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
