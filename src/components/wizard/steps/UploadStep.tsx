@@ -1126,7 +1126,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         if (error) throw error;
         toast.info('Upload fortsætter automatisk – processen blev genstartet.');
       } catch (e) {
-        console.warn('[UploadStep] Auto-recover failed:', e);
+        
       }
     })();
   }, [runningJob?.id, runningJob?.status, runningJob?.next_attempt_at, secondsSinceHeartbeat, project.id]);
