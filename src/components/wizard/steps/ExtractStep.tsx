@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML, parseManufacturersXML } from '@/lib/xml-parser';
+import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML, parseManufacturersXML, type ParseStats } from '@/lib/xml-parser';
 import { useAuth } from '@/hooks/useAuth';
 
 interface ExtractStepProps {
