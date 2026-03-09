@@ -145,7 +145,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         }, { onConflict: 'project_id,entity_type' });
 
       if (dbError) {
-        console.error('DB insert error:', dbError);
+        
         throw dbError;
       }
 
