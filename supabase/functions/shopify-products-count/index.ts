@@ -88,7 +88,6 @@ Deno.serve(async (req) => {
       Accept: "application/json",
     };
 
-    const typesToFetch = entityTypes || ["products"];
     const counts: Record<string, number | null> = {};
 
     // ============================================================================
