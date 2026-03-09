@@ -1575,10 +1575,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             
             // CRITICAL: Job is ONLY complete when pending = 0
             // This ensures the progress bar reaches 100% before showing green checkmark
-            const isComplete = counts.pending === 0 && total > 0;
+            const isComplete = effectivePending === 0 && total > 0;
             const status = isComplete 
               ? 'completed' 
-              : job?.status || (counts.pending === 0 && total > 0 ? 'completed' : 'pending');
+              : job?.status || (effectivePending === 0 && total > 0 ? 'completed' : 'pending');
 
             // Progress percentage: when pending=0, this will be 100%
             const percent = total > 0 ? (processedActual / total) * 100 : 0;
