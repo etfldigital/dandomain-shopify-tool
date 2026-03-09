@@ -61,15 +61,29 @@ Deno.serve(async (req) => {
       console.warn("[shopify-counts] auth.getUser() failed, falling back to project-only check");
     }
 
-    const projectQuery = supabase
-      .from("projects")
-      .select("id,shopify_store_domain,shopify_access_token_encrypted,user_id")
-      .eq("id", projectId)
-      .single();
+    // Retry project lookup up to 2 times to handle transient DB timeouts
+    let project: any = null;
+    let projectError: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await supabase
+        .from("projects")
+        .select("id,shopify_store_domain,shopify_access_token_encrypted,user_id")
+        .eq("id", projectId)
+        .single();
+      project = result.data;
+      projectError = result.error;
+      if (!projectError && project) break;
+      if (attempt === 0) {
+        console.warn(`[shopify-counts] Project lookup attempt 1 failed: ${projectError?.message || 'no data'}, retrying...`);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
 
-    const { data: project, error: projectError } = await projectQuery;
-
-    if (projectError || !project) throw new Error("Project not found");
+    if (projectError) {
+      console.error(`[shopify-counts] Project lookup failed: ${projectError.message}`);
+      throw new Error(`Database error: ${projectError.message}`);
+    }
+    if (!project) throw new Error("Project not found");
 
     // If we got user ID, verify ownership
     if (userId && project.user_id !== userId) {
