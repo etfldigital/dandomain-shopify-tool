@@ -493,6 +493,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     setRawEntityCounts(counts);
   };
 
+  useEffect(() => {
     // Initial fetch
     fetchJobs();
     fetchStatusCounts();
