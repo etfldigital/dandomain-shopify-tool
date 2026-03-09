@@ -18,7 +18,10 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { projectId } = await req.json();
+    const body = await req.json();
+    const { projectId } = body;
+    
+    console.log('[fetch-metafields] Received projectId:', projectId, 'body:', JSON.stringify(body));
     
     if (!projectId) {
       return new Response(
@@ -40,8 +43,9 @@ Deno.serve(async (req) => {
       .single();
 
     if (projectError || !project) {
+      console.error('[fetch-metafields] Project lookup failed. projectId:', projectId, 'error:', projectError);
       return new Response(
-        JSON.stringify({ error: 'Project not found' }),
+        JSON.stringify({ error: 'Project not found', details: projectError?.message }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
