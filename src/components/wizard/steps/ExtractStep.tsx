@@ -158,7 +158,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
       setUploadedFiles(prev => [...prev.filter(f => f.type !== currentUploadType), newFile]);
     } catch (err: any) {
-      console.error('Error uploading file:', err);
+      
     }
     
     e.target.value = '';
