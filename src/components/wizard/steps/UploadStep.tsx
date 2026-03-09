@@ -1321,6 +1321,43 @@ const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus
         </p>
       </div>
 
+      <Card>
+        <CardContent className="pt-4 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Producentfil (vendor lookup)</p>
+              <p className="text-sm text-muted-foreground">
+                {manufacturerLookupStatus.fileName
+                  ? `Fil: ${manufacturerLookupStatus.fileName}`
+                  : 'Ingen producentfil uploadet endnu'}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Parsede producenter: {manufacturerLookupStatus.parsedCount.toLocaleString('da-DK')} ·{' '}
+                Aktive mappings: {manufacturerLookupStatus.mappingCount.toLocaleString('da-DK')}
+              </p>
+              {(manufacturerLookupStatus.fileStatus !== 'processed' || manufacturerLookupStatus.mappingCount === 0) && (
+                <p className="text-xs text-destructive">
+                  Upload og udtræk "Producenter" før produktupload.
+                </p>
+              )}
+            </div>
+            <Badge
+              variant={manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0 ? 'secondary' : 'destructive'}
+            >
+              {manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0
+                ? 'Klar'
+                : manufacturerLookupStatus.fileStatus === 'processed'
+                ? 'Tom mapping'
+                : manufacturerLookupStatus.fileStatus === 'pending'
+                ? 'Afventer udtræk'
+                : manufacturerLookupStatus.fileStatus === 'error'
+                ? 'Fejl'
+                : 'Mangler'}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Celebration banner when all completed */}
       {allCompleted && (
         <Card className="border-green-500/50 bg-green-500/10">
