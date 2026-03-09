@@ -140,6 +140,13 @@ interface ShopifyLiveCounts {
   isLoading: boolean;
 }
 
+interface ManufacturerLookupStatus {
+  fileName: string | null;
+  fileStatus: 'missing' | 'pending' | 'processed' | 'error';
+  parsedCount: number;
+  mappingCount: number;
+}
+
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
   { type: 'categories', icon: Folder, label: 'Collections' },
