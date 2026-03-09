@@ -469,7 +469,30 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  useEffect(() => {
+  // Fetch raw entity counts (total rows in DB, unfiltered) for transparency
+  const fetchRawEntityCounts = async () => {
+    const tables: { type: EntityType; table: string }[] = [
+      { type: 'products', table: 'canonical_products' },
+      { type: 'customers', table: 'canonical_customers' },
+      { type: 'orders', table: 'canonical_orders' },
+      { type: 'categories', table: 'canonical_categories' },
+      { type: 'pages', table: 'canonical_pages' },
+    ];
+    const results = await Promise.all(
+      tables.map(({ table }) =>
+        supabase
+          .from(table)
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', project.id)
+      )
+    );
+    const counts: Record<EntityType, number> = { products: 0, customers: 0, orders: 0, categories: 0, pages: 0 };
+    tables.forEach(({ type }, i) => {
+      counts[type] = results[i].count || 0;
+    });
+    setRawEntityCounts(counts);
+  };
+
     // Initial fetch
     fetchJobs();
     fetchStatusCounts();
