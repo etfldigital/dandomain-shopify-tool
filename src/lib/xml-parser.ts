@@ -343,42 +343,25 @@ export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
     return [];
   }
 
-  // Find manufacturer rows
-  let manufacturers = getAllElements(doc.documentElement, 'MANUFACTURER');
-  if (manufacturers.length === 0) {
-    const elements = doc.documentElement.getElementsByTagName('ELEMENTS')[0];
-    if (elements) {
-      manufacturers = Array.from(elements.getElementsByTagName('MANUFACTURER')) as Element[];
+  // Build lookup exactly by MANUFAC_ID -> MANUFAC_NAME
+  const manufacturerMap: Record<string, string> = {};
+
+  doc.querySelectorAll('MANUFACTURER').forEach((manufacturer) => {
+    const id = manufacturer.querySelector('MANUFAC_ID')?.textContent?.trim();
+    const name = manufacturer.querySelector('MANUFAC_NAME')?.textContent?.trim();
+
+    if (id && name) {
+      manufacturerMap[id] = name;
     }
-  }
+  });
 
-  const getDirectChildText = (parent: Element, tagName: string): string => {
-    const children = Array.from(parent.children) as Element[];
+  const parsed = Object.entries(manufacturerMap).map(([external_id, name]) => ({
+    external_id,
+    name,
+  }));
 
-    // First pass: exact case-sensitive match
-    const exact = children.find((child) => child.tagName === tagName);
-    const exactText = exact?.textContent?.trim() || '';
-    if (exactText) return exactText;
-
-    // Second pass: case-insensitive fallback for export variants
-    const ci = children.find((child) => child.tagName.toLowerCase() === tagName.toLowerCase());
-    return ci?.textContent?.trim() || '';
-  };
-
-  const byExternalId = new Map<string, ManufacturerData>();
-
-  for (const mfr of manufacturers) {
-    const externalId = getDirectChildText(mfr, 'MANUFAC_ID');
-    if (!externalId) continue;
-
-    const rawName = getDirectChildText(mfr, 'MANUFAC_NAME');
-    const name = rawName || externalId; // Required fallback when MANUFAC_NAME is empty
-
-    byExternalId.set(externalId, { external_id: externalId, name });
-  }
-
-  console.log(`[Manufacturers] Parsed ${byExternalId.size} MANUFAC_ID -> MANUFAC_NAME mappings`);
-  return Array.from(byExternalId.values());
+  console.log(`[Manufacturers] Parsed ${parsed.length} MANUFAC_ID -> MANUFAC_NAME mappings`);
+  return parsed;
 }
 
 /**
