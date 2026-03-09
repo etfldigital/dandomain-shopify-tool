@@ -458,7 +458,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
       }
     } catch (e) {
-      console.warn('[UploadStep] Failed to fetch Shopify live counts:', e);
+      
       setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
     }
   };
