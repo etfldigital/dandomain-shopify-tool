@@ -16,8 +16,25 @@ export function useProjects() {
         .from('projects')
         .select('*')
         .eq('user_id', user.id)
+        .is('deleted_at', null)
         .order('updated_at', { ascending: false });
 
+      if (error) throw error;
+      return data as Project[];
+    },
+    enabled: !!user,
+  });
+
+  const { data: deletedProjects, isLoading: isLoadingDeleted } = useQuery({
+    queryKey: ['projects-deleted', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('user_id', user.id)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false });
       if (error) throw error;
       return data as Project[];
     },
@@ -63,23 +80,57 @@ export function useProjects() {
     mutationFn: async (id: string) => {
       const { error } = await supabase
         .from('projects')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', id);
 
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-deleted'] });
+    },
+  });
+
+  const restoreProject = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from('projects')
+        .update({ deleted_at: null })
+        .eq('id', id);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-deleted'] });
+    },
+  });
+
+  const permanentDeleteProject = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from('projects')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects-deleted'] });
     },
   });
 
   return {
     projects: projects ?? [],
+    deletedProjects: deletedProjects ?? [],
     isLoading,
+    isLoadingDeleted,
     error,
     createProject,
     updateProject,
     deleteProject,
+    restoreProject,
+    permanentDeleteProject,
   };
 }
 

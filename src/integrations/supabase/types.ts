@@ -610,6 +610,7 @@ export type Database = {
           dandomain_api_key_encrypted: string | null
           dandomain_base_url: string | null
           dandomain_shop_url: string | null
+          deleted_at: string | null
           id: string
           name: string
           order_count: number | null
@@ -629,6 +630,7 @@ export type Database = {
           dandomain_api_key_encrypted?: string | null
           dandomain_base_url?: string | null
           dandomain_shop_url?: string | null
+          deleted_at?: string | null
           id?: string
           name: string
           order_count?: number | null
@@ -648,6 +650,7 @@ export type Database = {
           dandomain_api_key_encrypted?: string | null
           dandomain_base_url?: string | null
           dandomain_shop_url?: string | null
+          deleted_at?: string | null
           id?: string
           name?: string
           order_count?: number | null
