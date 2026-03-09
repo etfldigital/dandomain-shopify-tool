@@ -650,7 +650,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       setShowPrepareConfirm(true);
       
     } catch (error) {
-      console.error('Prepare failed:', error);
+      
       toast.error(`Forberedelse fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setIsPreparing(false);
