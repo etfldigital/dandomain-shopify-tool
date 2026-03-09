@@ -154,10 +154,12 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         }
       }
       
-      // MANUFACTURERS section – prefer MANUFAC_NAME over MANUFAC_ID
+      // MANUFACTURERS section – extract MANUFAC_ID only.
+      // The product XML never contains MANUFAC_NAME; that comes from the separate
+      // manufacturers export file and is resolved at upload time via canonical_manufacturers.
       const manufacturers = product.getElementsByTagName('MANUFACTURERS')[0];
       const vendor = manufacturers
-        ? (getElementText(manufacturers, 'MANUFAC_NAME') || getElementText(manufacturers, 'MANUFAC_ID'))
+        ? getElementText(manufacturers, 'MANUFAC_ID')
         : null;
       
       // PRODUCT_CATEGORIES section
