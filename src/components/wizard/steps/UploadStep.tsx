@@ -1791,7 +1791,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleStartUpload(true, type)}
-                            disabled={counts.pending === 0 || isStarting}
+                            disabled={effectivePending === 0 || isStarting}
                           >
                             <FlaskConical className="w-4 h-4 mr-2" />
                             Test upload (3 stk)
@@ -1799,7 +1799,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleResetRequest(type, 'all')}
-                            disabled={totalFromDb === 0}
+                            disabled={totalFromDb === 0 && !dbTimedOut}
                           >
                             <RotateCcw className="w-4 h-4 mr-2" />
                             Nulstil uploads
