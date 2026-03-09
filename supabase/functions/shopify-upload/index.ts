@@ -361,6 +361,8 @@ async function ensureManufacturerFileReady(supabase: any, projectId: string): Pr
 
 async function loadManufacturerNames(supabase: any, projectId: string): Promise<Map<string, string>> {
   const cache = new Map<string, string>();
+  const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
+
   try {
     const { data, error } = await supabase
       .from('canonical_manufacturers')
@@ -375,6 +377,7 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
 
       if (externalId && manufacturerName) {
         cache.set(externalId, manufacturerName);
+        cache.set(normalizeManufacturerKey(externalId), manufacturerName);
       }
     }
     console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
@@ -384,10 +387,85 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
   return cache;
 }
 
-function resolveVendorName(rawId: string): string {
+function formatInferredVendor(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      if (word === '&') return '&';
+      const clean = word.replace(/[^A-Za-z0-9ÆØÅæøå]/g, '');
+      if (!clean) return word;
+      if (clean.length === 1) return clean.toUpperCase();
+      if (clean.length <= 4 && clean === clean.toUpperCase()) return clean;
+      return `${clean.charAt(0).toUpperCase()}${clean.slice(1).toLowerCase()}`;
+    })
+    .join(' ');
+}
+
+function inferVendorFromTitle(manufacturerId: string, fallbackTitle?: string): string {
+  const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
+  const normalizedId = normalizeManufacturerKey(manufacturerId).replace(/[^a-z0-9]/g, '');
+  if (!normalizedId) return '';
+
+  const leadingTitlePart = String(fallbackTitle || '').split(',')[0]?.trim() || '';
+  if (!leadingTitlePart) return '';
+
+  const words = leadingTitlePart.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '';
+
+  const stopWords = new Set([
+    'top', 'bluse', 'kjole', 'ring', 'ørering', 'oerering', 'sneakers', 'boots', 'cardigan',
+    'blazer', 'sandaler', 'sandal', 'jakke', 'taske', 'belt', 'bælte', 'pumps', 'strømper',
+    'stroemper', 'bukser', 'leggings', 'skjorte', 'tee', 't-shirt', 'tshirt', 'creme', 'cream',
+  ]);
+
+  const sanitizeWord = (word: string): string =>
+    normalizeManufacturerKey(word).replace(/[^a-z0-9]/g, '');
+
+  let initials = '';
+  for (let index = 0; index < Math.min(words.length, 5); index += 1) {
+    const currentWord = sanitizeWord(words[index]);
+    if (!currentWord) continue;
+    initials += currentWord.charAt(0);
+    if (initials === normalizedId) {
+      return formatInferredVendor(words.slice(0, index + 1).join(' '));
+    }
+  }
+
+  const firstWord = sanitizeWord(words[0]);
+  if (firstWord !== normalizedId) return '';
+
+  if (words.length >= 3) {
+    const connector = normalizeManufacturerKey(words[1]);
+    if (connector === '&' || connector === 'og') {
+      return formatInferredVendor(words.slice(0, 3).join(' '));
+    }
+  }
+
+  if (words.length >= 2) {
+    const secondWord = sanitizeWord(words[1]);
+    if (secondWord && !stopWords.has(secondWord)) {
+      return formatInferredVendor(words.slice(0, 2).join(' '));
+    }
+  }
+
+  return formatInferredVendor(words[0]);
+}
+
+function resolveVendorName(rawId: string, fallbackTitle?: string): string {
   const manufacId = String(rawId || '').trim();
-  const vendor = manufacturerNameCache.get(manufacId) ?? manufacId ?? '';
-  return String(vendor).trim();
+  const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
+  const normalizedId = normalizeManufacturerKey(manufacId);
+
+  if (!manufacId) return '';
+
+  const vendor = manufacturerNameCache.get(manufacId) ?? manufacturerNameCache.get(normalizedId);
+  if (vendor) return String(vendor).trim();
+
+  const inferred = inferVendorFromTitle(manufacId, fallbackTitle);
+  if (inferred) return inferred;
+
+  return manufacId;
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
