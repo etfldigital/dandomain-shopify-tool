@@ -41,7 +41,7 @@ function parseCSV(csvText: string): Record<string, string>[] {
 
   const headers = splitDelimitedLine(headerLine, delimiter).map((h) => cleanCell(h));
   
-  console.log('CSV parsing - headers detected:', headers.slice(0, 5), '... total:', headers.length);
+  
 
   const rows: Record<string, string>[] = [];
   for (let i = startLine + 1; i < logicalLines.length; i++) {
