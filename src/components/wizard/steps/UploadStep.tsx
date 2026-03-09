@@ -397,7 +397,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         },
       });
       
-      console.log(`[UploadStep] Shopify response for ${entityType}:`, response.data);
+      
       
       if (response.data?.success && response.data.counts) {
         const value = response.data.counts[entityType] ?? null;
