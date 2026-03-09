@@ -616,18 +616,24 @@ async function uploadProducts(
   let errors = 0;
   let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
-  let groupsProcessed = 0;
   let rateLimited = false;
   let retryAfterSeconds = 0;
 
-  for (const [groupKey, items] of productGroups) {
-    if (Date.now() - startTime > timeBudget) {
-      console.log(`[PRODUCTS] Time budget reached after ${groupsProcessed} groups`);
-      break;
-    }
-    if (groupsProcessed >= batchSize) break;
-    groupsProcessed++;
-
+  // ============================================================================
+  // PARALLEL PRODUCT UPLOAD: Process up to 5 products concurrently.
+  // Each product uses ~2-4 Shopify API calls (1 create + 1-3 images).
+  // With 5 concurrent products, we use ~10-20 API calls in flight,
+  // well within Shopify's 40-request bucket.
+  // ============================================================================
+  const PRODUCT_CONCURRENCY = 5;
+  const productLimit = createConcurrencyLimiter(PRODUCT_CONCURRENCY);
+  
+  const entries = Array.from(productGroups.entries()).slice(0, batchSize);
+  
+  const processOne = async (groupKey: string, items: any[]) => {
+    if (rateLimited) return; // Stop processing if rate limited
+    if (Date.now() - startTime > timeBudget) return; // Time budget check
+    
     try {
       const result = await processProductGroup(
         supabase,
@@ -643,11 +649,11 @@ async function uploadProducts(
         rateLimited = true;
         retryAfterSeconds = Math.ceil((result.retryAfterMs || 2000) / 1000);
         console.log(`[PRODUCTS] Rate limited, stopping batch`);
-        break;
+        return;
       }
       
       if (result.lockBusy) {
-        // Lock busy = another worker is handling it, don't count as skipped
+        // Lock busy = another worker is handling it
       } else if (result.skipped) {
         skipped += items.length;
       } else if (result.error) {
@@ -680,7 +686,14 @@ async function uploadProducts(
         errorDetails.push({ externalId: item.external_id, message: msg });
       }
     }
-  }
+  };
+
+  // Launch all products through the concurrency limiter
+  await Promise.all(
+    entries.map(([groupKey, items]) => productLimit(() => processOne(groupKey, items)))
+  );
+
+  console.log(`[PRODUCTS] Batch complete: processed=${processed}, skipped=${skipped}, errors=${errors} (${PRODUCT_CONCURRENCY} concurrent)`);
 
   const { count: remainingCount } = await supabase
     .from('canonical_products')
