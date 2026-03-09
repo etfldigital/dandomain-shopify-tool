@@ -300,11 +300,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
     // Fetch remaining entities SEQUENTIALLY to reduce DB load
     // Each entity fetches its 4 statuses in parallel (small batch), but entities are sequential
-    const entityTables: { type: EntityType; table: string }[] = [
-      { type: 'customers', table: 'canonical_customers' },
-      { type: 'orders', table: 'canonical_orders' },
-      { type: 'categories', table: 'canonical_categories' },
-      { type: 'pages', table: 'canonical_pages' },
+    const entityTables = [
+      { type: 'customers' as EntityType, table: 'canonical_customers' as const },
+      { type: 'orders' as EntityType, table: 'canonical_orders' as const },
+      { type: 'categories' as EntityType, table: 'canonical_categories' as const },
+      { type: 'pages' as EntityType, table: 'canonical_pages' as const },
     ];
 
     for (const { type, table } of entityTables) {
