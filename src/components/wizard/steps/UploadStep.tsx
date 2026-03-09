@@ -50,6 +50,14 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -147,6 +155,12 @@ interface ManufacturerLookupStatus {
   mappingCount: number;
 }
 
+interface VendorDebugRow {
+  prodNum: string;
+  manufacId: string;
+  resolvedVendorName: string;
+}
+
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
   { type: 'categories', icon: Folder, label: 'Collections' },
@@ -212,6 +226,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     parsedCount: 0,
     mappingCount: 0,
   });
+  const [vendorDebugRows, setVendorDebugRows] = useState<VendorDebugRow[]>([]);
+  const [isVendorDebugLoading, setIsVendorDebugLoading] = useState(false);
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
@@ -364,15 +380,65 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (!shouldValidateManufacturers(freshCounts, singleEntityType)) return true;
 
     const status = await fetchManufacturerLookupStatus();
-    const hasProcessedFile = status.fileStatus === 'processed';
-    const hasMappings = status.mappingCount > 0;
+    const hasProcessedFile = status.fileStatus === 'processed' && Boolean(status.fileName);
 
-    if (hasProcessedFile && hasMappings) return true;
+    if (hasProcessedFile) return true;
 
     toast.warning('Producentfil mangler før produktupload', {
       description: 'Upload og udtræk filen "Producenter" først, så MANUFAC_ID kan mappes til MANUFAC_NAME.',
     });
     return false;
+  };
+
+  const fetchVendorDebugRows = async () => {
+    setIsVendorDebugLoading(true);
+    try {
+      const [{ data: manufacturers, error: manufacturersError }, { data: products, error: productsError }] = await Promise.all([
+        supabase
+          .from('canonical_manufacturers')
+          .select('external_id, name')
+          .eq('project_id', project.id),
+        supabase
+          .from('canonical_products')
+          .select('external_id, data')
+          .eq('project_id', project.id)
+          .eq('status', 'pending')
+          .eq('data->>_isPrimary', 'true')
+          .order('created_at', { ascending: false })
+          .limit(5),
+      ]);
+
+      if (manufacturersError) throw manufacturersError;
+      if (productsError) throw productsError;
+
+      const manufacturerMap = new Map<string, string>();
+      for (const manufacturer of manufacturers || []) {
+        const id = String(manufacturer.external_id || '').trim();
+        const name = String(manufacturer.name || '').trim();
+        if (id && name) {
+          manufacturerMap.set(id, name);
+        }
+      }
+
+      const rows: VendorDebugRow[] = (products || []).map((row) => {
+        const rawData = row.data as Record<string, unknown> | null;
+        const manufacId = String(rawData?.vendor || '').trim();
+        const resolvedVendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
+
+        return {
+          prodNum: String(rawData?.sku || row.external_id || '').trim(),
+          manufacId,
+          resolvedVendorName: String(resolvedVendorName).trim(),
+        };
+      });
+
+      setVendorDebugRows(rows);
+    } catch (error) {
+      console.warn('[VendorLookup] Kunne ikke hente debug-preview:', error);
+      setVendorDebugRows([]);
+    } finally {
+      setIsVendorDebugLoading(false);
+    }
   };
 
   const logVendorResolutionPreview = async (
@@ -392,9 +458,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       const manufacturerMap = new Map<string, string>();
       for (const manufacturer of manufacturers || []) {
         const id = String(manufacturer.external_id || '').trim();
-        if (!id) continue;
         const name = String(manufacturer.name || '').trim();
-        manufacturerMap.set(id, name || id);
+        if (id && name) {
+          manufacturerMap.set(id, name);
+        }
       }
 
       console.log(`[VendorLookup] manufacturerMap size: ${manufacturerMap.size}`);
@@ -420,7 +487,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         for (const row of rows) {
           const rawData = row.data as Record<string, unknown> | null;
           const manufacId = String(rawData?.vendor || '').trim();
-          const vendorName = manufacId ? (manufacturerMap.get(manufacId) || manufacId) : '';
+          const vendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
           console.log(`[VendorLookup] SKU=${row.external_id} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendorName}"`);
           totalLogged += 1;
         }
@@ -518,6 +585,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchStatusCounts();
     fetchShopifyLiveCounts();
     fetchManufacturerLookupStatus();
+    fetchVendorDebugRows();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -592,6 +660,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       fetchJobs();
       fetchStatusCounts(); // Throttled internally
       fetchShopifyLiveCounts(); // Throttled internally (30s)
+      fetchManufacturerLookupStatus();
+      fetchVendorDebugRows();
     }, 15_000);
 
     // Watchdog is now self-scheduling on the server side (started by upload-worker).
@@ -741,6 +811,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     const manufacturerReady = await ensureManufacturerLookupReady(freshCounts, singleEntityType);
     if (!manufacturerReady) return;
 
+    await fetchVendorDebugRows();
     await logVendorResolutionPreview(freshCounts, singleEntityType);
 
     setIsStarting(true);
@@ -1972,6 +2043,44 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           </>
         )}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Vendor debug (midlertidig)</CardTitle>
+          <CardDescription>
+            5 eksempelprodukter: PROD_NUM, MANUFAC_ID og resolved vendor-navn.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isVendorDebugLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Henter debug-data...
+            </div>
+          ) : vendorDebugRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Ingen produktprøver fundet endnu.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>PROD_NUM</TableHead>
+                  <TableHead>MANUFAC_ID</TableHead>
+                  <TableHead>Resolved Vendor Name</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {vendorDebugRows.map((row) => (
+                  <TableRow key={`${row.prodNum}-${row.manufacId}`}>
+                    <TableCell>{row.prodNum || '–'}</TableCell>
+                    <TableCell>{row.manufacId || '–'}</TableCell>
+                    <TableCell>{row.resolvedVendorName || '–'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Skipped products section removed */}
 

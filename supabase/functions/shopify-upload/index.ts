@@ -338,6 +338,27 @@ async function loadActivePeriodIds(supabase: any, projectId: string): Promise<Se
   return ids;
 }
 
+async function ensureManufacturerFileReady(supabase: any, projectId: string): Promise<{ ready: boolean; reason?: string }> {
+  const { data, error } = await supabase
+    .from('project_files')
+    .select('file_name, status')
+    .eq('project_id', projectId)
+    .eq('entity_type', 'manufacturers')
+    .maybeSingle();
+
+  if (error) {
+    console.error('[PRODUCTS] Failed reading manufacturer file status:', error.message);
+    return { ready: false, reason: 'status_error' };
+  }
+
+  if (!data) return { ready: false, reason: 'missing_file' };
+
+  const status = String(data.status || '').toLowerCase();
+  if (status !== 'processed') return { ready: false, reason: `file_${status || 'pending'}` };
+
+  return { ready: true };
+}
+
 async function loadManufacturerNames(supabase: any, projectId: string): Promise<Map<string, string>> {
   const cache = new Map<string, string>();
   try {
@@ -350,11 +371,11 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
     
     for (const m of data) {
       const externalId = String(m.external_id || '').trim();
-      if (!externalId) continue;
-
       const manufacturerName = String(m.name || '').trim();
-      // Required fallback: if MANUFAC_NAME is empty, use MANUFAC_ID
-      cache.set(externalId, manufacturerName || externalId);
+
+      if (externalId && manufacturerName) {
+        cache.set(externalId, manufacturerName);
+      }
     }
     console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
   } catch (e) {
@@ -363,18 +384,10 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
   return cache;
 }
 
-function resolveVendorName(vendorId: string): string {
-  const lookupId = String(vendorId || '').trim();
-  if (!lookupId) return '';
-
-  // Exact, case-sensitive lookup by MANUFAC_ID
-  const resolved = manufacturerNameCache.get(lookupId);
-  if (resolved === undefined) {
-    console.warn(`[PRODUCTS] No MANUFAC_NAME found for MANUFAC_ID "${lookupId}". Falling back to MANUFAC_ID as vendor.`);
-    return lookupId;
-  }
-
-  return String(resolved || lookupId).trim();
+function resolveVendorName(rawId: string): string {
+  const manufacId = String(rawId || '').trim();
+  const vendor = manufacturerNameCache.get(manufacId) ?? manufacId ?? '';
+  return String(vendor).trim();
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
@@ -402,6 +415,12 @@ async function uploadProducts(
   activePeriodIds = transformationRules.applyPeriodPricing 
     ? await loadActivePeriodIds(supabase, projectId) 
     : new Set();
+
+  const manufacturerFile = await ensureManufacturerFileReady(supabase, projectId);
+  if (!manufacturerFile.ready) {
+    throw new Error('Producentfil mangler eller er ikke behandlet endnu. Upload og kør udtræk af export-MANUFACTURERS før produktmigrering.');
+  }
+
   manufacturerNameCache = await loadManufacturerNames(supabase, projectId);
   
   // ============================================================================
@@ -634,11 +653,11 @@ async function processProductGroup(
   // If title transforms are disabled ("Brug eksisterende vendor felt"), keep the title exactly as-is.
   const title = allowTitleTransform ? groupedTitle : originalTitle;
 
+  const primaryItem = items[0];
   const manufacId = String(data.vendor || '').trim();
   const vendor = resolveVendorName(manufacId);
   console.log(`[PRODUCTS][VENDOR] SKU=${String(data.sku || primaryItem.external_id || '')} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendor}"`);
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
-  const primaryItem = items[0];
 
   // ============================================================================
   // PHASE 1: ATOMIC LOCK ACQUISITION
