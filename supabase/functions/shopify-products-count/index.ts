@@ -79,13 +79,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("shopify_store_domain,shopify_access_token_encrypted")
-      .eq("id", projectId)
-      .single();
-
-    if (projectError || !project) throw new Error("Project not found");
+    // Project data already fetched above in the ownership check
 
     const shopifyDomain = String(project.shopify_store_domain || "").trim();
     const shopifyToken = String(project.shopify_access_token_encrypted || "").trim();
