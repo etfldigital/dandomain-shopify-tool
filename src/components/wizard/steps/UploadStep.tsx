@@ -660,6 +660,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       fetchJobs();
       fetchStatusCounts(); // Throttled internally
       fetchShopifyLiveCounts(); // Throttled internally (30s)
+      fetchManufacturerLookupStatus();
+      fetchVendorDebugRows();
     }, 15_000);
 
     // Watchdog is now self-scheduling on the server side (started by upload-worker).
