@@ -752,7 +752,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     const manufacturerReady = await ensureManufacturerLookupReady(freshCounts, singleEntityType);
     if (!manufacturerReady) return;
 
-    await fetchVendorDebugRows();
+    
     await logVendorResolutionPreview(freshCounts, singleEntityType);
 
     setIsStarting(true);
