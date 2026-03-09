@@ -625,7 +625,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       .eq('project_id', projectId);
 
     if (manufacturersError) {
-      console.warn('Kunne ikke hente producent-mapping til preview:', manufacturersError);
+      
       setManufacturerNameMap(new Map());
     } else {
       const nextMap = new Map<string, string>();
