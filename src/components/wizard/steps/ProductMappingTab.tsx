@@ -734,7 +734,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         if (!silent) toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
       }
     } catch (error) {
-      console.error('Error fetching metafields:', error);
+      
       if (!silent) toast.error('Fejl ved hentning af metafelter');
     } finally {
       setFetchingMetafields(false);
