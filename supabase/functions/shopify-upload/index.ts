@@ -452,18 +452,88 @@ function inferVendorFromTitle(manufacturerId: string, fallbackTitle?: string): s
   return formatInferredVendor(words[0]);
 }
 
-function resolveVendorName(rawId: string, fallbackTitle?: string): string {
+function resolveVendorName(rawId: string, ...fallbackTitles: Array<string | undefined>): string {
   const manufacId = String(rawId || '').trim();
   const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
   const normalizedId = normalizeManufacturerKey(manufacId);
+  const normalizedIdAlnum = normalizedId.replace(/[^a-z0-9]/g, '');
 
   if (!manufacId) return '';
 
-  const vendor = manufacturerNameCache.get(manufacId) ?? manufacturerNameCache.get(normalizedId);
-  if (vendor) return String(vendor).trim();
+  const directVendor = manufacturerNameCache.get(manufacId) ?? manufacturerNameCache.get(normalizedId);
 
-  const inferred = inferVendorFromTitle(manufacId, fallbackTitle);
-  if (inferred) return inferred;
+  const candidateNames = Array.from(new Set(manufacturerNameCache.values()));
+
+  const findExpandedFromCandidates = (): string | null => {
+    if (!normalizedIdAlnum) return null;
+
+    // Fallback 1: Prefix match (e.g. ARKK -> ARKK COPENHAGEN)
+    const prefixMatches = candidateNames.filter((name) => {
+      const normalizedName = normalizeManufacturerKey(name);
+      const normalizedNameAlnum = normalizedName.replace(/[^a-z0-9]/g, '');
+      return (
+        normalizedNameAlnum === normalizedIdAlnum ||
+        normalizedName.startsWith(`${normalizedId} `)
+      );
+    });
+
+    if (prefixMatches.length === 1) return prefixMatches[0];
+
+    // Fallback 2: Abbreviation -> initials (e.g. SA -> Stine A)
+    if (normalizedIdAlnum.length <= 5 && /^[a-z0-9]+$/i.test(normalizedIdAlnum)) {
+      const initialMatches = candidateNames.filter((name) => {
+        const initialsFromName = normalizeManufacturerKey(name)
+          .split(' ')
+          .filter(Boolean)
+          .map((part) => part[0])
+          .join('');
+        return initialsFromName === normalizedIdAlnum;
+      });
+
+      if (initialMatches.length === 1) return initialMatches[0];
+    }
+
+    return null;
+  };
+
+  const findInferredFromTitles = (): string | null => {
+    const seen = new Set<string>();
+    for (const title of fallbackTitles) {
+      const normalizedTitle = String(title || '').trim();
+      if (!normalizedTitle || seen.has(normalizedTitle)) continue;
+      seen.add(normalizedTitle);
+
+      const inferred = inferVendorFromTitle(manufacId, normalizedTitle);
+      if (inferred) return inferred;
+    }
+    return null;
+  };
+
+  if (directVendor) {
+    const trimmedDirect = String(directVendor).trim();
+    const directAlnum = normalizeManufacturerKey(trimmedDirect).replace(/[^a-z0-9]/g, '');
+    const looksLikeAbbreviation = normalizedIdAlnum.length > 0 && normalizedIdAlnum.length <= 5;
+
+    // If mapping already expands the ID, keep it.
+    if (directAlnum && directAlnum !== normalizedIdAlnum) return trimmedDirect;
+
+    // If mapping equals ID (e.g. SA -> SA), try stronger fallbacks before returning raw ID.
+    if (looksLikeAbbreviation) {
+      const expandedFromNames = findExpandedFromCandidates();
+      if (expandedFromNames) return expandedFromNames;
+
+      const inferredFromTitles = findInferredFromTitles();
+      if (inferredFromTitles) return inferredFromTitles;
+    }
+
+    return trimmedDirect;
+  }
+
+  const expandedFromNames = findExpandedFromCandidates();
+  if (expandedFromNames) return expandedFromNames;
+
+  const inferredFromTitles = findInferredFromTitles();
+  if (inferredFromTitles) return inferredFromTitles;
 
   return manufacId;
 }
