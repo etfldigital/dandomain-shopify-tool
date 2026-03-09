@@ -441,7 +441,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         },
       });
       
-      console.log('[UploadStep] Shopify all-counts response:', response.data);
+      
       
       if (response.data?.success && response.data.counts) {
         const c = response.data.counts;
