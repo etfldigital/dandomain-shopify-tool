@@ -346,7 +346,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       setManufacturerLookupStatus(nextStatus);
       return nextStatus;
     } catch (error) {
-      console.warn('[UploadStep] Kunne ikke hente producent-status:', error);
+      
       const fallbackStatus: ManufacturerLookupStatus = {
         fileName: null,
         fileStatus: 'missing',
