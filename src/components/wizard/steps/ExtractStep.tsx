@@ -435,7 +435,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'categories':
             parsedData = parseCategoriesXML(text);
-            console.log('Parsed categories:', parsedData.length, 'First few:', parsedData.slice(0, 3));
+            
             
             // Deduplicate by category ID - keep last occurrence
             const catMap = new Map<string, typeof parsedData[0]>();
