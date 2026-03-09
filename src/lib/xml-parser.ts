@@ -73,7 +73,21 @@ function getAllElements(element: Element, tagName: string): Element[] {
  * Parse products XML from DanDomain
  * Structure: PRODUCT_EXPORT > ELEMENTS > PRODUCT
  */
-export function parseProductsXML(xmlText: string): ProductData[] {
+export interface ParseStats {
+  xmlCharLength: number;
+  totalElementsFound: number;
+  totalProcessed: number;
+  skippedNoTitle: number;
+  skippedNoTitleOrSku: number;
+  duplicateSkus: number;
+  uniqueAfterDedup: number;
+}
+
+export function parseProductsXML(xmlText: string, stats?: ParseStats): ProductData[] {
+  if (stats) {
+    stats.xmlCharLength = xmlText.length;
+  }
+  
   const parser = new DOMParser();
   const doc = parser.parseFromString(sanitizeXml(xmlText), 'text/xml');
   
@@ -85,9 +99,16 @@ export function parseProductsXML(xmlText: string): ProductData[] {
   }
   
   const products = getAllElements(doc.documentElement, 'PRODUCT');
-  console.log(`Parsing ${products.length} products from XML`);
+  console.log(`Parsing ${products.length} <PRODUCT> elements from XML (${xmlText.length.toLocaleString()} chars)`);
   
-  return products
+  if (stats) {
+    stats.totalElementsFound = products.length;
+  }
+  
+  let skippedNoTitle = 0;
+  let skippedNoTitleOrSku = 0;
+  
+  const mapped = products
     .map(product => {
       // GENERAL section
       const general = product.getElementsByTagName('GENERAL')[0];
@@ -239,17 +260,28 @@ export function parseProductsXML(xmlText: string): ProductData[] {
       const hasSku = product.sku && product.sku.trim() !== '';
       
       if (!hasTitle && !hasSku) {
-        console.log('Skipping empty product - no title or SKU');
+        skippedNoTitleOrSku++;
         return false;
       }
       
       if (!hasTitle && hasSku) {
+        skippedNoTitle++;
         console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
         return false;
       }
       
       return true;
     });
+  
+  if (stats) {
+    stats.totalProcessed = mapped.length;
+    stats.skippedNoTitle = skippedNoTitle;
+    stats.skippedNoTitleOrSku = skippedNoTitleOrSku;
+  }
+  
+  console.log(`[XML Parser] Elements: ${products.length}, Processed: ${mapped.length}, Skipped (no title): ${skippedNoTitle}, Skipped (no title+sku): ${skippedNoTitleOrSku}`);
+  
+  return mapped;
 }
 
 /**
