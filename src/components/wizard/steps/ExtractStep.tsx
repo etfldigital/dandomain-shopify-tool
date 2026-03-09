@@ -548,9 +548,11 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           .eq('project_id', project.id)
           .eq('entity_type', uploadedFile.type);
 
+        // Release file reference to free memory after successful parsing
         setUploadedFiles(prev =>
           prev.map(f => f.type === uploadedFile.type ? { 
             ...f, 
+            file: new File([], f.file.name), // Replace with empty placeholder
             status: 'success', 
             count: recordCount, 
             error: undefined,
