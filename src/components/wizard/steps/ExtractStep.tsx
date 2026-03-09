@@ -322,6 +322,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             recordCount = uniqueProducts.length;
             
             console.log(`[Extract] Product stats:`, productStats);
+            lastProductStats = productStats;
             
             // Insert into canonical_products in batches
             for (let i = 0; i < uniqueProducts.length; i += 100) {
