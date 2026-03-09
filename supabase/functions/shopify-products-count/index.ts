@@ -61,29 +61,30 @@ Deno.serve(async (req) => {
       console.warn("[shopify-counts] auth.getUser() failed, falling back to project-only check");
     }
 
-    // Retry project lookup up to 2 times to handle transient DB timeouts
+    // Retry project lookup up to 3 times to handle transient DB timeouts
     let project: any = null;
     let projectError: any = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const result = await supabase
         .from("projects")
         .select("id,shopify_store_domain,shopify_access_token_encrypted,user_id")
         .eq("id", projectId)
-        .single();
+        .maybeSingle();
       project = result.data;
       projectError = result.error;
       if (!projectError && project) break;
-      if (attempt === 0) {
-        console.warn(`[shopify-counts] Project lookup attempt 1 failed: ${projectError?.message || 'no data'}, retrying...`);
-        await new Promise(r => setTimeout(r, 500));
+      if (attempt < 2) {
+        console.warn(`[shopify-counts] Project lookup attempt ${attempt + 1} failed: ${projectError?.message || 'no data'}, retrying in ${(attempt + 1) * 500}ms...`);
+        await new Promise(r => setTimeout(r, (attempt + 1) * 500));
       }
     }
 
-    if (projectError) {
-      console.error(`[shopify-counts] Project lookup failed: ${projectError.message}`);
-      throw new Error(`Database error: ${projectError.message}`);
+    if (projectError || !project) {
+      const reason = projectError ? `db_error: ${projectError.message}` : "project_not_found";
+      console.error(`[shopify-counts] Project lookup failed after retries: ${reason}`);
+      // Return skipped response instead of 500 so the UI doesn't break
+      return skippedResponse(reason);
     }
-    if (!project) throw new Error("Project not found");
 
     // If we got user ID, verify ownership
     if (userId && project.user_id !== userId) {
