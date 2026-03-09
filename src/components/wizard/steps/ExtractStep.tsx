@@ -128,7 +128,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .upload(storagePath, file, { upsert: true });
 
       if (uploadError) {
-        console.error('Storage upload error:', uploadError);
+        
         throw uploadError;
       }
 
