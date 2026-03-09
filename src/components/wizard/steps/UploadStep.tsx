@@ -517,6 +517,7 @@ const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus
     fetchJobs();
     fetchStatusCounts();
     fetchShopifyLiveCounts();
+    fetchManufacturerLookupStatus();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
