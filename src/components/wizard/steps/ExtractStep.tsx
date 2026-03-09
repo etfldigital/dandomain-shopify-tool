@@ -666,13 +666,22 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       let recordCount = 0;
       const hasCategoriesFile = uploadedFiles.some(f => f.type === 'categories');
 
+      let singleStats: ParseStats | undefined;
+
       switch (entityType) {
         case 'products': {
-          const parsedData = parseProductsXML(text);
+          singleStats = {
+            xmlCharLength: 0, totalElementsFound: 0, totalProcessed: 0,
+            skippedNoTitle: 0, skippedNoTitleOrSku: 0, duplicateSkus: 0, uniqueAfterDedup: 0,
+          };
+          const parsedData = parseProductsXML(text, singleStats);
           const productMap = new Map<string, typeof parsedData[0]>();
           parsedData.forEach(product => { if (product.sku) productMap.set(product.sku, product); });
           const uniqueProducts = Array.from(productMap.values());
+          singleStats.duplicateSkus = parsedData.length - uniqueProducts.length;
+          singleStats.uniqueAfterDedup = uniqueProducts.length;
           recordCount = uniqueProducts.length;
+          console.log(`[Extract Single] Product stats:`, singleStats);
           for (let i = 0; i < uniqueProducts.length; i += 100) {
             const batch = uniqueProducts.slice(i, i + 100).map(product => ({
               project_id: project.id, external_id: product.sku, data: product as any, status: 'pending' as const,
