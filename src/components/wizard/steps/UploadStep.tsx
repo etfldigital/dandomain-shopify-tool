@@ -528,7 +528,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchStatusCounts();
     fetchShopifyLiveCounts();
     fetchManufacturerLookupStatus();
-    fetchVendorDebugRows();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
