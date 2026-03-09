@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Header } from '@/components/layout/Header';
 import { ProjectCard } from '@/components/dashboard/ProjectCard';
 import { CreateProjectDialog } from '@/components/dashboard/CreateProjectDialog';
+import { DeletedProjectsDialog } from '@/components/dashboard/DeletedProjectsDialog';
 import { useProjects } from '@/hooks/useProjects';
 import { Loader2, FolderOpen } from 'lucide-react';
 import {
@@ -18,7 +19,7 @@ import {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { projects, isLoading, createProject, deleteProject } = useProjects();
+  const { projects, deletedProjects, isLoading, isLoadingDeleted, createProject, deleteProject, restoreProject, permanentDeleteProject } = useProjects();
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const handleCreateProject = async (name: string) => {
@@ -87,6 +88,17 @@ export default function Dashboard() {
             ))}
           </div>
         )}
+
+        <div className="flex justify-center mt-10">
+          <DeletedProjectsDialog
+            deletedProjects={deletedProjects}
+            isLoading={isLoadingDeleted}
+            onRestore={async (id) => { await restoreProject.mutateAsync(id); }}
+            onPermanentDelete={async (id) => { await permanentDeleteProject.mutateAsync(id); }}
+            isRestoring={restoreProject.isPending}
+            isDeleting={permanentDeleteProject.isPending}
+          />
+        </div>
       </main>
 
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
@@ -94,8 +106,7 @@ export default function Dashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Slet projekt?</AlertDialogTitle>
             <AlertDialogDescription className="leading-relaxed">
-              Dette vil permanent slette projektet og alle tilhørende data. 
-              Denne handling kan ikke fortrydes.
+              Projektet flyttes til slettede projekter. Du kan genskabe det senere.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-3 sm:gap-2">
