@@ -1240,7 +1240,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           });
       }
     } catch (error) {
-      console.error('Error saving field mappings:', error);
+      
       toast.error('Fejl ved gemning af felt-mappings');
     }
   };
