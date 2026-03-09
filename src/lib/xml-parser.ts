@@ -154,9 +154,11 @@ export function parseProductsXML(xmlText: string): ProductData[] {
         }
       }
       
-      // MANUFACTURERS section
+      // MANUFACTURERS section – prefer MANUFAC_NAME over MANUFAC_ID
       const manufacturers = product.getElementsByTagName('MANUFACTURERS')[0];
-      const vendor = manufacturers ? getElementText(manufacturers, 'MANUFAC_ID') : null;
+      const vendor = manufacturers
+        ? (getElementText(manufacturers, 'MANUFAC_NAME') || getElementText(manufacturers, 'MANUFAC_ID'))
+        : null;
       
       // PRODUCT_CATEGORIES section
       const categoriesSection = product.getElementsByTagName('PRODUCT_CATEGORIES')[0];

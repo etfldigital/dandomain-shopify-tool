@@ -272,7 +272,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       images: extractImagesFromRow(row),
       tags: [],
       category_external_ids: parseCategoryIds(row['PROD_CAT_ID']),
-      vendor: row['MANUFAC_ID'] || null,
+      vendor: row['MANUFAC_NAME'] || row['MANUFAC_ID'] || null,
       vat_rate: row['PROD_VAT'] ? parseFloat(row['PROD_VAT'].replace(',', '.')) : null,
       language: row['LANGUAGE_ID'] || 'da',
       // Custom fields for metafield mapping (FIELD_1 to FIELD_20)
