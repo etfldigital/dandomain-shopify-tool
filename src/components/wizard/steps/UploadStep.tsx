@@ -383,56 +383,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return false;
   };
 
-  const fetchVendorDebugRows = async () => {
-    setIsVendorDebugLoading(true);
-    try {
-      const [{ data: manufacturers, error: manufacturersError }, { data: products, error: productsError }] = await Promise.all([
-        supabase
-          .from('canonical_manufacturers')
-          .select('external_id, name')
-          .eq('project_id', project.id),
-        supabase
-          .from('canonical_products')
-          .select('external_id, data')
-          .eq('project_id', project.id)
-          .eq('status', 'pending')
-          .eq('data->>_isPrimary', 'true')
-          .order('created_at', { ascending: false })
-          .limit(5),
-      ]);
-
-      if (manufacturersError) throw manufacturersError;
-      if (productsError) throw productsError;
-
-      const manufacturerMap = new Map<string, string>();
-      for (const manufacturer of manufacturers || []) {
-        const id = String(manufacturer.external_id || '').trim();
-        const name = String(manufacturer.name || '').trim();
-        if (id && name) {
-          manufacturerMap.set(id, name);
-        }
-      }
-
-      const rows: VendorDebugRow[] = (products || []).map((row) => {
-        const rawData = row.data as Record<string, unknown> | null;
-        const manufacId = String(rawData?.vendor || '').trim();
-        const resolvedVendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
-
-        return {
-          prodNum: String(rawData?.sku || row.external_id || '').trim(),
-          manufacId,
-          resolvedVendorName: String(resolvedVendorName).trim(),
-        };
-      });
-
-      setVendorDebugRows(rows);
-    } catch (error) {
-      console.warn('[VendorLookup] Kunne ikke hente debug-preview:', error);
-      setVendorDebugRows([]);
-    } finally {
-      setIsVendorDebugLoading(false);
-    }
-  };
 
   const logVendorResolutionPreview = async (
     freshCounts: Record<EntityType, StatusCounts>,
