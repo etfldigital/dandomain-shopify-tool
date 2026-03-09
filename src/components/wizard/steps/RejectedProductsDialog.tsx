@@ -66,7 +66,7 @@ export function RejectedProductsDialog({
       if (error) throw error;
       setProducts((data || []) as RejectedProduct[]);
     } catch (error) {
-      console.error('Failed to fetch rejected products:', error);
+      
     } finally {
       setIsLoading(false);
     }
