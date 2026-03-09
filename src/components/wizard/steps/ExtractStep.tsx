@@ -213,7 +213,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       .eq('project_id', project.id);
 
     if (mappingClearError) {
-      console.error('Error clearing mapping profiles:', mappingClearError);
+      
       setProcessing(false);
       return;
     }
