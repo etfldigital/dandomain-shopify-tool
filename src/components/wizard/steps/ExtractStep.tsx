@@ -475,7 +475,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'periods':
             const periodsParsed = parsePeriodsXML(text);
-            console.log('Parsed periods:', periodsParsed.length);
+            
             recordCount = periodsParsed.length;
             
             for (let i = 0; i < periodsParsed.length; i += 100) {
