@@ -82,7 +82,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .eq('project_id', project.id);
 
       if (error) {
-        console.error('Error loading project files:', error);
+        
         return;
       }
 
