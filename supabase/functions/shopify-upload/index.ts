@@ -363,7 +363,10 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
 function resolveVendorName(vendorId: string): string {
   if (!vendorId) return '';
   const resolved = manufacturerNameCache.get(vendorId);
-  return resolved || vendorId; // Fallback to ID if no mapping found
+  if (!resolved) {
+    console.warn(`[PRODUCTS] No manufacturer name found for MANUFAC_ID "${vendorId}" – vendor will be empty. Ensure the manufacturers export file has been uploaded.`);
+  }
+  return resolved || ''; // Never use raw MANUFAC_ID as vendor name
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
