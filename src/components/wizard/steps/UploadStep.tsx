@@ -1490,11 +1490,18 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             const total = (dbTimedOut ? job!.total_count : totalFromDb) + skipped;
             const processedActual = processedFromDb + skipped;
             
-            // Live estimation for smooth UI during uploads
+            // Live progress: use job.processed_count when running (updates via realtime every 2s)
+            // This is MUCH more responsive than statusCounts which only refresh every 15s
+            const jobProcessed = job && job.status === 'running' ? job.processed_count : 0;
             const processedLive = job && job.status === 'running' 
-              ? getLiveProcessedCount(job, processedActual)
+              ? Math.max(processedActual, getLiveProcessedCount(job, jobProcessed))
               : processedActual;
             const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
+            
+            // For the total, prefer job.total_count when running (always accurate)
+            const liveTotal = job && job.status === 'running' && job.total_count > 0
+              ? Math.max(total, job.total_count)
+              : total;
 
             // UI-only: show when worker is waiting for next attempt (rate limit/backoff)
             const waitMs = job?.status === 'running' && job?.next_attempt_at
@@ -1509,8 +1516,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               ? 'completed' 
               : job?.status || (effectivePending === 0 && total > 0 ? 'completed' : 'pending');
 
-            // Progress percentage: when pending=0, this will be 100%
-            const percent = total > 0 ? (processedActual / total) * 100 : 0;
+            // Progress percentage: use live count when uploading for responsive updates
+            const displayProcessed = job && job.status === 'running' ? processedLive : processedActual;
+            const displayTotal = job && job.status === 'running' ? liveTotal : total;
+            const percent = displayTotal > 0 ? (displayProcessed / displayTotal) * 100 : 0;
 
             return (
               <div key={type} className="space-y-2">
