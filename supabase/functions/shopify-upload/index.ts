@@ -370,11 +370,11 @@ function resolveVendorName(vendorId: string): string {
   // Exact, case-sensitive lookup by MANUFAC_ID
   const resolved = manufacturerNameCache.get(lookupId);
   if (resolved === undefined) {
-    console.warn(`[PRODUCTS] No manufacturer name found for MANUFAC_ID "${lookupId}" – vendor will be empty. Ensure the manufacturers export file has been uploaded.`);
-    return '';
+    console.warn(`[PRODUCTS] No MANUFAC_NAME found for MANUFAC_ID "${lookupId}". Falling back to MANUFAC_ID as vendor.`);
+    return lookupId;
   }
 
-  return resolved;
+  return String(resolved || lookupId).trim();
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
