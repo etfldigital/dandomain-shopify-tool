@@ -380,15 +380,65 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (!shouldValidateManufacturers(freshCounts, singleEntityType)) return true;
 
     const status = await fetchManufacturerLookupStatus();
-    const hasProcessedFile = status.fileStatus === 'processed';
-    const hasMappings = status.mappingCount > 0;
+    const hasProcessedFile = status.fileStatus === 'processed' && Boolean(status.fileName);
 
-    if (hasProcessedFile && hasMappings) return true;
+    if (hasProcessedFile) return true;
 
     toast.warning('Producentfil mangler før produktupload', {
       description: 'Upload og udtræk filen "Producenter" først, så MANUFAC_ID kan mappes til MANUFAC_NAME.',
     });
     return false;
+  };
+
+  const fetchVendorDebugRows = async () => {
+    setIsVendorDebugLoading(true);
+    try {
+      const [{ data: manufacturers, error: manufacturersError }, { data: products, error: productsError }] = await Promise.all([
+        supabase
+          .from('canonical_manufacturers')
+          .select('external_id, name')
+          .eq('project_id', project.id),
+        supabase
+          .from('canonical_products')
+          .select('external_id, data')
+          .eq('project_id', project.id)
+          .eq('status', 'pending')
+          .eq('data->>_isPrimary', 'true')
+          .order('created_at', { ascending: false })
+          .limit(5),
+      ]);
+
+      if (manufacturersError) throw manufacturersError;
+      if (productsError) throw productsError;
+
+      const manufacturerMap = new Map<string, string>();
+      for (const manufacturer of manufacturers || []) {
+        const id = String(manufacturer.external_id || '').trim();
+        const name = String(manufacturer.name || '').trim();
+        if (id && name) {
+          manufacturerMap.set(id, name);
+        }
+      }
+
+      const rows: VendorDebugRow[] = (products || []).map((row) => {
+        const rawData = row.data as Record<string, unknown> | null;
+        const manufacId = String(rawData?.vendor || '').trim();
+        const resolvedVendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
+
+        return {
+          prodNum: String(rawData?.sku || row.external_id || '').trim(),
+          manufacId,
+          resolvedVendorName: String(resolvedVendorName).trim(),
+        };
+      });
+
+      setVendorDebugRows(rows);
+    } catch (error) {
+      console.warn('[VendorLookup] Kunne ikke hente debug-preview:', error);
+      setVendorDebugRows([]);
+    } finally {
+      setIsVendorDebugLoading(false);
+    }
   };
 
   const logVendorResolutionPreview = async (
@@ -408,9 +458,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       const manufacturerMap = new Map<string, string>();
       for (const manufacturer of manufacturers || []) {
         const id = String(manufacturer.external_id || '').trim();
-        if (!id) continue;
         const name = String(manufacturer.name || '').trim();
-        manufacturerMap.set(id, name || id);
+        if (id && name) {
+          manufacturerMap.set(id, name);
+        }
       }
 
       console.log(`[VendorLookup] manufacturerMap size: ${manufacturerMap.size}`);
@@ -436,7 +487,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         for (const row of rows) {
           const rawData = row.data as Record<string, unknown> | null;
           const manufacId = String(rawData?.vendor || '').trim();
-          const vendorName = manufacId ? (manufacturerMap.get(manufacId) || manufacId) : '';
+          const vendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
           console.log(`[VendorLookup] SKU=${row.external_id} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendorName}"`);
           totalLogged += 1;
         }
