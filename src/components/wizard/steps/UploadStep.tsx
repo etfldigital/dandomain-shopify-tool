@@ -395,8 +395,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // logVendorResolutionPreview removed — was iterating all products just to console.log
 
   const fetchShopifyLiveCountForEntity = async (entityType: EntityType, force = false) => {
-    
-    
+    setEntityLoading(prev => ({ ...prev, [entityType]: true }));
     try {
       const response = await supabase.functions.invoke('shopify-products-count', {
         body: { 
@@ -405,17 +404,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         },
       });
       
-      
-      
       if (response.data?.success && response.data.counts) {
         const value = response.data.counts[entityType] ?? null;
         setShopifyLiveCounts(prev => ({
           ...prev,
           [entityType]: value,
-          fetchFailed: false,
+          fetchFailed: prev.fetchFailed && value === null, // Only keep failed if still null
         }));
       } else {
-        
         setShopifyLiveCounts(prev => ({
           ...prev,
           [entityType]: null,
@@ -423,12 +419,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         }));
       }
     } catch (e) {
-      
       setShopifyLiveCounts(prev => ({
         ...prev,
         [entityType]: null,
         fetchFailed: true,
       }));
+    } finally {
+      setEntityLoading(prev => ({ ...prev, [entityType]: false }));
     }
   };
 
