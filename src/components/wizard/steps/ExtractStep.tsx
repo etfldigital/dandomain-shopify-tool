@@ -511,7 +511,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .delete()
                 .eq('project_id', project.id);
               if (deleteError) {
-                console.error('Error clearing manufacturers before insert:', deleteError);
+                
                 throw deleteError;
               }
             }
