@@ -1050,7 +1050,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // Refresh jobs
       await fetchJobs();
     } catch (error) {
-      console.error('Retry failed:', error);
+      
       toast.error(`Kunne ikke genstarte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setRetryingEntityType(null);
