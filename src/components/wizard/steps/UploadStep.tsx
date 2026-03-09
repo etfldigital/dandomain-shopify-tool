@@ -1067,22 +1067,38 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const hasStartedRealUpload = jobs.some(j => !j.is_test_mode);
   
   // Calculate totals from statusCounts (the source of truth from database) - EARLY for allCompleted
-  const fixedTotalItems = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed + counts.duplicate, 
-    0
-  );
-  const fixedTotalUploaded = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.uploaded, 
-    0
-  );
-  const fixedTotalFailed = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.failed, 
-    0
-  );
-  const fixedTotalPending = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending, 
-    0
-  );
+  // When DB counts timeout (return 0), fall back to job total_count
+  const fixedTotalItems = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + dbTotal;
+    // Fallback: use job data when DB timed out
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    return acc + (job?.total_count || 0);
+  }, 0);
+  const fixedTotalUploaded = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.uploaded;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    if (job && job.total_count > 0) return acc + Math.max(0, job.processed_count - job.error_count);
+    return acc;
+  }, 0);
+  const fixedTotalFailed = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.failed;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    return acc + (job?.error_count || 0);
+  }, 0);
+  const fixedTotalPending = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.pending;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    if (job && job.total_count > 0) return acc + Math.max(0, job.total_count - job.processed_count);
+    return acc;
+  }, 0);
   
   // All entities are truly completed when zero pending items remain across all entity types
   // AND there's at least some data that has been uploaded
