@@ -586,7 +586,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         hasUploadedPeriods: true,
       });
     } catch (e: any) {
-      console.error('Error fetching period data:', e);
+      
       setPeriodError('Kunne ikke hente periodestyring data');
     } finally {
       setLoadingPeriods(false);
