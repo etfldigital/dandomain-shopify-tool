@@ -1752,7 +1752,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
                               : null;
                             const jobRunning = job?.status === 'running';
-                            const noPending = counts.pending === 0;
+                            const noPending = effectivePending === 0;
 
                           return (
                               <>
