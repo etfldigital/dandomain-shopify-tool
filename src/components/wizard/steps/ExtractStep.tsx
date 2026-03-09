@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
-import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML, parseManufacturersXML } from '@/lib/xml-parser';
+import { parseProductsXML, parseCustomersXML, parseOrdersXML, parseCategoriesXML, parsePeriodsXML, parseManufacturersXML, type ParseStats } from '@/lib/xml-parser';
 import { useAuth } from '@/hooks/useAuth';
 
 interface ExtractStepProps {
@@ -36,6 +36,7 @@ interface UploadedFile {
   status: 'pending' | 'processing' | 'success' | 'error';
   count?: number;
   error?: string;
+  parseStats?: ParseStats;
 }
 
 interface ProjectFile {
@@ -265,6 +266,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     const totalFiles = uploadedFiles.length;
     let processed = 0;
     let productCount = 0;
+    let lastProductStats: ParseStats | undefined;
     let customerCount = 0;
     let orderCount = 0;
     let categoryCount = 0;
@@ -295,7 +297,16 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         
         switch (uploadedFile.type) {
           case 'products':
-            parsedData = parseProductsXML(text);
+            const productStats: ParseStats = {
+              xmlCharLength: 0,
+              totalElementsFound: 0,
+              totalProcessed: 0,
+              skippedNoTitle: 0,
+              skippedNoTitleOrSku: 0,
+              duplicateSkus: 0,
+              uniqueAfterDedup: 0,
+            };
+            parsedData = parseProductsXML(text, productStats);
             
             // Deduplicate by SKU - keep last occurrence
             const productMap = new Map<string, typeof parsedData[0]>();
@@ -305,8 +316,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
               }
             });
             const uniqueProducts = Array.from(productMap.values());
+            productStats.duplicateSkus = parsedData.length - uniqueProducts.length;
+            productStats.uniqueAfterDedup = uniqueProducts.length;
             productCount = uniqueProducts.length;
             recordCount = uniqueProducts.length;
+            
+            console.log(`[Extract] Product stats:`, productStats);
+            lastProductStats = productStats;
             
             // Insert into canonical_products in batches
             for (let i = 0; i < uniqueProducts.length; i += 100) {
@@ -533,7 +549,13 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           .eq('entity_type', uploadedFile.type);
 
         setUploadedFiles(prev =>
-          prev.map(f => f.type === uploadedFile.type ? { ...f, status: 'success', count: recordCount, error: undefined } : f)
+          prev.map(f => f.type === uploadedFile.type ? { 
+            ...f, 
+            status: 'success', 
+            count: recordCount, 
+            error: undefined,
+            parseStats: uploadedFile.type === 'products' ? lastProductStats : undefined,
+          } : f)
         );
       } catch (error: any) {
         console.error('Error processing file:', error);
@@ -644,13 +666,22 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       let recordCount = 0;
       const hasCategoriesFile = uploadedFiles.some(f => f.type === 'categories');
 
+      let singleStats: ParseStats | undefined;
+
       switch (entityType) {
         case 'products': {
-          const parsedData = parseProductsXML(text);
+          singleStats = {
+            xmlCharLength: 0, totalElementsFound: 0, totalProcessed: 0,
+            skippedNoTitle: 0, skippedNoTitleOrSku: 0, duplicateSkus: 0, uniqueAfterDedup: 0,
+          };
+          const parsedData = parseProductsXML(text, singleStats);
           const productMap = new Map<string, typeof parsedData[0]>();
           parsedData.forEach(product => { if (product.sku) productMap.set(product.sku, product); });
           const uniqueProducts = Array.from(productMap.values());
+          singleStats.duplicateSkus = parsedData.length - uniqueProducts.length;
+          singleStats.uniqueAfterDedup = uniqueProducts.length;
           recordCount = uniqueProducts.length;
+          console.log(`[Extract Single] Product stats:`, singleStats);
           for (let i = 0; i < uniqueProducts.length; i += 100) {
             const batch = uniqueProducts.slice(i, i + 100).map(product => ({
               project_id: project.id, external_id: product.sku, data: product as any, status: 'pending' as const,
@@ -758,7 +789,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .eq('project_id', project.id).eq('entity_type', entityType);
 
       setUploadedFiles(prev =>
-        prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined } : f)
+        prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined, parseStats: singleStats } : f)
       );
     } catch (error: any) {
       console.error('Error processing file:', error);
@@ -830,14 +861,30 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                     <div>
                       <h4 className="font-medium">{config.label}</h4>
                       {uploadedFile ? (
-                        <p className="text-sm text-muted-foreground">
-                          {uploadedFile.status === 'success' 
-                            ? `${uploadedFile.count?.toLocaleString('da-DK')} rækker importeret`
-                            : uploadedFile.status === 'error'
-                            ? uploadedFile.error
-                            : uploadedFile.file.name || config.acceptedLabel
-                          }
-                        </p>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {uploadedFile.status === 'success' 
+                              ? `${uploadedFile.count?.toLocaleString('da-DK')} rækker importeret`
+                              : uploadedFile.status === 'error'
+                              ? uploadedFile.error
+                              : uploadedFile.file.name || config.acceptedLabel
+                            }
+                          </p>
+                          {uploadedFile.parseStats && uploadedFile.status === 'success' && (
+                            <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                              <p>📄 XML: {uploadedFile.parseStats.xmlCharLength.toLocaleString('da-DK')} tegn</p>
+                              <p>📦 &lt;PRODUCT&gt; elementer i XML: <span className="font-medium text-foreground">{uploadedFile.parseStats.totalElementsFound.toLocaleString('da-DK')}</span></p>
+                              <p>✅ Gyldige produkter (med titel): <span className="font-medium text-foreground">{uploadedFile.parseStats.totalProcessed.toLocaleString('da-DK')}</span></p>
+                              {uploadedFile.parseStats.duplicateSkus > 0 && (
+                                <p>🔄 Varianter (duplikat-SKU, slået sammen): <span className="font-medium text-foreground">{uploadedFile.parseStats.duplicateSkus.toLocaleString('da-DK')}</span></p>
+                              )}
+                              {(uploadedFile.parseStats.skippedNoTitle + uploadedFile.parseStats.skippedNoTitleOrSku) > 0 && (
+                                <p>⚠️ Sprunget over (mangler titel/SKU): <span className="font-medium text-amber-600">{(uploadedFile.parseStats.skippedNoTitle + uploadedFile.parseStats.skippedNoTitleOrSku).toLocaleString('da-DK')}</span></p>
+                              )}
+                              <p>🎯 Unikke produktrækker importeret: <span className="font-medium text-foreground">{uploadedFile.parseStats.uniqueAfterDedup.toLocaleString('da-DK')}</span></p>
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <p className="text-sm text-muted-foreground">{config.acceptedLabel}</p>
                       )}
