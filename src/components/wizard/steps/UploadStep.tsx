@@ -1548,8 +1548,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     </div>
                     <div>
                       <span className="font-medium">{label}</span>
-                      {/* Clean summary showing processed breakdown */}
-                      {(totalFromDb > 0 || dbTimedOut) && (
+                      {/* Always show entity status - even when counts are 0 */}
+                      {(() => {
+                        const hasAnyData = totalFromDb > 0 || dbTimedOut || rawEntityCounts[type] > 0;
+                        return (
                         <div className="text-xs text-muted-foreground">
                           {/* Show raw vs grouped count for products */}
                           {type === 'products' && rawEntityCounts.products > 0 && rawEntityCounts.products !== total && (
