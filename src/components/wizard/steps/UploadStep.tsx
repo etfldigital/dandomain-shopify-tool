@@ -299,8 +299,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
-  // Fetch live count from Shopify API for a SINGLE entity type
-const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus> => {
+  // Manufacturer lookup status + validation before product uploads
+  const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus> => {
     try {
       const [fileResult, manufacturerCountResult] = await Promise.all([
         supabase
