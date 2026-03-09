@@ -382,6 +382,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     return manufacturerId;
   };
 
+  // Combined list of Shopify fields including dynamically fetched metafields
+  const allShopifyFields = [
+    ...BASE_SHOPIFY_FIELDS,
+    ...shopifyMetafields.map(mf => ({
+      value: `metafields.${mf.namespace}.${mf.key}`,
+      label: mf.name || `${mf.namespace}.${mf.key}`,
+      isMetafield: true,
+    })),
+  ];
+
   const findNewMetafields = (mappings: FieldMapping[]) => {
     const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
     return mappings
