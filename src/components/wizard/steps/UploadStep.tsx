@@ -1067,22 +1067,38 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const hasStartedRealUpload = jobs.some(j => !j.is_test_mode);
   
   // Calculate totals from statusCounts (the source of truth from database) - EARLY for allCompleted
-  const fixedTotalItems = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending + counts.uploaded + counts.failed + counts.duplicate, 
-    0
-  );
-  const fixedTotalUploaded = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.uploaded, 
-    0
-  );
-  const fixedTotalFailed = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.failed, 
-    0
-  );
-  const fixedTotalPending = Object.values(statusCounts).reduce(
-    (acc, counts) => acc + counts.pending, 
-    0
-  );
+  // When DB counts timeout (return 0), fall back to job total_count
+  const fixedTotalItems = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + dbTotal;
+    // Fallback: use job data when DB timed out
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    return acc + (job?.total_count || 0);
+  }, 0);
+  const fixedTotalUploaded = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.uploaded;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    if (job && job.total_count > 0) return acc + Math.max(0, job.processed_count - job.error_count);
+    return acc;
+  }, 0);
+  const fixedTotalFailed = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.failed;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    return acc + (job?.error_count || 0);
+  }, 0);
+  const fixedTotalPending = ENTITY_CONFIG.reduce((acc, { type }) => {
+    const counts = statusCounts[type];
+    const dbTotal = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+    if (dbTotal > 0) return acc + counts.pending;
+    const job = jobs.find(j => j.entity_type === type && (j.status === 'running' || j.status === 'paused' || j.status === 'completed'));
+    if (job && job.total_count > 0) return acc + Math.max(0, job.total_count - job.processed_count);
+    return acc;
+  }, 0);
   
   // All entities are truly completed when zero pending items remain across all entity types
   // AND there's at least some data that has been uploaded
@@ -1523,15 +1539,26 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             const counts = statusCounts[type];
             
             // Database counts are the SOURCE OF TRUTH for progress
+            // BUT: when DB counts all return 0 (timeout), fall back to job data
             const totalFromDb = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
-            const skipped = job?.skipped_count || 0;
-            const errors = counts.failed; // Use DB failed count, not job error_count
+            const dbTimedOut = totalFromDb === 0 && job && job.total_count > 0;
             
-            // CRITICAL: Progress is based on database state
-            // - Processed = uploaded + failed + duplicate (items no longer pending)
-            // - Total = all items in database + skipped (for percentage calculation)
-            const processedFromDb = counts.uploaded + counts.failed + counts.duplicate;
-            const total = totalFromDb + skipped;
+            const skipped = job?.skipped_count || 0;
+            const errors = dbTimedOut ? (job?.error_count || 0) : counts.failed;
+            
+            // When DB timed out, derive progress from the job's own counters
+            const effectivePending = dbTimedOut 
+              ? Math.max(0, job!.total_count - job!.processed_count)
+              : counts.pending;
+            const effectiveUploaded = dbTimedOut 
+              ? job!.processed_count - (job?.error_count || 0)
+              : counts.uploaded;
+            const effectiveDuplicate = dbTimedOut ? 0 : counts.duplicate;
+            const effectiveFailed = dbTimedOut ? (job?.error_count || 0) : counts.failed;
+            
+            // CRITICAL: Progress is based on database state (or job fallback)
+            const processedFromDb = effectiveUploaded + effectiveFailed + effectiveDuplicate;
+            const total = (dbTimedOut ? job!.total_count : totalFromDb) + skipped;
             const processedActual = processedFromDb + skipped;
             
             // Live estimation for smooth UI during uploads
@@ -1548,10 +1575,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             
             // CRITICAL: Job is ONLY complete when pending = 0
             // This ensures the progress bar reaches 100% before showing green checkmark
-            const isComplete = counts.pending === 0 && total > 0;
+            const isComplete = effectivePending === 0 && total > 0;
             const status = isComplete 
               ? 'completed' 
-              : job?.status || (counts.pending === 0 && total > 0 ? 'completed' : 'pending');
+              : job?.status || (effectivePending === 0 && total > 0 ? 'completed' : 'pending');
 
             // Progress percentage: when pending=0, this will be 100%
             const percent = total > 0 ? (processedActual / total) * 100 : 0;
@@ -1585,20 +1612,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     <div>
                       <span className="font-medium">{label}</span>
                       {/* Clean summary showing processed breakdown */}
-                      {totalFromDb > 0 && (
+                      {(totalFromDb > 0 || dbTimedOut) && (
                         <div className="text-xs text-muted-foreground">
                           {isComplete ? (
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
-                              {counts.uploaded > 0 && ` (${counts.uploaded.toLocaleString('da-DK')} ny`}
-                              {counts.duplicate > 0 && `, ${counts.duplicate.toLocaleString('da-DK')} duplikater`}
+                              {effectiveUploaded > 0 && ` (${effectiveUploaded.toLocaleString('da-DK')} ny`}
+                              {effectiveDuplicate > 0 && `, ${effectiveDuplicate.toLocaleString('da-DK')} duplikater`}
                               {skipped > 0 && `, ${skipped.toLocaleString('da-DK')} eksisterende`}
-                              {counts.failed > 0 && `, ${counts.failed.toLocaleString('da-DK')} fejlet`}
-                              {(counts.uploaded > 0 || counts.duplicate > 0 || skipped > 0 || counts.failed > 0) && ')'}
+                              {effectiveFailed > 0 && `, ${effectiveFailed.toLocaleString('da-DK')} fejlet`}
+                              {(effectiveUploaded > 0 || effectiveDuplicate > 0 || skipped > 0 || effectiveFailed > 0) && ')'}
                             </span>
                           ) : (
                             <span>
-                              {counts.pending > 0 && <span className="mr-2">{counts.pending.toLocaleString('da-DK')} afventer</span>}
+                              {effectivePending > 0 && <span className="mr-2">{effectivePending.toLocaleString('da-DK')} afventer</span>}
                               {/* Show Shopify live count for all entity types */}
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
@@ -1607,7 +1634,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-green-600 mr-2">
                                       {liveCount.toLocaleString('da-DK')} i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
                                         title={`Opdater ${label} Shopify-tal`}
                                       >
@@ -1624,7 +1651,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     <span className="text-muted-foreground mr-2">
                                       – i Shopify
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); console.log(`[UploadStep] Retry refresh clicked for ${type}`); fetchShopifyLiveCountForEntity(type, true); }}
+                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
                                         className="ml-1 inline-flex items-center hover:text-foreground"
                                         title="Prøv igen"
                                       >
@@ -1633,14 +1660,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                     </span>
                                   );
                                 }
-                                if (counts.uploaded > 0) {
-                                  return <span className="text-green-600 mr-2">{counts.uploaded.toLocaleString('da-DK')} uploadet</span>;
+                                if (effectiveUploaded > 0) {
+                                  return <span className="text-green-600 mr-2">{effectiveUploaded.toLocaleString('da-DK')} uploadet</span>;
                                 }
                                 return null;
                               })()}
-                              {counts.duplicate > 0 && <span className="text-amber-600 mr-2">{counts.duplicate.toLocaleString('da-DK')} duplikater</span>}
+                              {effectiveDuplicate > 0 && <span className="text-amber-600 mr-2">{effectiveDuplicate.toLocaleString('da-DK')} duplikater</span>}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
-                              {counts.failed > 0 && <span className="text-destructive">{counts.failed.toLocaleString('da-DK')} fejlet</span>}
+                              {effectiveFailed > 0 && <span className="text-destructive">{effectiveFailed.toLocaleString('da-DK')} fejlet</span>}
                             </span>
                           )}
                         </div>
@@ -1725,7 +1752,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
                               : null;
                             const jobRunning = job?.status === 'running';
-                            const noPending = counts.pending === 0;
+                            const noPending = effectivePending === 0;
 
                           return (
                               <>
@@ -1764,7 +1791,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleStartUpload(true, type)}
-                            disabled={counts.pending === 0 || isStarting}
+                            disabled={effectivePending === 0 || isStarting}
                           >
                             <FlaskConical className="w-4 h-4 mr-2" />
                             Test upload (3 stk)
@@ -1772,7 +1799,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleResetRequest(type, 'all')}
-                            disabled={totalFromDb === 0}
+                            disabled={totalFromDb === 0 && !dbTimedOut}
                           >
                             <RotateCcw className="w-4 h-4 mr-2" />
                             Nulstil uploads
@@ -1799,20 +1826,20 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                     )}
                   </div>
                 </div>
-                {(isUploading || job || totalFromDb > 0) && (
+                {(isUploading || job || totalFromDb > 0 || dbTimedOut) && (
                   <MultiProgress 
                     className="h-2"
                     total={total}
                     segments={[
                       { 
-                        value: counts.uploaded, 
+                        value: effectiveUploaded, 
                         className: "bg-green-500",
-                        label: `${counts.uploaded.toLocaleString('da-DK')} uploadet` 
+                        label: `${effectiveUploaded.toLocaleString('da-DK')} uploadet` 
                       },
                       { 
-                        value: counts.duplicate, 
+                        value: effectiveDuplicate, 
                         className: "bg-amber-400",
-                        label: `${counts.duplicate.toLocaleString('da-DK')} duplikater` 
+                        label: `${effectiveDuplicate.toLocaleString('da-DK')} duplikater` 
                       },
                       { 
                         value: skipped, 
@@ -1820,9 +1847,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         label: `${skipped} sprunget over (allerede i Shopify)` 
                       },
                       { 
-                        value: counts.failed, 
+                        value: effectiveFailed, 
                         className: "bg-destructive",
-                        label: `${counts.failed.toLocaleString('da-DK')} fejlet` 
+                        label: `${effectiveFailed.toLocaleString('da-DK')} fejlet` 
                       },
                     ]}
                   />
