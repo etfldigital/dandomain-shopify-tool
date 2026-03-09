@@ -221,8 +221,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     parsedCount: 0,
     mappingCount: 0,
   });
-  const [vendorDebugRows, setVendorDebugRows] = useState<VendorDebugRow[]>([]);
-  const [isVendorDebugLoading, setIsVendorDebugLoading] = useState(false);
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
