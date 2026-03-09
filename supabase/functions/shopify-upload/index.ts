@@ -634,10 +634,12 @@ async function processProductGroup(
   // If title transforms are disabled ("Brug eksisterende vendor felt"), keep the title exactly as-is.
   const title = allowTitleTransform ? groupedTitle : originalTitle;
 
-  const vendor = resolveVendorName(String(data.vendor || '').trim());
+  const manufacId = String(data.vendor || '').trim();
+  const vendor = resolveVendorName(manufacId);
+  console.log(`[PRODUCTS][VENDOR] SKU=${String(data.sku || primaryItem.external_id || '')} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendor}"`);
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
   const primaryItem = items[0];
-  
+
   // ============================================================================
   // PHASE 1: ATOMIC LOCK ACQUISITION
   // Generate a unique lock ID and try to claim this product.
