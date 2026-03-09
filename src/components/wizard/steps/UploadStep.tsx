@@ -2008,43 +2008,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         )}
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Vendor debug (midlertidig)</CardTitle>
-          <CardDescription>
-            5 eksempelprodukter: PROD_NUM, MANUFAC_ID og resolved vendor-navn.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isVendorDebugLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Henter debug-data...
-            </div>
-          ) : vendorDebugRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Ingen produktprøver fundet endnu.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>PROD_NUM</TableHead>
-                  <TableHead>MANUFAC_ID</TableHead>
-                  <TableHead>Resolved Vendor Name</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {vendorDebugRows.map((row) => (
-                  <TableRow key={`${row.prodNum}-${row.manufacId}`}>
-                    <TableCell>{row.prodNum || '–'}</TableCell>
-                    <TableCell>{row.manufacId || '–'}</TableCell>
-                    <TableCell>{row.resolvedVendorName || '–'}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
 
       {/* Skipped products section removed */}
 
