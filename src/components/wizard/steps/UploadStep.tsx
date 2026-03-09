@@ -387,7 +387,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // logVendorResolutionPreview removed — was iterating all products just to console.log
 
   const fetchShopifyLiveCountForEntity = async (entityType: EntityType, force = false) => {
-    console.log(`[UploadStep] fetchShopifyLiveCountForEntity called for ${entityType}, force=${force}`);
+    
     
     try {
       const response = await supabase.functions.invoke('shopify-products-count', {
