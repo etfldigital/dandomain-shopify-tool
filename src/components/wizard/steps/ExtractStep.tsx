@@ -554,7 +554,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             status: 'success', 
             count: recordCount, 
             error: undefined,
-            parseStats: uploadedFile.type === 'products' ? (productStats as any) : undefined,
+            parseStats: uploadedFile.type === 'products' ? lastProductStats : undefined,
           } : f)
         );
       } catch (error: any) {
