@@ -515,6 +515,26 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     if (project?.dandomain_base_url) {
       setDanDomainBaseUrl(project.dandomain_base_url);
     }
+
+    const { data: manufacturers, error: manufacturersError } = await supabase
+      .from('canonical_manufacturers')
+      .select('external_id, name')
+      .eq('project_id', projectId);
+
+    if (manufacturersError) {
+      console.warn('Kunne ikke hente producent-mapping til preview:', manufacturersError);
+      setManufacturerNameMap(new Map());
+    } else {
+      const nextMap = new Map<string, string>();
+      for (const manufacturer of manufacturers || []) {
+        const id = String(manufacturer.external_id || '').trim();
+        const name = String(manufacturer.name || '').trim();
+        if (id && name) {
+          nextMap.set(id, name);
+        }
+      }
+      setManufacturerNameMap(nextMap);
+    }
     
     // Load product list
     const { count } = await supabase
