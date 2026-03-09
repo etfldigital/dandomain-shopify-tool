@@ -330,8 +330,8 @@ export interface ManufacturerData {
 
 /**
  * Parse manufacturers XML from DanDomain
- * Structure: MANUFACTURER_EXPORT > ELEMENTS > MANUFACTURER (or similar)
- * Fields: MANUFAC_ID, MANUFAC_NAME (or ID, NAME)
+ * Structure: MANUFACTURER_EXPORT > ELEMENTS > MANUFACTURER
+ * Fields: MANUFAC_ID, MANUFAC_NAME
  */
 export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
   const parser = new DOMParser();
@@ -343,56 +343,41 @@ export function parseManufacturersXML(xmlText: string): ManufacturerData[] {
     return [];
   }
 
-  // Try different possible container element names
+  // Find manufacturer rows
   let manufacturers = getAllElements(doc.documentElement, 'MANUFACTURER');
-  if (manufacturers.length === 0) {
-    manufacturers = getAllElements(doc.documentElement, 'ROW');
-  }
   if (manufacturers.length === 0) {
     const elements = doc.documentElement.getElementsByTagName('ELEMENTS')[0];
     if (elements) {
-      manufacturers = Array.from(elements.children) as Element[];
+      manufacturers = Array.from(elements.getElementsByTagName('MANUFACTURER')) as Element[];
     }
   }
 
-  console.log(`Parsing ${manufacturers.length} manufacturers from XML`);
-
-  const getDirectChildText = (parent: Element, tagNames: string[]): string => {
+  const getDirectChildText = (parent: Element, tagName: string): string => {
     const children = Array.from(parent.children) as Element[];
 
     // First pass: exact case-sensitive match
-    for (const tagName of tagNames) {
-      const exact = children.find((child) => child.tagName === tagName);
-      const text = exact?.textContent?.trim() || '';
-      if (text) return text;
-    }
+    const exact = children.find((child) => child.tagName === tagName);
+    const exactText = exact?.textContent?.trim() || '';
+    if (exactText) return exactText;
 
-    // Second pass: case-insensitive fallback to handle export variants safely
-    for (const tagName of tagNames) {
-      const lower = tagName.toLowerCase();
-      const ci = children.find((child) => child.tagName.toLowerCase() === lower);
-      const text = ci?.textContent?.trim() || '';
-      if (text) return text;
-    }
-
-    return '';
+    // Second pass: case-insensitive fallback for export variants
+    const ci = children.find((child) => child.tagName.toLowerCase() === tagName.toLowerCase());
+    return ci?.textContent?.trim() || '';
   };
 
   const byExternalId = new Map<string, ManufacturerData>();
 
   for (const mfr of manufacturers) {
-    const externalId = getDirectChildText(mfr, ['MANUFAC_ID', 'ID']);
+    const externalId = getDirectChildText(mfr, 'MANUFAC_ID');
     if (!externalId) continue;
 
-    const rawName = getDirectChildText(mfr, ['MANUFAC_NAME', 'NAME', 'TITLE']);
+    const rawName = getDirectChildText(mfr, 'MANUFAC_NAME');
     const name = rawName || externalId; // Required fallback when MANUFAC_NAME is empty
 
-    const existing = byExternalId.get(externalId);
-    if (!existing || existing.name === existing.external_id) {
-      byExternalId.set(externalId, { external_id: externalId, name });
-    }
+    byExternalId.set(externalId, { external_id: externalId, name });
   }
 
+  console.log(`[Manufacturers] Parsed ${byExternalId.size} MANUFAC_ID -> MANUFAC_NAME mappings`);
   return Array.from(byExternalId.values());
 }
 

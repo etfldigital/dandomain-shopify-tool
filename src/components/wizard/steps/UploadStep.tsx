@@ -140,6 +140,13 @@ interface ShopifyLiveCounts {
   isLoading: boolean;
 }
 
+interface ManufacturerLookupStatus {
+  fileName: string | null;
+  fileStatus: 'missing' | 'pending' | 'processed' | 'error';
+  parsedCount: number;
+  mappingCount: number;
+}
+
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
   { type: 'categories', icon: Folder, label: 'Collections' },
@@ -198,6 +205,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   // Shopify live counts (actual product count from Shopify API)
   const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
+
+  const [manufacturerLookupStatus, setManufacturerLookupStatus] = useState<ManufacturerLookupStatus>({
+    fileName: null,
+    fileStatus: 'missing',
+    parsedCount: 0,
+    mappingCount: 0,
+  });
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
@@ -285,7 +299,142 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return counts;
   };
 
-  // Fetch live count from Shopify API for a SINGLE entity type
+  // Manufacturer lookup status + validation before product uploads
+  const fetchManufacturerLookupStatus = async (): Promise<ManufacturerLookupStatus> => {
+    try {
+      const [fileResult, manufacturerCountResult] = await Promise.all([
+        supabase
+          .from('project_files')
+          .select('file_name, row_count, status')
+          .eq('project_id', project.id)
+          .eq('entity_type', 'manufacturers')
+          .maybeSingle(),
+        supabase
+          .from('canonical_manufacturers')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', project.id),
+      ]);
+
+      if (fileResult.error) throw fileResult.error;
+      if (manufacturerCountResult.error) throw manufacturerCountResult.error;
+
+      const dbFileStatus = String(fileResult.data?.status || '').toLowerCase();
+      const fileStatus: ManufacturerLookupStatus['fileStatus'] = !fileResult.data
+        ? 'missing'
+        : dbFileStatus === 'processed'
+        ? 'processed'
+        : dbFileStatus === 'error'
+        ? 'error'
+        : 'pending';
+
+      const nextStatus: ManufacturerLookupStatus = {
+        fileName: fileResult.data?.file_name || null,
+        fileStatus,
+        parsedCount: Number(fileResult.data?.row_count || 0),
+        mappingCount: Number(manufacturerCountResult.count || 0),
+      };
+
+      setManufacturerLookupStatus(nextStatus);
+      return nextStatus;
+    } catch (error) {
+      console.warn('[UploadStep] Kunne ikke hente producent-status:', error);
+      const fallbackStatus: ManufacturerLookupStatus = {
+        fileName: null,
+        fileStatus: 'missing',
+        parsedCount: 0,
+        mappingCount: 0,
+      };
+      setManufacturerLookupStatus(fallbackStatus);
+      return fallbackStatus;
+    }
+  };
+
+  const shouldValidateManufacturers = (
+    freshCounts: Record<EntityType, StatusCounts>,
+    singleEntityType?: EntityType
+  ) => {
+    if (singleEntityType) return singleEntityType === 'products' && freshCounts.products.pending > 0;
+    return freshCounts.products.pending > 0;
+  };
+
+  const ensureManufacturerLookupReady = async (
+    freshCounts: Record<EntityType, StatusCounts>,
+    singleEntityType?: EntityType
+  ): Promise<boolean> => {
+    if (!shouldValidateManufacturers(freshCounts, singleEntityType)) return true;
+
+    const status = await fetchManufacturerLookupStatus();
+    const hasProcessedFile = status.fileStatus === 'processed';
+    const hasMappings = status.mappingCount > 0;
+
+    if (hasProcessedFile && hasMappings) return true;
+
+    toast.warning('Producentfil mangler før produktupload', {
+      description: 'Upload og udtræk filen "Producenter" først, så MANUFAC_ID kan mappes til MANUFAC_NAME.',
+    });
+    return false;
+  };
+
+  const logVendorResolutionPreview = async (
+    freshCounts: Record<EntityType, StatusCounts>,
+    singleEntityType?: EntityType
+  ) => {
+    if (!shouldValidateManufacturers(freshCounts, singleEntityType)) return;
+
+    try {
+      const { data: manufacturers, error: manufacturersError } = await supabase
+        .from('canonical_manufacturers')
+        .select('external_id, name')
+        .eq('project_id', project.id);
+
+      if (manufacturersError) throw manufacturersError;
+
+      const manufacturerMap = new Map<string, string>();
+      for (const manufacturer of manufacturers || []) {
+        const id = String(manufacturer.external_id || '').trim();
+        if (!id) continue;
+        const name = String(manufacturer.name || '').trim();
+        manufacturerMap.set(id, name || id);
+      }
+
+      console.log(`[VendorLookup] manufacturerMap size: ${manufacturerMap.size}`);
+
+      const pageSize = 1000;
+      let from = 0;
+      let totalLogged = 0;
+
+      while (true) {
+        const { data: products, error: productsError } = await supabase
+          .from('canonical_products')
+          .select('external_id, data')
+          .eq('project_id', project.id)
+          .eq('status', 'pending')
+          .eq('data->>_isPrimary', 'true')
+          .range(from, from + pageSize - 1);
+
+        if (productsError) throw productsError;
+
+        const rows = products || [];
+        if (rows.length === 0) break;
+
+        for (const row of rows) {
+          const rawData = row.data as Record<string, unknown> | null;
+          const manufacId = String(rawData?.vendor || '').trim();
+          const vendorName = manufacId ? (manufacturerMap.get(manufacId) || manufacId) : '';
+          console.log(`[VendorLookup] SKU=${row.external_id} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendorName}"`);
+          totalLogged += 1;
+        }
+
+        if (rows.length < pageSize) break;
+        from += pageSize;
+      }
+
+      console.log(`[VendorLookup] Logged ${totalLogged} products`);
+    } catch (error) {
+      console.warn('[VendorLookup] Kunne ikke logge vendor-resolve preview:', error);
+    }
+  };
+
   const fetchShopifyLiveCountForEntity = async (entityType: EntityType, force = false) => {
     console.log(`[UploadStep] fetchShopifyLiveCountForEntity called for ${entityType}, force=${force}`);
     
@@ -368,6 +517,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchJobs();
     fetchStatusCounts();
     fetchShopifyLiveCounts();
+    fetchManufacturerLookupStatus();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -588,6 +738,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       }
     }
     
+    const manufacturerReady = await ensureManufacturerLookupReady(freshCounts, singleEntityType);
+    if (!manufacturerReady) return;
+
+    await logVendorResolutionPreview(freshCounts, singleEntityType);
+
     setIsStarting(true);
     try {
       const shouldSkipPrepare = !isTestMode; // In test mode, let the worker run prepare-upload for products
@@ -1165,6 +1320,43 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           Overfør dine data til Shopify i den optimale rækkefølge
         </p>
       </div>
+
+      <Card>
+        <CardContent className="pt-4 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Producentfil (vendor lookup)</p>
+              <p className="text-sm text-muted-foreground">
+                {manufacturerLookupStatus.fileName
+                  ? `Fil: ${manufacturerLookupStatus.fileName}`
+                  : 'Ingen producentfil uploadet endnu'}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Parsede producenter: {manufacturerLookupStatus.parsedCount.toLocaleString('da-DK')} ·{' '}
+                Aktive mappings: {manufacturerLookupStatus.mappingCount.toLocaleString('da-DK')}
+              </p>
+              {(manufacturerLookupStatus.fileStatus !== 'processed' || manufacturerLookupStatus.mappingCount === 0) && (
+                <p className="text-xs text-destructive">
+                  Upload og udtræk "Producenter" før produktupload.
+                </p>
+              )}
+            </div>
+            <Badge
+              variant={manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0 ? 'secondary' : 'destructive'}
+            >
+              {manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0
+                ? 'Klar'
+                : manufacturerLookupStatus.fileStatus === 'processed'
+                ? 'Tom mapping'
+                : manufacturerLookupStatus.fileStatus === 'pending'
+                ? 'Afventer udtræk'
+                : manufacturerLookupStatus.fileStatus === 'error'
+                ? 'Fejl'
+                : 'Mangler'}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Celebration banner when all completed */}
       {allCompleted && (

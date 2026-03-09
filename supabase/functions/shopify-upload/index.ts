@@ -370,11 +370,11 @@ function resolveVendorName(vendorId: string): string {
   // Exact, case-sensitive lookup by MANUFAC_ID
   const resolved = manufacturerNameCache.get(lookupId);
   if (resolved === undefined) {
-    console.warn(`[PRODUCTS] No manufacturer name found for MANUFAC_ID "${lookupId}" – vendor will be empty. Ensure the manufacturers export file has been uploaded.`);
-    return '';
+    console.warn(`[PRODUCTS] No MANUFAC_NAME found for MANUFAC_ID "${lookupId}". Falling back to MANUFAC_ID as vendor.`);
+    return lookupId;
   }
 
-  return resolved;
+  return String(resolved || lookupId).trim();
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
@@ -634,10 +634,12 @@ async function processProductGroup(
   // If title transforms are disabled ("Brug eksisterende vendor felt"), keep the title exactly as-is.
   const title = allowTitleTransform ? groupedTitle : originalTitle;
 
-  const vendor = resolveVendorName(String(data.vendor || '').trim());
+  const manufacId = String(data.vendor || '').trim();
+  const vendor = resolveVendorName(manufacId);
+  console.log(`[PRODUCTS][VENDOR] SKU=${String(data.sku || primaryItem.external_id || '')} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendor}"`);
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
   const primaryItem = items[0];
-  
+
   // ============================================================================
   // PHASE 1: ATOMIC LOCK ACQUISITION
   // Generate a unique lock ID and try to claim this product.
