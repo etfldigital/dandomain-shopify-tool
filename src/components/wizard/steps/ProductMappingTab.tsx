@@ -905,7 +905,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
             transformed.body_html = String(sourceValue);
             break;
           case 'vendor':
-            transformed.vendor = String(sourceValue);
+            transformed.vendor = resolveVendorName(sourceValue);
             break;
           case 'title':
             transformed.title = String(sourceValue);
