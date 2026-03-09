@@ -215,6 +215,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [shopifyLiveCounts, setShopifyLiveCounts] = useState<ShopifyLiveCounts>({ products: null, customers: null, orders: null, categories: null, pages: null, fetchFailed: false, isLoading: false });
   const lastShopifyFetchRef = useRef<number>(0);
 
+  // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
+  // This lets us show "1536 rækker → 1137 Shopify-produkter"
+  const [rawEntityCounts, setRawEntityCounts] = useState<Record<EntityType, number>>({
+    products: 0, customers: 0, orders: 0, categories: 0, pages: 0,
+  });
+
   const [manufacturerLookupStatus, setManufacturerLookupStatus] = useState<ManufacturerLookupStatus>({
     fileName: null,
     fileStatus: 'missing',
@@ -463,12 +469,31 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
+  // Fetch raw entity counts (total rows in DB, unfiltered) for transparency
+  const fetchRawEntityCounts = async () => {
+    const [prodR, custR, ordR, catR, pageR] = await Promise.all([
+      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
+    ]);
+    setRawEntityCounts({
+      products: prodR.count || 0,
+      customers: custR.count || 0,
+      orders: ordR.count || 0,
+      categories: catR.count || 0,
+      pages: pageR.count || 0,
+    });
+  };
+
   useEffect(() => {
     // Initial fetch
     fetchJobs();
     fetchStatusCounts();
     fetchShopifyLiveCounts();
     fetchManufacturerLookupStatus();
+    fetchRawEntityCounts();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -1518,6 +1543,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                       {/* Clean summary showing processed breakdown */}
                       {(totalFromDb > 0 || dbTimedOut) && (
                         <div className="text-xs text-muted-foreground">
+                          {/* Show raw vs grouped count for products */}
+                          {type === 'products' && rawEntityCounts.products > 0 && rawEntityCounts.products !== total && (
+                            <span className="block text-muted-foreground/70 mb-0.5">
+                              {rawEntityCounts.products.toLocaleString('da-DK')} rækker i DB → {total.toLocaleString('da-DK')} Shopify-produkter (varianter sammenlagt)
+                            </span>
+                          )}
                           {isComplete ? (
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
