@@ -558,7 +558,6 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           } : f)
         );
       } catch (error: any) {
-        console.error('Error processing file:', error);
         const errorMessage = error?.message || error?.hint || 'Ukendt fejl ved behandling af fil';
         
         await supabase
