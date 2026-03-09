@@ -349,9 +349,12 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
     if (error || !data) return cache;
     
     for (const m of data) {
-      if (m.external_id && m.name) {
-        cache.set(String(m.external_id), String(m.name));
-      }
+      const externalId = String(m.external_id || '').trim();
+      if (!externalId) continue;
+
+      const manufacturerName = String(m.name || '').trim();
+      // Required fallback: if MANUFAC_NAME is empty, use MANUFAC_ID
+      cache.set(externalId, manufacturerName || externalId);
     }
     console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
   } catch (e) {
@@ -361,12 +364,17 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
 }
 
 function resolveVendorName(vendorId: string): string {
-  if (!vendorId) return '';
-  const resolved = manufacturerNameCache.get(vendorId);
-  if (!resolved) {
-    console.warn(`[PRODUCTS] No manufacturer name found for MANUFAC_ID "${vendorId}" – vendor will be empty. Ensure the manufacturers export file has been uploaded.`);
+  const lookupId = String(vendorId || '').trim();
+  if (!lookupId) return '';
+
+  // Exact, case-sensitive lookup by MANUFAC_ID
+  const resolved = manufacturerNameCache.get(lookupId);
+  if (resolved === undefined) {
+    console.warn(`[PRODUCTS] No manufacturer name found for MANUFAC_ID "${lookupId}" – vendor will be empty. Ensure the manufacturers export file has been uploaded.`);
+    return '';
   }
-  return resolved || ''; // Never use raw MANUFAC_ID as vendor name
+
+  return resolved;
 }
 
 function getCategoryTagsForProduct(categoryExternalIds: string[], categoryCache: Map<string, string>): string[] {
