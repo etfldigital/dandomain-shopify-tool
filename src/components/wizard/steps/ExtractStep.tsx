@@ -528,7 +528,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .upsert(batch, { onConflict: 'project_id,external_id' });
               
               if (error) {
-                console.error('Error inserting manufacturers:', error);
+                
                 throw error;
               }
             }
