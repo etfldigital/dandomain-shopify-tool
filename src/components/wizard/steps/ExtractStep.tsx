@@ -791,7 +791,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined, parseStats: singleStats } : f)
       );
     } catch (error: any) {
-      console.error('Error processing file:', error);
+      
       const errorMessage = error?.message || 'Ukendt fejl';
       await supabase.from('project_files').update({ status: 'error', error_message: errorMessage })
         .eq('project_id', project.id).eq('entity_type', entityType);
