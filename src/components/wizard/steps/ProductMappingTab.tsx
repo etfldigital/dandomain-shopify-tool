@@ -667,16 +667,16 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       // Transform title based on rules - fuzzy case-insensitive vendor stripping
       let transformedTitle = data.title || '';
-      let vendor = data.vendor || '';
+      let vendor = resolveVendorName(data.vendor);
       
       // Apply vendor extraction from title if enabled (new rule)
       // MANUFAC_ID (original vendor) takes precedence if filled, otherwise extract from title
       // Also cleans the title by removing vendor + producttype + first comma
       if (mappingRules.vendorExtractionMode === 'extract_from_title') {
-        const originalVendor = data.vendor?.trim() || '';
-        if (originalVendor) {
-          // Use the original MANUFAC_ID value as vendor (convert to Title Case)
-          vendor = toTitleCase(originalVendor);
+        const originalVendorId = String(data.vendor || '').trim();
+        if (originalVendorId) {
+          // Resolve MANUFAC_ID to manufacturer name for preview
+          vendor = resolveVendorName(originalVendorId);
           // Still clean the title by extracting and removing the prefix
           const { cleanedTitle } = extractVendorFromTitle(data.title || '');
           if (cleanedTitle) {
