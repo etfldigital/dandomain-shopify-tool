@@ -460,7 +460,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 status: 'pending' as const,
               }));
 
-              console.log('Inserting batch:', batch.length, 'categories');
+              
               
               const { error } = await supabase
                 .from('canonical_categories')
