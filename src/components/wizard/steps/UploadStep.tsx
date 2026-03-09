@@ -822,7 +822,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       await fetchShopifyLiveCounts(true);
       await fetchJobs();
     } catch (error) {
-      console.error('Sync failed:', error);
+      
       toast.error(`Synkronisering fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setSyncingEntity(null);
