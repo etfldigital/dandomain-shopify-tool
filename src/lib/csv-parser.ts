@@ -305,7 +305,7 @@ export function parseProductsCSV(csvText: string): ProductData[] {
 
       // Filter out rows with HTML fragments in title (corrupted data)
       if (product.title && product.title.startsWith('>') && product.title.includes('<')) {
-        console.warn(`Skipping product with corrupted HTML title: "${product.title.substring(0, 50)}..."`);
+        
         return false;
       }
 
