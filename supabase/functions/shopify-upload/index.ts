@@ -415,6 +415,12 @@ async function uploadProducts(
   activePeriodIds = transformationRules.applyPeriodPricing 
     ? await loadActivePeriodIds(supabase, projectId) 
     : new Set();
+
+  const manufacturerFile = await ensureManufacturerFileReady(supabase, projectId);
+  if (!manufacturerFile.ready) {
+    throw new Error('Producentfil mangler eller er ikke behandlet endnu. Upload og kør udtræk af export-MANUFACTURERS før produktmigrering.');
+  }
+
   manufacturerNameCache = await loadManufacturerNames(supabase, projectId);
   
   // ============================================================================
