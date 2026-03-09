@@ -257,7 +257,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       }
 
       if (error) {
-        console.error('Error clearing canonical data for', entityType, error);
+        
         setProcessing(false);
         return;
       }
