@@ -30,7 +30,7 @@ function parseCSV(csvText: string): Record<string, string>[] {
   
   // If first line has only one part and it looks like an entity name, skip it
   if (firstLineParts.length === 1 && /^[A-Z_]+$/i.test(cleanCell(firstLineParts[0]))) {
-    console.log('Skipping entity name line:', logicalLines[0]);
+    
     startLine = 1;
   }
 
