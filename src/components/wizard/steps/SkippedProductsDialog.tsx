@@ -65,7 +65,7 @@ export function SkippedProductsDialog({
       if (error) throw error;
       setProducts((data || []) as SkippedProduct[]);
     } catch (error) {
-      console.error('Failed to fetch skipped products:', error);
+      
     } finally {
       setIsLoading(false);
     }

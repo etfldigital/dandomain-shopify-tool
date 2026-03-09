@@ -30,7 +30,7 @@ function parseCSV(csvText: string): Record<string, string>[] {
   
   // If first line has only one part and it looks like an entity name, skip it
   if (firstLineParts.length === 1 && /^[A-Z_]+$/i.test(cleanCell(firstLineParts[0]))) {
-    console.log('Skipping entity name line:', logicalLines[0]);
+    
     startLine = 1;
   }
 
@@ -41,7 +41,7 @@ function parseCSV(csvText: string): Record<string, string>[] {
 
   const headers = splitDelimitedLine(headerLine, delimiter).map((h) => cleanCell(h));
   
-  console.log('CSV parsing - headers detected:', headers.slice(0, 5), '... total:', headers.length);
+  
 
   const rows: Record<string, string>[] = [];
   for (let i = startLine + 1; i < logicalLines.length; i++) {
@@ -287,25 +287,25 @@ export function parseProductsCSV(csvText: string): ProductData[] {
       const hasSku = product.sku && product.sku.trim() !== '';
 
       if (!hasTitle && !hasSku) {
-        console.log('Skipping empty product row - no title or SKU');
+        
         return false;
       }
 
       // If no title but has SKU, log a warning
       if (!hasTitle && hasSku) {
-        console.warn(`Product with SKU "${product.sku}" has no title - will be skipped`);
+        
         return false;
       }
 
       // Filter out rows with HTML fragments in SKU (corrupted data)
       if (product.sku && (product.sku.includes('<') || product.sku.includes('>'))) {
-        console.warn(`Skipping product with HTML in SKU: "${product.sku.substring(0, 50)}..."`);
+        
         return false;
       }
 
       // Filter out rows with HTML fragments in title (corrupted data)
       if (product.title && product.title.startsWith('>') && product.title.includes('<')) {
-        console.warn(`Skipping product with corrupted HTML title: "${product.title.substring(0, 50)}..."`);
+        
         return false;
       }
 
@@ -524,11 +524,6 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
   
   // Log available headers for debugging
   if (rows.length > 0) {
-    console.log('Category CSV headers:', Object.keys(rows[0]));
-    console.log('First 3 rows:', rows.slice(0, 3));
-  } else {
-    console.log('No rows parsed from category CSV');
-    console.log('Raw CSV preview (first 500 chars):', csvText.substring(0, 500));
   }
   
   return rows
@@ -586,7 +581,7 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
 
       // Debug log for first few rows
       if (rows.indexOf(row) < 3) {
-        console.log('Category row parsed:', { external_id, name, parent, slug });
+        
       }
       
       return {

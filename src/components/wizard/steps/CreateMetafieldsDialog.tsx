@@ -150,7 +150,7 @@ export function CreateMetafieldsDialog({
         });
 
         if (error) {
-          console.error('Error creating metafield:', error);
+          
           updatedConfigs[i] = { ...updatedConfigs[i], status: 'error', error: error.message };
           updateConfig(i, { status: 'error', error: error.message });
         } else if (data?.success) {
@@ -162,7 +162,7 @@ export function CreateMetafieldsDialog({
           updateConfig(i, { status: 'error', error: errorMsg });
         }
       } catch (err) {
-        console.error('Error creating metafield:', err);
+        
         updatedConfigs[i] = { ...updatedConfigs[i], status: 'error', error: String(err) };
         updateConfig(i, { status: 'error', error: String(err) });
       }

@@ -14,7 +14,6 @@ function parsePrice(priceStr: string): number {
   const normalized = priceStr.replace(',', '.').replace(/[^\d.-]/g, '');
   const result = parseFloat(normalized) || 0;
   if (priceStr && result === 0 && priceStr !== '0' && priceStr !== '0,00') {
-    console.warn('Price parse warning:', priceStr, '->', normalized, '->', result);
   }
   return result;
 }

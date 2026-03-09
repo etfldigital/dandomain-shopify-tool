@@ -129,7 +129,7 @@ export function ShopifyDestinationSearch({
 
       setEntities(allEntities);
     } catch (err) {
-      console.error('Error loading Shopify entities:', err);
+      
     } finally {
       setIsLoading(false);
     }

@@ -346,7 +346,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       setManufacturerLookupStatus(nextStatus);
       return nextStatus;
     } catch (error) {
-      console.warn('[UploadStep] Kunne ikke hente producent-status:', error);
+      
       const fallbackStatus: ManufacturerLookupStatus = {
         fileName: null,
         fileStatus: 'missing',
@@ -384,106 +384,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   };
 
 
-  const logVendorResolutionPreview = async (
-    freshCounts: Record<EntityType, StatusCounts>,
-    singleEntityType?: EntityType
-  ) => {
-    if (!shouldValidateManufacturers(freshCounts, singleEntityType)) return;
-
-    try {
-      const { data: manufacturers, error: manufacturersError } = await supabase
-        .from('canonical_manufacturers')
-        .select('external_id, name')
-        .eq('project_id', project.id);
-
-      if (manufacturersError) throw manufacturersError;
-
-      const manufacturerMap = new Map<string, string>();
-      const normalizeManufacturerKey = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
-      const inferVendorFromTitle = (manufacturerId: string, titleValue: unknown): string => {
-        const normalizedId = normalizeManufacturerKey(manufacturerId).replace(/[^a-z0-9]/g, '');
-        if (!normalizedId) return '';
-
-        const leadingTitlePart = String(titleValue ?? '').split(',')[0]?.trim() || '';
-        if (!leadingTitlePart) return '';
-
-        const words = leadingTitlePart.split(/\s+/).filter(Boolean);
-        if (words.length === 0) return '';
-
-        let initials = '';
-        for (let index = 0; index < Math.min(words.length, 5); index += 1) {
-          const currentWord = normalizeManufacturerKey(words[index]).replace(/[^a-z0-9]/g, '');
-          if (!currentWord) continue;
-          initials += currentWord.charAt(0);
-          if (initials === normalizedId) {
-            return words.slice(0, index + 1).join(' ');
-          }
-        }
-
-        const firstWord = normalizeManufacturerKey(words[0]).replace(/[^a-z0-9]/g, '');
-        if (firstWord === normalizedId) {
-          if (words.length >= 3 && (words[1] === '&' || normalizeManufacturerKey(words[1]) === 'og')) {
-            return words.slice(0, 3).join(' ');
-          }
-          return words.length >= 2 ? words.slice(0, 2).join(' ') : words[0];
-        }
-
-        return '';
-      };
-
-      for (const manufacturer of manufacturers || []) {
-        const id = String(manufacturer.external_id || '').trim();
-        const name = String(manufacturer.name || '').trim();
-        if (id && name) {
-          manufacturerMap.set(id, name);
-          manufacturerMap.set(normalizeManufacturerKey(id), name);
-        }
-      }
-
-      console.log(`[VendorLookup] manufacturerMap size: ${manufacturerMap.size}`);
-
-      const pageSize = 1000;
-      let from = 0;
-      let totalLogged = 0;
-
-      while (true) {
-        const { data: products, error: productsError } = await supabase
-          .from('canonical_products')
-          .select('external_id, data')
-          .eq('project_id', project.id)
-          .eq('status', 'pending')
-          .eq('data->>_isPrimary', 'true')
-          .range(from, from + pageSize - 1);
-
-        if (productsError) throw productsError;
-
-        const rows = products || [];
-        if (rows.length === 0) break;
-
-        for (const row of rows) {
-          const rawData = row.data as Record<string, unknown> | null;
-          const manufacId = String(rawData?.vendor || '').trim();
-          const normalizedId = normalizeManufacturerKey(manufacId);
-          const title = String(rawData?.title || '').trim();
-          const directVendor = manufacturerMap.get(manufacId) ?? manufacturerMap.get(normalizedId);
-          const inferredVendor = directVendor ? '' : inferVendorFromTitle(manufacId, title);
-          const vendorName = manufacId ? (directVendor ?? inferredVendor ?? manufacId) : '';
-          console.log(`[VendorLookup] SKU=${row.external_id} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendorName}"`);
-          totalLogged += 1;
-        }
-
-        if (rows.length < pageSize) break;
-        from += pageSize;
-      }
-
-      console.log(`[VendorLookup] Logged ${totalLogged} products`);
-    } catch (error) {
-      console.warn('[VendorLookup] Kunne ikke logge vendor-resolve preview:', error);
-    }
-  };
+  // logVendorResolutionPreview removed — was iterating all products just to console.log
 
   const fetchShopifyLiveCountForEntity = async (entityType: EntityType, force = false) => {
-    console.log(`[UploadStep] fetchShopifyLiveCountForEntity called for ${entityType}, force=${force}`);
+    
     
     try {
       const response = await supabase.functions.invoke('shopify-products-count', {
@@ -493,7 +397,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         },
       });
       
-      console.log(`[UploadStep] Shopify response for ${entityType}:`, response.data);
+      
       
       if (response.data?.success && response.data.counts) {
         const value = response.data.counts[entityType] ?? null;
@@ -503,7 +407,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           fetchFailed: false,
         }));
       } else {
-        console.warn(`[UploadStep] Shopify fetch failed for ${entityType}:`, response.data?.error || 'unknown');
+        
         setShopifyLiveCounts(prev => ({
           ...prev,
           [entityType]: null,
@@ -511,7 +415,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         }));
       }
     } catch (e) {
-      console.warn(`[UploadStep] Failed to fetch Shopify live count for ${entityType}:`, e);
+      
       setShopifyLiveCounts(prev => ({
         ...prev,
         [entityType]: null,
@@ -537,7 +441,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         },
       });
       
-      console.log('[UploadStep] Shopify all-counts response:', response.data);
+      
       
       if (response.data?.success && response.data.counts) {
         const c = response.data.counts;
@@ -554,7 +458,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
       }
     } catch (e) {
-      console.warn('[UploadStep] Failed to fetch Shopify live counts:', e);
+      
       setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
     }
   };
@@ -723,7 +627,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         // If the function signals more work to do, keep calling
         if (result.continue) {
           currentOffset = result.progress;
-          console.log(`[Prepare] Progress: ${result.progress}/${result.total}`);
+          
           continue;
         }
 
@@ -746,7 +650,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       setShowPrepareConfirm(true);
       
     } catch (error) {
-      console.error('Prepare failed:', error);
+      
       toast.error(`Forberedelse fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setIsPreparing(false);
@@ -790,7 +694,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     if (!manufacturerReady) return;
 
     
-    await logVendorResolutionPreview(freshCounts, singleEntityType);
+    
 
     setIsStarting(true);
     try {
@@ -838,7 +742,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       await fetchJobs();
       fetchShopifyLiveCounts(true);
     } catch (error) {
-      console.error('Failed to start upload:', error);
+      
       toast.error(`Kunne ikke starte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setIsStarting(false);
@@ -918,7 +822,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       await fetchShopifyLiveCounts(true);
       await fetchJobs();
     } catch (error) {
-      console.error('Sync failed:', error);
+      
       toast.error(`Synkronisering fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setSyncingEntity(null);
@@ -1048,7 +952,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // Also refetch jobs so skipped_count/error_count in the UI reflects the reset immediately
       await fetchJobs();
     } catch (error) {
-      console.error('Reset error:', error);
+      
       toast.error(`Fejl ved nulstilling: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setResetDialog({ open: false, entityType: null, scope: null, count: 0 });
@@ -1146,7 +1050,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       // Refresh jobs
       await fetchJobs();
     } catch (error) {
-      console.error('Retry failed:', error);
+      
       toast.error(`Kunne ikke genstarte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setRetryingEntityType(null);
@@ -1215,14 +1119,14 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
     (async () => {
       try {
-        console.log('[UploadStep] Auto-recover: force-restart', { jobId: runningJob.id, entity: runningJob.entity_type });
+        
         const { error } = await supabase.functions.invoke('upload-worker', {
           body: { projectId: project.id, action: 'force-restart' },
         });
         if (error) throw error;
         toast.info('Upload fortsætter automatisk – processen blev genstartet.');
       } catch (e) {
-        console.warn('[UploadStep] Auto-recover failed:', e);
+        
       }
     })();
   }, [runningJob?.id, runningJob?.status, runningJob?.next_attempt_at, secondsSinceHeartbeat, project.id]);

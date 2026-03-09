@@ -82,7 +82,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .eq('project_id', project.id);
 
       if (error) {
-        console.error('Error loading project files:', error);
+        
         return;
       }
 
@@ -104,7 +104,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         setUploadedFiles(files);
       }
     } catch (err) {
-      console.error('Error loading files:', err);
+      
     } finally {
       setLoadingFiles(false);
     }
@@ -128,7 +128,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         .upload(storagePath, file, { upsert: true });
 
       if (uploadError) {
-        console.error('Storage upload error:', uploadError);
+        
         throw uploadError;
       }
 
@@ -145,7 +145,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         }, { onConflict: 'project_id,entity_type' });
 
       if (dbError) {
-        console.error('DB insert error:', dbError);
+        
         throw dbError;
       }
 
@@ -158,7 +158,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
       setUploadedFiles(prev => [...prev.filter(f => f.type !== currentUploadType), newFile]);
     } catch (err: any) {
-      console.error('Error uploading file:', err);
+      
     }
     
     e.target.value = '';
@@ -213,7 +213,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       .eq('project_id', project.id);
 
     if (mappingClearError) {
-      console.error('Error clearing mapping profiles:', mappingClearError);
+      
       setProcessing(false);
       return;
     }
@@ -257,7 +257,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
       }
 
       if (error) {
-        console.error('Error clearing canonical data for', entityType, error);
+        
         setProcessing(false);
         return;
       }
@@ -321,7 +321,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             productCount = uniqueProducts.length;
             recordCount = uniqueProducts.length;
             
-            console.log(`[Extract] Product stats:`, productStats);
+            
             lastProductStats = productStats;
             
             // Insert into canonical_products in batches
@@ -435,7 +435,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'categories':
             parsedData = parseCategoriesXML(text);
-            console.log('Parsed categories:', parsedData.length, 'First few:', parsedData.slice(0, 3));
+            
             
             // Deduplicate by category ID - keep last occurrence
             const catMap = new Map<string, typeof parsedData[0]>();
@@ -448,7 +448,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
             categoryCount = uniqueCategories.length;
             recordCount = uniqueCategories.length;
             
-            console.log('Unique categories to insert:', uniqueCategories.length);
+            
             
             for (let i = 0; i < uniqueCategories.length; i += 100) {
               const batch = uniqueCategories.slice(i, i + 100).map(category => ({
@@ -460,14 +460,14 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 status: 'pending' as const,
               }));
 
-              console.log('Inserting batch:', batch.length, 'categories');
+              
               
               const { error } = await supabase
                 .from('canonical_categories')
                 .upsert(batch, { onConflict: 'project_id,external_id' });
               
               if (error) {
-                console.error('Error inserting categories:', error);
+                
                 throw error;
               }
             }
@@ -475,7 +475,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'periods':
             const periodsParsed = parsePeriodsXML(text);
-            console.log('Parsed periods:', periodsParsed.length);
+            
             recordCount = periodsParsed.length;
             
             for (let i = 0; i < periodsParsed.length; i += 100) {
@@ -493,7 +493,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .upsert(batch, { onConflict: 'project_id,period_id' });
               
               if (error) {
-                console.error('Error inserting periods:', error);
+                
                 throw error;
               }
             }
@@ -501,7 +501,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
 
           case 'manufacturers':
             const mfrParsed = parseManufacturersXML(text);
-            console.log('Parsed manufacturers:', mfrParsed.length);
+            
             recordCount = mfrParsed.length;
 
             // Replace entire manufacturer mapping for the project to avoid stale/wrong keys
@@ -511,7 +511,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .delete()
                 .eq('project_id', project.id);
               if (deleteError) {
-                console.error('Error clearing manufacturers before insert:', deleteError);
+                
                 throw deleteError;
               }
             }
@@ -528,7 +528,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
                 .upsert(batch, { onConflict: 'project_id,external_id' });
               
               if (error) {
-                console.error('Error inserting manufacturers:', error);
+                
                 throw error;
               }
             }
@@ -558,7 +558,6 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           } : f)
         );
       } catch (error: any) {
-        console.error('Error processing file:', error);
         const errorMessage = error?.message || error?.hint || 'Ukendt fejl ved behandling af fil';
         
         await supabase
@@ -640,7 +639,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     }
 
     if (clearError) {
-      console.error('Error clearing data for', entityType, clearError);
+      
       setProcessing(false);
       return;
     }
@@ -681,7 +680,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           singleStats.duplicateSkus = parsedData.length - uniqueProducts.length;
           singleStats.uniqueAfterDedup = uniqueProducts.length;
           recordCount = uniqueProducts.length;
-          console.log(`[Extract Single] Product stats:`, singleStats);
+          
           for (let i = 0; i < uniqueProducts.length; i += 100) {
             const batch = uniqueProducts.slice(i, i + 100).map(product => ({
               project_id: project.id, external_id: product.sku, data: product as any, status: 'pending' as const,
@@ -792,7 +791,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
         prev.map(f => f.type === entityType ? { ...f, status: 'success', count: recordCount, error: undefined, parseStats: singleStats } : f)
       );
     } catch (error: any) {
-      console.error('Error processing file:', error);
+      
       const errorMessage = error?.message || 'Ukendt fejl';
       await supabase.from('project_files').update({ status: 'error', error_message: errorMessage })
         .eq('project_id', project.id).eq('entity_type', entityType);

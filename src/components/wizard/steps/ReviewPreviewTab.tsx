@@ -374,7 +374,7 @@ export function ReviewPreviewTab({ projectId, shopifyDomain }: ReviewPreviewTabP
         })));
       }
     } catch (error) {
-      console.error(`Error loading ${entityType}:`, error);
+      
       toast.error(`Fejl ved indlæsning af ${entityType}`);
     } finally {
       setLoading(null);

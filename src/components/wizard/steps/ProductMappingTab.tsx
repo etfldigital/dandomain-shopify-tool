@@ -586,7 +586,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         hasUploadedPeriods: true,
       });
     } catch (e: any) {
-      console.error('Error fetching period data:', e);
+      
       setPeriodError('Kunne ikke hente periodestyring data');
     } finally {
       setLoadingPeriods(false);
@@ -625,7 +625,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       .eq('project_id', projectId);
 
     if (manufacturersError) {
-      console.warn('Kunne ikke hente producent-mapping til preview:', manufacturersError);
+      
       setManufacturerNameMap(new Map());
     } else {
       const nextMap = new Map<string, string>();
@@ -712,7 +712,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         }
       }
     } catch (error) {
-      console.error('Error loading field mappings:', error);
+      
     }
   };
 
@@ -724,7 +724,6 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       });
 
       if (error) {
-        console.error('Error fetching metafields:', error);
         if (!silent) toast.error('Kunne ikke hente metafelter fra Shopify');
         return;
       }
@@ -735,7 +734,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         if (!silent) toast.success(`Fandt ${data.metafields.length} metafelter fra Shopify`);
       }
     } catch (error) {
-      console.error('Error fetching metafields:', error);
+      
       if (!silent) toast.error('Fejl ved hentning af metafelter');
     } finally {
       setFetchingMetafields(false);
@@ -1087,7 +1086,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         toast.info('Ingen produkter fundet');
       }
     } catch (error) {
-      console.error('Search error:', error);
+      
       toast.error('Fejl ved søgning');
     } finally {
       setIsSearching(false);
@@ -1241,7 +1240,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
           });
       }
     } catch (error) {
-      console.error('Error saving field mappings:', error);
+      
       toast.error('Fejl ved gemning af felt-mappings');
     }
   };
@@ -1252,7 +1251,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       await saveMappings(fieldMappings, rules);
       toast.success('Migrationsregler gemt');
     } catch (error) {
-      console.error('Error saving transformation rules:', error);
+      
     }
   };
 
