@@ -586,8 +586,9 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         hasUploadedPeriods: true,
       });
     } catch (e: any) {
-      
-      setPeriodError('Kunne ikke hente periodestyring data');
+      // Non-blocking: periodestyring is optional, skip gracefully
+      setPeriodData({ periods: [], totalProducts: 0, totalWithPeriod: 0, hasUploadedPeriods: false });
+      setPeriodError(null);
     } finally {
       setLoadingPeriods(false);
     }
