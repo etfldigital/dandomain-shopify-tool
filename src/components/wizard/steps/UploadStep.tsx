@@ -399,11 +399,44 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       if (manufacturersError) throw manufacturersError;
 
       const manufacturerMap = new Map<string, string>();
+      const normalizeManufacturerKey = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+      const inferVendorFromTitle = (manufacturerId: string, titleValue: unknown): string => {
+        const normalizedId = normalizeManufacturerKey(manufacturerId).replace(/[^a-z0-9]/g, '');
+        if (!normalizedId) return '';
+
+        const leadingTitlePart = String(titleValue ?? '').split(',')[0]?.trim() || '';
+        if (!leadingTitlePart) return '';
+
+        const words = leadingTitlePart.split(/\s+/).filter(Boolean);
+        if (words.length === 0) return '';
+
+        let initials = '';
+        for (let index = 0; index < Math.min(words.length, 5); index += 1) {
+          const currentWord = normalizeManufacturerKey(words[index]).replace(/[^a-z0-9]/g, '');
+          if (!currentWord) continue;
+          initials += currentWord.charAt(0);
+          if (initials === normalizedId) {
+            return words.slice(0, index + 1).join(' ');
+          }
+        }
+
+        const firstWord = normalizeManufacturerKey(words[0]).replace(/[^a-z0-9]/g, '');
+        if (firstWord === normalizedId) {
+          if (words.length >= 3 && (words[1] === '&' || normalizeManufacturerKey(words[1]) === 'og')) {
+            return words.slice(0, 3).join(' ');
+          }
+          return words.length >= 2 ? words.slice(0, 2).join(' ') : words[0];
+        }
+
+        return '';
+      };
+
       for (const manufacturer of manufacturers || []) {
         const id = String(manufacturer.external_id || '').trim();
         const name = String(manufacturer.name || '').trim();
         if (id && name) {
           manufacturerMap.set(id, name);
+          manufacturerMap.set(normalizeManufacturerKey(id), name);
         }
       }
 
@@ -430,7 +463,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         for (const row of rows) {
           const rawData = row.data as Record<string, unknown> | null;
           const manufacId = String(rawData?.vendor || '').trim();
-          const vendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
+          const normalizedId = normalizeManufacturerKey(manufacId);
+          const title = String(rawData?.title || '').trim();
+          const directVendor = manufacturerMap.get(manufacId) ?? manufacturerMap.get(normalizedId);
+          const inferredVendor = directVendor ? '' : inferVendorFromTitle(manufacId, title);
+          const vendorName = manufacId ? (directVendor ?? inferredVendor ?? manufacId) : '';
           console.log(`[VendorLookup] SKU=${row.external_id} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendorName}"`);
           totalLogged += 1;
         }

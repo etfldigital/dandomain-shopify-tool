@@ -344,7 +344,72 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
   const normalizeManufacturerKey = (value: string): string =>
     value.trim().replace(/\s+/g, ' ').toLowerCase();
 
-  const resolveVendorName = (rawVendor: unknown): string => {
+  const manufacturerTitleStopWords = new Set([
+    'top', 'bluse', 'kjole', 'ring', 'ørering', 'oerering', 'sneakers', 'boots', 'cardigan',
+    'blazer', 'sandaler', 'sandal', 'jakke', 'taske', 'belt', 'bælte', 'pumps', 'strømper',
+    'stroemper', 'bukser', 'leggings', 'skjorte', 'tee', 't-shirt', 'tshirt', 'creme', 'cream',
+  ]);
+
+  const formatInferredVendor = (value: string): string =>
+    value
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => {
+        if (word === '&') return '&';
+        const clean = word.replace(/[^A-Za-z0-9ÆØÅæøå]/g, '');
+        if (!clean) return word;
+        if (clean.length === 1) return clean.toUpperCase();
+        if (clean.length <= 4 && clean === clean.toUpperCase()) return clean;
+        return `${clean.charAt(0).toUpperCase()}${clean.slice(1).toLowerCase()}`;
+      })
+      .join(' ');
+
+  const inferVendorFromTitle = (manufacturerId: string, fallbackTitle?: unknown): string => {
+    const normalizedId = normalizeManufacturerKey(manufacturerId).replace(/[^a-z0-9]/g, '');
+    if (!normalizedId) return '';
+
+    const leadingTitlePart = String(fallbackTitle ?? '').split(',')[0]?.trim() || '';
+    if (!leadingTitlePart) return '';
+
+    const words = leadingTitlePart.split(/\s+/).filter(Boolean);
+    if (words.length === 0) return '';
+
+    const sanitizeWord = (word: string): string =>
+      normalizeManufacturerKey(word).replace(/[^a-z0-9]/g, '');
+
+    // Abbreviation fallback (e.g. SA -> STINE A)
+    let initials = '';
+    for (let index = 0; index < Math.min(words.length, 5); index += 1) {
+      const currentWord = sanitizeWord(words[index]);
+      if (!currentWord) continue;
+      initials += currentWord.charAt(0);
+      if (initials === normalizedId) {
+        return formatInferredVendor(words.slice(0, index + 1).join(' '));
+      }
+    }
+
+    // ID matches first word (e.g. ARKK -> ARKK COPENHAGEN, Tim -> Tim & Simonsen)
+    const firstWord = sanitizeWord(words[0]);
+    if (firstWord !== normalizedId) return '';
+
+    if (words.length >= 3) {
+      const connector = normalizeManufacturerKey(words[1]);
+      if (connector === '&' || connector === 'og') {
+        return formatInferredVendor(words.slice(0, 3).join(' '));
+      }
+    }
+
+    if (words.length >= 2) {
+      const secondWord = sanitizeWord(words[1]);
+      if (secondWord && !manufacturerTitleStopWords.has(secondWord)) {
+        return formatInferredVendor(words.slice(0, 2).join(' '));
+      }
+    }
+
+    return formatInferredVendor(words[0]);
+  };
+
+  const resolveVendorName = (rawVendor: unknown, fallbackTitle?: unknown): string => {
     const manufacturerId = String(rawVendor ?? '').trim();
     const normalizedId = normalizeManufacturerKey(manufacturerId);
     if (!manufacturerId) return '';
@@ -368,16 +433,19 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     // Fallback 2: Abbreviation -> initials (e.g. SA -> Stine A)
     if (normalizedId.length <= 5 && /^[a-z0-9]+$/i.test(normalizedId)) {
       const initialMatches = candidateNames.filter((name) => {
-        const initials = normalizeManufacturerKey(name)
+        const initialsFromName = normalizeManufacturerKey(name)
           .split(' ')
           .filter(Boolean)
           .map((part) => part[0])
           .join('');
-        return initials === normalizedId;
+        return initialsFromName === normalizedId;
       });
 
       if (initialMatches.length === 1) return initialMatches[0];
     }
+
+    const inferredFromTitle = inferVendorFromTitle(manufacturerId, fallbackTitle);
+    if (inferredFromTitle) return inferredFromTitle;
 
     return manufacturerId;
   };
@@ -703,7 +771,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
 
       // Transform title based on rules - fuzzy case-insensitive vendor stripping
       let transformedTitle = data.title || '';
-      let vendor = resolveVendorName(data.vendor);
+      let vendor = resolveVendorName(data.vendor, data.title);
       
       // Apply vendor extraction from title if enabled (new rule)
       // MANUFAC_ID (original vendor) takes precedence if filled, otherwise extract from title
@@ -712,7 +780,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         const originalVendorId = String(data.vendor || '').trim();
         if (originalVendorId) {
           // Resolve MANUFAC_ID to manufacturer name for preview
-          vendor = resolveVendorName(originalVendorId);
+          vendor = resolveVendorName(originalVendorId, data.title);
           // Still clean the title by extracting and removing the prefix
           const { cleanedTitle } = extractVendorFromTitle(data.title || '');
           if (cleanedTitle) {
@@ -941,7 +1009,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
             transformed.body_html = String(sourceValue);
             break;
           case 'vendor':
-            transformed.vendor = resolveVendorName(sourceValue);
+            transformed.vendor = resolveVendorName(sourceValue, product?.original.title);
             break;
           case 'title':
             transformed.title = String(sourceValue);
