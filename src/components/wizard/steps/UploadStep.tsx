@@ -155,11 +155,6 @@ interface ManufacturerLookupStatus {
   mappingCount: number;
 }
 
-interface VendorDebugRow {
-  prodNum: string;
-  manufacId: string;
-  resolvedVendorName: string;
-}
 
 const ENTITY_CONFIG: { type: EntityType; icon: typeof ShoppingBag; label: string }[] = [
   { type: 'pages', icon: FileSpreadsheet, label: 'Sider' },
@@ -226,8 +221,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     parsedCount: 0,
     mappingCount: 0,
   });
-  const [vendorDebugRows, setVendorDebugRows] = useState<VendorDebugRow[]>([]);
-  const [isVendorDebugLoading, setIsVendorDebugLoading] = useState(false);
 
   // Reset confirmation dialog state
   const [resetDialog, setResetDialog] = useState<{
@@ -390,56 +383,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return false;
   };
 
-  const fetchVendorDebugRows = async () => {
-    setIsVendorDebugLoading(true);
-    try {
-      const [{ data: manufacturers, error: manufacturersError }, { data: products, error: productsError }] = await Promise.all([
-        supabase
-          .from('canonical_manufacturers')
-          .select('external_id, name')
-          .eq('project_id', project.id),
-        supabase
-          .from('canonical_products')
-          .select('external_id, data')
-          .eq('project_id', project.id)
-          .eq('status', 'pending')
-          .eq('data->>_isPrimary', 'true')
-          .order('created_at', { ascending: false })
-          .limit(5),
-      ]);
-
-      if (manufacturersError) throw manufacturersError;
-      if (productsError) throw productsError;
-
-      const manufacturerMap = new Map<string, string>();
-      for (const manufacturer of manufacturers || []) {
-        const id = String(manufacturer.external_id || '').trim();
-        const name = String(manufacturer.name || '').trim();
-        if (id && name) {
-          manufacturerMap.set(id, name);
-        }
-      }
-
-      const rows: VendorDebugRow[] = (products || []).map((row) => {
-        const rawData = row.data as Record<string, unknown> | null;
-        const manufacId = String(rawData?.vendor || '').trim();
-        const resolvedVendorName = manufacId ? (manufacturerMap.get(manufacId) ?? manufacId ?? '') : '';
-
-        return {
-          prodNum: String(rawData?.sku || row.external_id || '').trim(),
-          manufacId,
-          resolvedVendorName: String(resolvedVendorName).trim(),
-        };
-      });
-
-      setVendorDebugRows(rows);
-    } catch (error) {
-      console.warn('[VendorLookup] Kunne ikke hente debug-preview:', error);
-      setVendorDebugRows([]);
-    } finally {
-      setIsVendorDebugLoading(false);
-    }
-  };
 
   const logVendorResolutionPreview = async (
     freshCounts: Record<EntityType, StatusCounts>,
@@ -585,7 +528,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchStatusCounts();
     fetchShopifyLiveCounts();
     fetchManufacturerLookupStatus();
-    fetchVendorDebugRows();
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -661,7 +603,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       fetchStatusCounts(); // Throttled internally
       fetchShopifyLiveCounts(); // Throttled internally (30s)
       fetchManufacturerLookupStatus();
-      fetchVendorDebugRows();
     }, 15_000);
 
     // Watchdog is now self-scheduling on the server side (started by upload-worker).
@@ -811,7 +752,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     const manufacturerReady = await ensureManufacturerLookupReady(freshCounts, singleEntityType);
     if (!manufacturerReady) return;
 
-    await fetchVendorDebugRows();
+    
     await logVendorResolutionPreview(freshCounts, singleEntityType);
 
     setIsStarting(true);
@@ -1392,42 +1333,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         </p>
       </div>
 
-      <Card>
-        <CardContent className="pt-4 pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
-              <p className="text-sm font-medium">Producentfil (vendor lookup)</p>
-              <p className="text-sm text-muted-foreground">
-                {manufacturerLookupStatus.fileName
-                  ? `Fil: ${manufacturerLookupStatus.fileName}`
-                  : 'Ingen producentfil uploadet endnu'}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Parsede producenter: {manufacturerLookupStatus.parsedCount.toLocaleString('da-DK')} ·{' '}
-                Aktive mappings: {manufacturerLookupStatus.mappingCount.toLocaleString('da-DK')}
-              </p>
-              {(manufacturerLookupStatus.fileStatus !== 'processed' || manufacturerLookupStatus.mappingCount === 0) && (
-                <p className="text-xs text-destructive">
-                  Upload og udtræk "Producenter" før produktupload.
-                </p>
-              )}
-            </div>
-            <Badge
-              variant={manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0 ? 'secondary' : 'destructive'}
-            >
-              {manufacturerLookupStatus.fileStatus === 'processed' && manufacturerLookupStatus.mappingCount > 0
-                ? 'Klar'
-                : manufacturerLookupStatus.fileStatus === 'processed'
-                ? 'Tom mapping'
-                : manufacturerLookupStatus.fileStatus === 'pending'
-                ? 'Afventer udtræk'
-                : manufacturerLookupStatus.fileStatus === 'error'
-                ? 'Fejl'
-                : 'Mangler'}
-            </Badge>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Celebration banner when all completed */}
       {allCompleted && (
@@ -2044,43 +1949,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         )}
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Vendor debug (midlertidig)</CardTitle>
-          <CardDescription>
-            5 eksempelprodukter: PROD_NUM, MANUFAC_ID og resolved vendor-navn.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isVendorDebugLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Henter debug-data...
-            </div>
-          ) : vendorDebugRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Ingen produktprøver fundet endnu.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>PROD_NUM</TableHead>
-                  <TableHead>MANUFAC_ID</TableHead>
-                  <TableHead>Resolved Vendor Name</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {vendorDebugRows.map((row) => (
-                  <TableRow key={`${row.prodNum}-${row.manufacId}`}>
-                    <TableCell>{row.prodNum || '–'}</TableCell>
-                    <TableCell>{row.manufacId || '–'}</TableCell>
-                    <TableCell>{row.resolvedVendorName || '–'}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
 
       {/* Skipped products section removed */}
 
