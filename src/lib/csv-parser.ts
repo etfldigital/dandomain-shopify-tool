@@ -581,7 +581,7 @@ export function parseCategoriesCSV(csvText: string): CategoryData[] {
 
       // Debug log for first few rows
       if (rows.indexOf(row) < 3) {
-        console.log('Category row parsed:', { external_id, name, parent, slug });
+        
       }
       
       return {

@@ -1251,7 +1251,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
       await saveMappings(fieldMappings, rules);
       toast.success('Migrationsregler gemt');
     } catch (error) {
-      console.error('Error saving transformation rules:', error);
+      
     }
   };
 
