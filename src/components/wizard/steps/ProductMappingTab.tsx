@@ -351,6 +351,12 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     })),
   ];
 
+  const resolveVendorName = (rawVendor: unknown): string => {
+    const manufacturerId = String(rawVendor ?? '').trim();
+    if (!manufacturerId) return '';
+    return manufacturerNameMap.get(manufacturerId) ?? manufacturerId;
+  };
+
   const findNewMetafields = (mappings: FieldMapping[]) => {
     const existingKeys = new Set(shopifyMetafields.map(mf => `metafields.${mf.namespace}.${mf.key}`));
     return mappings
