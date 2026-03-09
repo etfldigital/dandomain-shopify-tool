@@ -36,6 +36,7 @@ interface UploadedFile {
   status: 'pending' | 'processing' | 'success' | 'error';
   count?: number;
   error?: string;
+  parseStats?: ParseStats;
 }
 
 interface ProjectFile {
