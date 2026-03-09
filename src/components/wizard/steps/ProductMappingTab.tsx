@@ -1086,7 +1086,7 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
         toast.info('Ingen produkter fundet');
       }
     } catch (error) {
-      console.error('Search error:', error);
+      
       toast.error('Fejl ved søgning');
     } finally {
       setIsSearching(false);
