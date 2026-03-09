@@ -1572,6 +1572,16 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               {/* Show Shopify live count for all entity types */}
                               {(() => {
                                 const liveCount = shopifyLiveCounts[type];
+                                const isEntityLoading = entityLoading[type] || false;
+                                
+                                if (isEntityLoading) {
+                                  return (
+                                    <span className="text-muted-foreground mr-2">
+                                      <Loader2 className="w-3 h-3 inline animate-spin mr-1" />
+                                      henter fra Shopify…
+                                    </span>
+                                  );
+                                }
                                 if (liveCount !== null && liveCount !== undefined) {
                                   return (
                                     <span className="text-green-600 mr-2">
@@ -1589,24 +1599,19 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                 if (shopifyLiveCounts.isLoading) {
                                   return <span className="text-muted-foreground mr-2"><Loader2 className="w-3 h-3 inline animate-spin mr-1" />henter…</span>;
                                 }
-                                if (shopifyLiveCounts.fetchFailed) {
-                                  return (
-                                    <span className="text-muted-foreground mr-2">
-                                      – i Shopify
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
-                                        className="ml-1 inline-flex items-center hover:text-foreground"
-                                        title="Prøv igen"
-                                      >
-                                        <RefreshCw className="w-3 h-3" />
-                                      </button>
-                                    </span>
-                                  );
-                                }
-                                if (effectiveUploaded > 0) {
-                                  return <span className="text-green-600 mr-2">{effectiveUploaded.toLocaleString('da-DK')} uploadet</span>;
-                                }
-                                return null;
+                                // Show "– i Shopify" with clickable refresh for failed/unknown state
+                                return (
+                                  <span className="text-muted-foreground mr-2">
+                                    – i Shopify
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
+                                      className="ml-1 inline-flex items-center hover:text-foreground"
+                                      title="Hent Shopify-tal"
+                                    >
+                                      <RefreshCw className="w-3 h-3" />
+                                    </button>
+                                  </span>
+                                );
                               })()}
                               {effectiveDuplicate > 0 && <span className="text-amber-600 mr-2">{effectiveDuplicate.toLocaleString('da-DK')} duplikater</span>}
                               {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
