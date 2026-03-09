@@ -562,10 +562,11 @@ export function ProductMappingTab({ projectId }: ProductMappingTabProps) {
     } else {
       const nextMap = new Map<string, string>();
       for (const manufacturer of manufacturers || []) {
-        const id = String(manufacturer.external_id || '').trim();
-        const name = String(manufacturer.name || '').trim();
+        const id = String(manufacturer.external_id || '').trim().replace(/\s+/g, ' ');
+        const name = String(manufacturer.name || '').trim().replace(/\s+/g, ' ');
         if (id && name) {
           nextMap.set(id, name);
+          nextMap.set(normalizeManufacturerKey(id), name);
         }
       }
       setManufacturerNameMap(nextMap);
