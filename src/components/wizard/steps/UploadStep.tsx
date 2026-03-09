@@ -1621,7 +1621,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             </span>
                           )}
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Live progress during uploads */}
                       {isUploading && job?.status === 'running' && (
