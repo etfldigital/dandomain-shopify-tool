@@ -891,38 +891,19 @@ async function processProductGroup(
   // completed between our fetch and lock acquisition.
   // ============================================================================
   if (dbGroupKey) {
-    const { data: groupRecords, error: groupCheckError } = await supabase
-      .from('canonical_products')
-      .select('id, shopify_id')
-      .eq('project_id', projectId)
-      .not('shopify_id', 'is', null)
-      .limit(500);
-    
-    if (!groupCheckError && groupRecords) {
-      // Filter in JS since JSONB filtering in Supabase can be tricky
-      const matchingWithShopifyId = groupRecords.filter((r: any) => {
-        // We need to check the data column - but we didn't select it
-        // Instead, we'll do a targeted query
-        return false; // Will use a different approach
-      });
-    }
-    
-    // More reliable: Query specifically for this group key
+    // Targeted query: only fetch records with the SAME _groupKey that already have a shopify_id.
+    // This replaces the old full-table scan which was a major performance bottleneck.
     const { data: existingInGroup } = await supabase
       .from('canonical_products')
-      .select('shopify_id, data')
+      .select('shopify_id')
       .eq('project_id', projectId)
-      .not('shopify_id', 'is', null);
+      .eq('data->>_groupKey', dbGroupKey)
+      .not('shopify_id', 'is', null)
+      .limit(1);
     
-    if (existingInGroup) {
-      const matchingRecord = existingInGroup.find((r: any) => {
-        const rGroupKey = String(r.data?._groupKey || '').trim().toLowerCase();
-        return rGroupKey === dbGroupKey && r.shopify_id;
-      });
-      
-      if (matchingRecord?.shopify_id) {
-        const existingShopifyId = matchingRecord.shopify_id;
-        console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
+    if (existingInGroup && existingInGroup.length > 0 && existingInGroup[0].shopify_id) {
+      const existingShopifyId = existingInGroup[0].shopify_id;
+      console.log(`[PRODUCTS] Group "${dbGroupKey}" already has shopify_id ${existingShopifyId} in database, marking and skipping`);
         
         // Release lock and mark as uploaded
         await supabase
