@@ -8,7 +8,7 @@ const corsHeaders = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Minimal scheduling delay between batches (per entity type)
-const WORKER_SCHEDULE_DELAY_MS = 500;
+const WORKER_SCHEDULE_DELAY_MS = 200; // Reduced from 500ms: products are now parallelized
 // Orders need a longer delay: each batch uses ~15 Shopify API calls at 2 req/s leak rate.
 // 15s gives the bucket time to recover fully between batches.
 const ORDERS_SCHEDULE_DELAY_MS = 2_000;
