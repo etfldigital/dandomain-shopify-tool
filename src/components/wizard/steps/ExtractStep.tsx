@@ -266,6 +266,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
     const totalFiles = uploadedFiles.length;
     let processed = 0;
     let productCount = 0;
+    let lastProductStats: ParseStats | undefined;
     let customerCount = 0;
     let orderCount = 0;
     let categoryCount = 0;
