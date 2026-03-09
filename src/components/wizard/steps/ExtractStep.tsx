@@ -680,7 +680,7 @@ export function ExtractStep({ project, onUpdateProject, onNext }: ExtractStepPro
           singleStats.duplicateSkus = parsedData.length - uniqueProducts.length;
           singleStats.uniqueAfterDedup = uniqueProducts.length;
           recordCount = uniqueProducts.length;
-          console.log(`[Extract Single] Product stats:`, singleStats);
+          
           for (let i = 0; i < uniqueProducts.length; i += 100) {
             const batch = uniqueProducts.slice(i, i + 100).map(product => ({
               project_id: project.id, external_id: product.sku, data: product as any, status: 'pending' as const,
