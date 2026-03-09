@@ -742,7 +742,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       await fetchJobs();
       fetchShopifyLiveCounts(true);
     } catch (error) {
-      console.error('Failed to start upload:', error);
+      
       toast.error(`Kunne ikke starte upload: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setIsStarting(false);
