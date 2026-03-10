@@ -2043,7 +2043,7 @@ async function uploadCustomers(
   batchSize: number,
   startTime: number,
   timeBudget: number
-): Promise<{ success: boolean; processed: number; errors: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
+): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number }> {
   
   const { data: items, error: fetchError } = await supabase
     .from('canonical_customers')
@@ -2054,18 +2054,18 @@ async function uploadCustomers(
 
   if (fetchError) throw new Error(`Failed to fetch customers: ${fetchError.message}`);
   if (!items || items.length === 0) {
-    return { success: true, processed: 0, errors: 0, hasMore: false };
+    return { success: true, processed: 0, errors: 0, skipped: 0, hasMore: false };
   }
 
   let processed = 0;
   let errors = 0;
+  let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
-  // Process customers in parallel batches of 5 for much higher throughput
   const CUSTOMER_CONCURRENCY = 5;
   const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
 
-  const processCustomer = async (item: any): Promise<{ result: 'processed' | 'error' | 'rateLimited'; errorDetail?: { externalId: string; message: string } }> => {
+  const processCustomer = async (item: any): Promise<{ result: 'processed' | 'skipped' | 'error' | 'rateLimited'; errorDetail?: { externalId: string; message: string } }> => {
     const data = item.data || {};
     const email = data.email?.trim();
     
@@ -2074,10 +2074,10 @@ async function uploadCustomers(
         .from('canonical_customers')
         .update({ status: 'failed', error_message: 'Missing email', updated_at: new Date().toISOString() })
         .eq('id', item.id);
-      return { result: 'error' };
+      return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Missing email' } };
     }
 
-    // Check if customer exists
+    // Check if customer already exists in Shopify by email
     const searchResult = await shopifyFetch(
       `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(email)}`,
       { headers: { 'X-Shopify-Access-Token': token } }
@@ -2095,28 +2095,34 @@ async function uploadCustomers(
           await supabase
             .from('canonical_customers')
             .update({ 
-              status: 'uploaded', 
+              status: 'duplicate', 
               shopify_id: String(existingCustomer.id), 
-              error_message: 'Kunde fandtes allerede',
+              error_message: 'Skipped: duplicate email already in Shopify',
               updated_at: new Date().toISOString() 
             })
             .eq('id', item.id);
-          return { result: 'processed' };
+          // Return 'skipped' — NOT an error, NOT a processed success
+          return { result: 'skipped' };
         }
       } catch { /* proceed to create */ }
     }
 
-    const customerPayload = {
+    // Build customer payload
+    const customerPayload: any = {
       customer: {
         email: email,
         first_name: data.first_name || '',
         last_name: data.last_name || '',
-        phone: data.phone || undefined,
         verified_email: true,
         send_email_welcome: false,
         addresses: data.addresses || [],
       },
     };
+
+    // Include phone only if present
+    if (data.phone) {
+      customerPayload.customer.phone = data.phone;
+    }
 
     const createResult = await shopifyFetch(
       `${shopifyUrl}/customers.json`,
@@ -2131,7 +2137,67 @@ async function uploadCustomers(
       return { result: 'rateLimited' };
     }
 
+    // If creation failed due to phone number issue, retry WITHOUT phone
+    if (!createResult.response.ok && data.phone) {
+      const errorBody = createResult.body.toLowerCase();
+      const isPhoneError = errorBody.includes('phone') || errorBody.includes('telefon');
+      
+      if (isPhoneError) {
+        console.log(`[CUSTOMERS] Retrying ${email} without phone (phone error: ${createResult.body.slice(0, 100)})`);
+        
+        // Remove phone and retry
+        delete customerPayload.customer.phone;
+        const retryResult = await shopifyFetch(
+          `${shopifyUrl}/customers.json`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+            body: JSON.stringify(customerPayload),
+          }
+        );
+
+        if ('rateLimited' in retryResult) {
+          return { result: 'rateLimited' };
+        }
+
+        if (retryResult.response.ok) {
+          try {
+            const responseData = JSON.parse(retryResult.body);
+            const customerId = String(responseData.customer.id);
+            await supabase
+              .from('canonical_customers')
+              .update({ status: 'uploaded', shopify_id: customerId, error_message: 'Uploaded without phone (invalid/conflicting)', updated_at: new Date().toISOString() })
+              .eq('id', item.id);
+            return { result: 'processed' };
+          } catch {
+            return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Parse error after phone retry' } };
+          }
+        }
+        // If retry also failed, fall through to error handling below
+        const retryErrorMsg = `${retryResult.response.status}: ${retryResult.body.slice(0, 100)}`;
+        await supabase
+          .from('canonical_customers')
+          .update({ status: 'failed', error_message: retryErrorMsg, updated_at: new Date().toISOString() })
+          .eq('id', item.id);
+        return { result: 'error', errorDetail: { externalId: item.external_id, message: retryErrorMsg } };
+      }
+    }
+
     if (!createResult.response.ok) {
+      // Check if it's a duplicate email error from Shopify (email already taken)
+      const errorBody = createResult.body.toLowerCase();
+      if (errorBody.includes('email') && (errorBody.includes('taken') || errorBody.includes('already') || errorBody.includes('duplicate'))) {
+        await supabase
+          .from('canonical_customers')
+          .update({ 
+            status: 'duplicate', 
+            error_message: 'Skipped: email already exists in Shopify (create rejected)',
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', item.id);
+        return { result: 'skipped' };
+      }
+
       const errorMsg = `${createResult.response.status}: ${createResult.body.slice(0, 100)}`;
       await supabase
         .from('canonical_customers')
@@ -2149,13 +2215,10 @@ async function uploadCustomers(
         .eq('id', item.id);
       return { result: 'processed' };
     } catch {
-      return { result: 'error' };
+      return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Failed to parse response' } };
     }
   };
 
-  // Process customers in parallel batches of 5
-  const CUSTOMER_CONCURRENCY = 5;
-  const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
   let rateLimitedEarly = false;
 
   const results = await Promise.all(
@@ -2170,6 +2233,7 @@ async function uploadCustomers(
   for (const r of results) {
     if (!r) continue;
     if (r.result === 'processed') processed++;
+    else if (r.result === 'skipped') skipped++;
     else if (r.result === 'error') {
       errors++;
       if (r.errorDetail) errorDetails.push(r.errorDetail);
@@ -2177,7 +2241,7 @@ async function uploadCustomers(
   }
 
   if (rateLimitedEarly) {
-    return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: 5 };
+    return { success: true, processed, errors, skipped, hasMore: true, rateLimited: true, retryAfterSeconds: 5 };
   }
 
   const { count: remainingCount } = await supabase
@@ -2190,6 +2254,7 @@ async function uploadCustomers(
     success: true,
     processed,
     errors,
+    skipped,
     hasMore: (remainingCount || 0) > 0,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };

@@ -949,7 +949,7 @@ Deno.serve(async (req) => {
           actualPending = await countCanonicalStatus(job.entity_type, 'pending');
           actualUploaded = await countCanonicalStatus(job.entity_type, 'uploaded');
           actualFailed = await countCanonicalStatus(job.entity_type, 'failed');
-          actualDuplicate = job.entity_type === 'orders' ? await countCanonicalStatus(job.entity_type, 'duplicate') : 0;
+          actualDuplicate = (job.entity_type === 'orders' || job.entity_type === 'customers') ? await countCanonicalStatus(job.entity_type, 'duplicate') : 0;
           console.log(`[WORKER] Full recount for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}, duplicate=${actualDuplicate}`);
           actualTotal = actualPending + actualUploaded + actualFailed + actualDuplicate;
           actualProcessed = actualUploaded + actualFailed + actualDuplicate;
