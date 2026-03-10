@@ -466,21 +466,25 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       
       
       if (response.data?.success && response.data.counts) {
-        const c = response.data.counts;
-        setShopifyLiveCounts({
-          products: c.products ?? null,
-          customers: c.customers ?? null,
-          orders: c.orders ?? null,
-          categories: c.categories ?? null,
-          pages: c.pages ?? null,
-          fetchFailed: false,
-          isLoading: false,
-        });
+        if (response.data.skipped) {
+          // Skipped due to active job — preserve all existing cached values
+          setShopifyLiveCounts(prev => ({ ...prev, isLoading: false }));
+        } else {
+          const c = response.data.counts;
+          setShopifyLiveCounts(prev => ({
+            products: c.products ?? prev.products,
+            customers: c.customers ?? prev.customers,
+            orders: c.orders ?? prev.orders,
+            categories: c.categories ?? prev.categories,
+            pages: c.pages ?? prev.pages,
+            fetchFailed: false,
+            isLoading: false,
+          }));
+        }
       } else {
         setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
       }
     } catch (e) {
-      
       setShopifyLiveCounts(prev => ({ ...prev, fetchFailed: true, isLoading: false }));
     }
   };
