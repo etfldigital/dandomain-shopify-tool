@@ -284,7 +284,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       });
 
       if (rpcError) {
-        anyFailed = true;
+        failCount++;
       } else if (primaryCounts && Array.isArray(primaryCounts)) {
         let productPending = 0, productUploaded = 0, productFailed = 0, productDuplicate = 0;
         for (const row of primaryCounts) {
