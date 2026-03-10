@@ -202,15 +202,17 @@ function getLocalMatchKey(record: any, entityType: EntityType): string {
     case "categories":
       return (record.slug || record.name || "").toLowerCase().trim();
     case "products": {
-      const title = record.data?.title || "";
+      // With lightweight select, title is a flat field
+      const title = record.product_title || record.data?.title || "";
       return title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "").trim();
     }
     case "customers":
-      return (record.data?.email || "").toLowerCase().trim();
+      // With lightweight select, email is a flat field
+      return (record.customer_email || record.data?.email || "").toLowerCase().trim();
     case "orders":
       return String(record.external_id || "").trim();
     case "pages":
-      return (record.data?.slug || "").toLowerCase().trim();
+      return (record.page_slug || record.data?.slug || "").toLowerCase().trim();
     default:
       return "";
   }
@@ -393,9 +395,24 @@ async function applyChunk(
   const dandoIdMap = shopifyData.dandoIdMap;
   const fingerprintMap = shopifyData.fingerprintMap;
 
-  // Fetch a chunk of local records
+  // Fetch a chunk of local records — select only fields needed for matching (NOT full data blob)
   const shopifyIdCol = entityType === "categories" ? "shopify_collection_id" : "shopify_id";
-  const selectCols = `id, external_id, status, ${shopifyIdCol}` + (entityType === "categories" ? ", name, slug" : ", data");
+  let selectCols: string;
+  if (entityType === "categories") {
+    selectCols = `id, external_id, status, ${shopifyIdCol}, name, slug`;
+  } else if (entityType === "customers") {
+    // Only need email for matching — avoid fetching full JSONB data
+    selectCols = `id, external_id, status, ${shopifyIdCol}, customer_email:data->>email`;
+  } else if (entityType === "orders") {
+    // Only need email + total_price for fingerprint matching
+    selectCols = `id, external_id, status, ${shopifyIdCol}, order_email:data->>customer_email, order_email2:data->>email, order_total:data->>total_price`;
+  } else if (entityType === "products") {
+    // Only need title for handle generation
+    selectCols = `id, external_id, status, ${shopifyIdCol}, product_title:data->>title`;
+  } else {
+    // pages: need slug
+    selectCols = `id, external_id, status, ${shopifyIdCol}, page_slug:data->>slug`;
+  }
 
   let localRecords: any[] = [];
   let from = offset;
@@ -471,8 +488,9 @@ async function applyChunk(
       if (extId) shopifyId = dandoIdMap[extId];
 
       if (!shopifyId) {
-        const email = (local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
-        const totalPrice = parseFloat(String(local.data?.total_price || "0")).toFixed(2);
+        // With lightweight select, fields are flat
+        const email = (local.order_email || local.order_email2 || local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
+        const totalPrice = parseFloat(String(local.order_total || local.data?.total_price || "0")).toFixed(2);
         if (email) {
           const fp = `${email}|${totalPrice}`;
           shopifyId = fingerprintMap[fp];
