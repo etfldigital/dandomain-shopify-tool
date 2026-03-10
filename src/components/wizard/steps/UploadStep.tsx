@@ -310,12 +310,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     ];
 
     for (const { type, table } of entityTables) {
-      const [pending, uploaded, failed, duplicate] = await Promise.all([
-        safeCount(table, 'pending'),
-        safeCount(table, 'uploaded'),
-        safeCount(table, 'failed'),
-        safeCount(table, 'duplicate'),
-      ]);
+      const pending = await safeCount(table, 'pending');
+      const uploaded = await safeCount(table, 'uploaded');
+      const failed = await safeCount(table, 'failed');
+      const duplicate = await safeCount(table, 'duplicate');
       counts[type] = { pending, uploaded, failed, duplicate };
     }
 
