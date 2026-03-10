@@ -475,23 +475,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  // Fetch raw entity counts (total rows in DB, unfiltered) for transparency
-  const fetchRawEntityCounts = async () => {
-    const [prodR, custR, ordR, catR, pageR] = await Promise.all([
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-    ]);
-    setRawEntityCounts({
-      products: prodR.count || 0,
-      customers: custR.count || 0,
-      orders: ordR.count || 0,
-      categories: catR.count || 0,
-      pages: pageR.count || 0,
-    });
-  };
 
   useEffect(() => {
     // Initial fetch
