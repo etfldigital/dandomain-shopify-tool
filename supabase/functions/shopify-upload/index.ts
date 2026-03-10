@@ -2061,7 +2061,12 @@ async function uploadCustomers(
   let errors = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
-  for (const item of items) {
+  // Process customers in parallel batches of 5 for much higher throughput
+  const CUSTOMER_CONCURRENCY = 5;
+  const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
+
+  const processCustomer = async (item: any): Promise<void> => {
+    if (Date.now() - startTime > timeBudget) return;
     if (Date.now() - startTime > timeBudget) break;
 
     const data = item.data || {};
