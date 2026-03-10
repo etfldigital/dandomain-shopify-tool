@@ -393,9 +393,24 @@ async function applyChunk(
   const dandoIdMap = shopifyData.dandoIdMap;
   const fingerprintMap = shopifyData.fingerprintMap;
 
-  // Fetch a chunk of local records
+  // Fetch a chunk of local records — select only fields needed for matching (NOT full data blob)
   const shopifyIdCol = entityType === "categories" ? "shopify_collection_id" : "shopify_id";
-  const selectCols = `id, external_id, status, ${shopifyIdCol}` + (entityType === "categories" ? ", name, slug" : ", data");
+  let selectCols: string;
+  if (entityType === "categories") {
+    selectCols = `id, external_id, status, ${shopifyIdCol}, name, slug`;
+  } else if (entityType === "customers") {
+    // Only need email for matching — avoid fetching full JSONB data
+    selectCols = `id, external_id, status, ${shopifyIdCol}, customer_email:data->>email`;
+  } else if (entityType === "orders") {
+    // Only need email + total_price for fingerprint matching
+    selectCols = `id, external_id, status, ${shopifyIdCol}, order_email:data->>customer_email, order_email2:data->>email, order_total:data->>total_price`;
+  } else if (entityType === "products") {
+    // Only need title for handle generation
+    selectCols = `id, external_id, status, ${shopifyIdCol}, product_title:data->>title`;
+  } else {
+    // pages: need slug
+    selectCols = `id, external_id, status, ${shopifyIdCol}, page_slug:data->>slug`;
+  }
 
   let localRecords: any[] = [];
   let from = offset;
