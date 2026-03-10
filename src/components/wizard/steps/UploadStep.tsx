@@ -416,24 +416,30 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       });
       
       if (response.data?.success && response.data.counts) {
-        const value = response.data.counts[entityType] ?? null;
-        setShopifyLiveCounts(prev => ({
-          ...prev,
-          [entityType]: value,
-          fetchFailed: prev.fetchFailed && value === null, // Only keep failed if still null
-        }));
+        // If skipped (e.g. active upload job), preserve existing cached value
+        if (response.data.skipped) {
+          // Don't overwrite — keep whatever we had before
+        } else {
+          const value = response.data.counts[entityType] ?? null;
+          setShopifyLiveCounts(prev => ({
+            ...prev,
+            [entityType]: value,
+            fetchFailed: prev.fetchFailed && value === null,
+          }));
+        }
       } else {
+        // Real failure — but still don't overwrite with null if we had a value
         setShopifyLiveCounts(prev => ({
           ...prev,
-          [entityType]: null,
-          fetchFailed: true,
+          [entityType]: prev[entityType] !== null ? prev[entityType] : null,
+          fetchFailed: prev[entityType] === null,
         }));
       }
     } catch (e) {
+      // Network error — preserve existing value
       setShopifyLiveCounts(prev => ({
         ...prev,
-        [entityType]: null,
-        fetchFailed: true,
+        fetchFailed: prev[entityType] === null,
       }));
     } finally {
       setEntityLoading(prev => ({ ...prev, [entityType]: false }));
