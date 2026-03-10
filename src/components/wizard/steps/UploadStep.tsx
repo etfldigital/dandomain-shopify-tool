@@ -246,7 +246,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
     // Throttle: avoid hammering DB (this was causing UI "freeze" feelings)
     const now = Date.now();
-    if (now - lastCountsFetchRef.current < 15_000) {
+    if (now - lastCountsFetchRef.current < 30_000) {
       return statusCounts;
     }
     lastCountsFetchRef.current = now;
