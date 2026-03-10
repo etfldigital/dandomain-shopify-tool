@@ -30,6 +30,7 @@ export function SimplifiedEntityCard({
 }: SimplifiedEntityCardProps) {
   const Icon = type === 'customers' ? Users : FileText;
   const percent = totalRows > 0 ? Math.min(100, (processed / totalRows) * 100) : 0;
+  const remaining = Math.max(0, totalRows - processed);
   const isComplete = processed >= totalRows && totalRows > 0;
 
   return (
@@ -64,6 +65,12 @@ export function SimplifiedEntityCard({
           </span>
         </div>
         <Progress value={percent} className="h-2" />
+        {remaining > 0 && (
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Tilbage</span>
+            <span className="tabular-nums">{remaining.toLocaleString('da-DK')}</span>
+          </div>
+        )}
       </div>
 
       {/* Stats row */}
