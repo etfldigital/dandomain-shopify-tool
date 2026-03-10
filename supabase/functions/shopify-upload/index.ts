@@ -2061,9 +2061,11 @@ async function uploadCustomers(
   let errors = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
-  for (const item of items) {
-    if (Date.now() - startTime > timeBudget) break;
+  // Process customers in parallel batches of 5 for much higher throughput
+  const CUSTOMER_CONCURRENCY = 5;
+  const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
 
+  const processCustomer = async (item: any): Promise<{ result: 'processed' | 'error' | 'rateLimited'; errorDetail?: { externalId: string; message: string } }> => {
     const data = item.data || {};
     const email = data.email?.trim();
     
@@ -2072,8 +2074,7 @@ async function uploadCustomers(
         .from('canonical_customers')
         .update({ status: 'failed', error_message: 'Missing email', updated_at: new Date().toISOString() })
         .eq('id', item.id);
-      errors++;
-      continue;
+      return { result: 'error' };
     }
 
     // Check if customer exists
@@ -2083,7 +2084,7 @@ async function uploadCustomers(
     );
 
     if ('rateLimited' in searchResult) {
-      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(searchResult.retryAfterMs / 1000) };
+      return { result: 'rateLimited' };
     }
 
     if (searchResult.response.ok) {
@@ -2100,8 +2101,7 @@ async function uploadCustomers(
               updated_at: new Date().toISOString() 
             })
             .eq('id', item.id);
-          processed++;
-          continue;
+          return { result: 'processed' };
         }
       } catch { /* proceed to create */ }
     }
@@ -2118,7 +2118,7 @@ async function uploadCustomers(
       },
     };
 
-    const result = await shopifyFetch(
+    const createResult = await shopifyFetch(
       `${shopifyUrl}/customers.json`,
       {
         method: 'POST',
@@ -2127,32 +2127,57 @@ async function uploadCustomers(
       }
     );
 
-    if ('rateLimited' in result) {
-      return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) };
+    if ('rateLimited' in createResult) {
+      return { result: 'rateLimited' };
     }
 
-    if (!result.response.ok) {
-      const errorMsg = `${result.response.status}: ${result.body.slice(0, 100)}`;
+    if (!createResult.response.ok) {
+      const errorMsg = `${createResult.response.status}: ${createResult.body.slice(0, 100)}`;
       await supabase
         .from('canonical_customers')
         .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
         .eq('id', item.id);
-      errors++;
-      errorDetails.push({ externalId: item.external_id, message: errorMsg });
-      continue;
+      return { result: 'error', errorDetail: { externalId: item.external_id, message: errorMsg } };
     }
 
     try {
-      const responseData = JSON.parse(result.body);
+      const responseData = JSON.parse(createResult.body);
       const customerId = String(responseData.customer.id);
       await supabase
         .from('canonical_customers')
         .update({ status: 'uploaded', shopify_id: customerId, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
-      processed++;
+      return { result: 'processed' };
     } catch {
-      errors++;
+      return { result: 'error' };
     }
+  };
+
+  // Process customers in parallel batches of 5
+  const CUSTOMER_CONCURRENCY = 5;
+  const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
+  let rateLimitedEarly = false;
+
+  const results = await Promise.all(
+    items.map(item => customerLimit(async () => {
+      if (rateLimitedEarly || Date.now() - startTime > timeBudget) return null;
+      const r = await processCustomer(item);
+      if (r.result === 'rateLimited') rateLimitedEarly = true;
+      return r;
+    }))
+  );
+
+  for (const r of results) {
+    if (!r) continue;
+    if (r.result === 'processed') processed++;
+    else if (r.result === 'error') {
+      errors++;
+      if (r.errorDetail) errorDetails.push(r.errorDetail);
+    }
+  }
+
+  if (rateLimitedEarly) {
+    return { success: true, processed, errors, hasMore: true, rateLimited: true, retryAfterSeconds: 5 };
   }
 
   const { count: remainingCount } = await supabase

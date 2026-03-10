@@ -928,23 +928,44 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Get actual database counts using reliable method
-        // NOTE: Supabase .count queries can return null/partial on large tables (HTTP 206)
-        // Use direct SQL count via rpc or ensure we get exact counts
-        const tableName = `canonical_${job.entity_type}`;
+        // ============================================================================
+        // OPTIMIZED COUNTING: Instead of running 4 expensive exact-count queries
+        // after EVERY batch (which hammers the DB on large tables), we derive counts
+        // from the job's own counters + batch result. Full DB re-count only every 5th batch.
+        // ============================================================================
+        const batchNumber = (typeof effectiveCurrentBatch === 'number' ? effectiveCurrentBatch : (job.current_batch || 0)) + 1;
+        const FULL_RECOUNT_EVERY = 5; // Only do expensive DB counts every 5 batches
         
-        // Use the same canonical counting logic as in start(), including product primary filtering.
-        projectIdForCounts = job.project_id;
-        const actualPending = await countCanonicalStatus(job.entity_type, 'pending');
-        const actualUploaded = await countCanonicalStatus(job.entity_type, 'uploaded');
-        const actualFailed = await countCanonicalStatus(job.entity_type, 'failed');
-        // Count duplicates as "processed" (deliberately skipped, not pending)
-        const actualDuplicate = job.entity_type === 'orders' ? await countCanonicalStatus(job.entity_type, 'duplicate') : 0;
-        
-        console.log(`[WORKER] Counts for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}, duplicate=${actualDuplicate}`);
+        let actualPending: number;
+        let actualUploaded: number;
+        let actualFailed: number;
+        let actualDuplicate: number;
+        let actualTotal: number;
+        let actualProcessed: number;
 
-        const actualTotal = actualPending + actualUploaded + actualFailed + actualDuplicate;
-        const actualProcessed = actualUploaded + actualFailed + actualDuplicate;
+        if (batchNumber % FULL_RECOUNT_EVERY === 0) {
+          // Periodic full recount for accuracy
+          projectIdForCounts = job.project_id;
+          actualPending = await countCanonicalStatus(job.entity_type, 'pending');
+          actualUploaded = await countCanonicalStatus(job.entity_type, 'uploaded');
+          actualFailed = await countCanonicalStatus(job.entity_type, 'failed');
+          actualDuplicate = job.entity_type === 'orders' ? await countCanonicalStatus(job.entity_type, 'duplicate') : 0;
+          console.log(`[WORKER] Full recount for ${job.entity_type}: pending=${actualPending}, uploaded=${actualUploaded}, failed=${actualFailed}, duplicate=${actualDuplicate}`);
+          actualTotal = actualPending + actualUploaded + actualFailed + actualDuplicate;
+          actualProcessed = actualUploaded + actualFailed + actualDuplicate;
+        } else {
+          // Incremental update from batch result (no DB queries!)
+          const batchProcessed = (result.processed || 0);
+          const batchErrors = (result.errors || 0);
+          const batchSkipped = (result.skipped || 0);
+          actualProcessed = (job.processed_count || 0) + batchProcessed + batchErrors + batchSkipped;
+          actualTotal = job.total_count || 0;
+          actualPending = Math.max(0, actualTotal - actualProcessed);
+          actualUploaded = (job.processed_count || 0) + batchProcessed - (job.error_count || 0);
+          actualFailed = (job.error_count || 0) + batchErrors;
+          actualDuplicate = 0; // Will be corrected on next full recount
+          console.log(`[WORKER] Incremental counts for ${job.entity_type}: pending~${actualPending}, processed~${actualProcessed} (batch #${batchNumber})`);
+        }
 
         // For test mode: track how many items we've uploaded in this job specifically
         // Test mode should ONLY upload up to 3 items total, then stop

@@ -259,6 +259,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
 
     let anyFailed = false;
+    let failCount = 0;
 
     // Helper: fetch count for a single entity+status, with timeout protection
     const safeCount = async (table: 'canonical_customers' | 'canonical_orders' | 'canonical_categories' | 'canonical_pages', status: 'pending' | 'uploaded' | 'failed' | 'duplicate'): Promise<number> => {
@@ -268,10 +269,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           .select('*', { count: 'exact', head: true })
           .eq('project_id', project.id)
           .eq('status', status as any);
-        if (error) { anyFailed = true; return 0; }
+        if (error) { failCount++; return 0; }
         return count || 0;
       } catch {
-        anyFailed = true;
+        failCount++;
         return 0;
       }
     };
@@ -283,7 +284,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       });
 
       if (rpcError) {
-        anyFailed = true;
+        failCount++;
       } else if (primaryCounts && Array.isArray(primaryCounts)) {
         let productPending = 0, productUploaded = 0, productFailed = 0, productDuplicate = 0;
         for (const row of primaryCounts) {
@@ -295,7 +296,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
       }
     } catch {
-      anyFailed = true;
+      failCount++;
     }
 
     // Fetch remaining entities SEQUENTIALLY to reduce DB load
@@ -317,6 +318,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       counts[type] = { pending, uploaded, failed, duplicate };
     }
 
+    // Only show DB pressure warning if MAJORITY of queries failed (>= 8 out of ~17 total)
+    // A single failed query is normal under load and shouldn't alarm the user
+    anyFailed = failCount >= 8;
     setDbFetchFailed(anyFailed);
     setStatusCounts(counts);
     return counts;
@@ -568,13 +572,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       }
     }, 3000);
     
-    // Light polling every 15 seconds (increased from 10s for less flicker)
+    // Light polling every 20 seconds (reduced frequency to ease DB load)
     const pollTimer = window.setInterval(() => {
       fetchJobs();
-      fetchStatusCounts(); // Throttled internally
-      fetchShopifyLiveCounts(); // Throttled internally (30s)
-      fetchManufacturerLookupStatus();
-    }, 15_000);
+      fetchStatusCounts(); // Throttled internally (15s)
+      fetchShopifyLiveCounts(); // Throttled internally (60s)
+    }, 20_000);
 
     // Watchdog is now self-scheduling on the server side (started by upload-worker).
     // No need for browser-side watchdog polling anymore.
