@@ -217,14 +217,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const lastShopifyFetchRef = useRef<number>(0);
   // Per-entity loading state for the refresh button spinner
   const [entityLoading, setEntityLoading] = useState<Record<string, boolean>>({});
-  // Track whether DB count queries are timing out
-  const [dbFetchFailed, setDbFetchFailed] = useState(false);
-
-  // Raw counts per entity (total rows in DB, NOT filtered by _isPrimary)
-  // This lets us show "1536 rækker → 1137 Shopify-produkter"
-  const [rawEntityCounts, setRawEntityCounts] = useState<Record<EntityType, number>>({
-    products: 0, customers: 0, orders: 0, categories: 0, pages: 0,
-  });
 
   const [manufacturerLookupStatus, setManufacturerLookupStatus] = useState<ManufacturerLookupStatus>({
     fileName: null,
@@ -246,7 +238,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
     // Throttle: avoid hammering DB (this was causing UI "freeze" feelings)
     const now = Date.now();
-    if (now - lastCountsFetchRef.current < 15_000) {
+    if (now - lastCountsFetchRef.current < 30_000) {
       return statusCounts;
     }
     lastCountsFetchRef.current = now;
@@ -259,7 +251,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
     };
 
-    let anyFailed = false;
     let failCount = 0;
 
     // Helper: fetch count for a single entity+status, with timeout protection
@@ -310,19 +301,13 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     ];
 
     for (const { type, table } of entityTables) {
-      const [pending, uploaded, failed, duplicate] = await Promise.all([
-        safeCount(table, 'pending'),
-        safeCount(table, 'uploaded'),
-        safeCount(table, 'failed'),
-        safeCount(table, 'duplicate'),
-      ]);
+      const pending = await safeCount(table, 'pending');
+      const uploaded = await safeCount(table, 'uploaded');
+      const failed = await safeCount(table, 'failed');
+      const duplicate = await safeCount(table, 'duplicate');
       counts[type] = { pending, uploaded, failed, duplicate };
     }
 
-    // Only show DB pressure warning if MAJORITY of queries failed (>= 8 out of ~17 total)
-    // A single failed query is normal under load and shouldn't alarm the user
-    anyFailed = failCount >= 8;
-    setDbFetchFailed(anyFailed);
     setStatusCounts(counts);
     return counts;
   };
@@ -489,23 +474,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-  // Fetch raw entity counts (total rows in DB, unfiltered) for transparency
-  const fetchRawEntityCounts = async () => {
-    const [prodR, custR, ordR, catR, pageR] = await Promise.all([
-      supabase.from('canonical_products').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_customers').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_orders').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_categories').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-      supabase.from('canonical_pages').select('*', { count: 'exact', head: true }).eq('project_id', project.id),
-    ]);
-    setRawEntityCounts({
-      products: prodR.count || 0,
-      customers: custR.count || 0,
-      orders: ordR.count || 0,
-      categories: catR.count || 0,
-      pages: pageR.count || 0,
-    });
-  };
 
   useEffect(() => {
     // Initial fetch
@@ -513,7 +481,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     fetchStatusCounts();
     fetchShopifyLiveCounts();
     fetchManufacturerLookupStatus();
-    fetchRawEntityCounts();
+    
 
     // ANTI-FLICKER: Throttled realtime subscription
     // Instead of updating state on every payload, we batch updates
@@ -1482,21 +1450,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           )}
         </CardHeader>
         <CardContent className="space-y-6">
-          {dbFetchFailed && (
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-sm">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Databasen er under pres — nogle tællere kan vise 0. Tryk på refresh-knappen ved "i Shopify" for at se de aktuelle tal, eller vent og prøv igen.</span>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                className="ml-auto shrink-0 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900"
-                onClick={() => { lastCountsFetchRef.current = 0; fetchStatusCounts(); }}
-              >
-                <RefreshCw className="w-3 h-3 mr-1" />
-                Prøv igen
-              </Button>
-            </div>
-          )}
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
@@ -1694,11 +1647,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         return (
                         <div className="text-xs text-muted-foreground">
                           {/* Show raw vs grouped count for products */}
-                          {type === 'products' && rawEntityCounts.products > 0 && rawEntityCounts.products !== total && (
-                            <span className="block text-muted-foreground/70 mb-0.5">
-                              {rawEntityCounts.products.toLocaleString('da-DK')} rækker i DB → {total.toLocaleString('da-DK')} Shopify-produkter (varianter sammenlagt)
-                            </span>
-                          )}
                           {isComplete ? (
                             <span className="text-green-600 font-medium">
                               {total.toLocaleString('da-DK')} behandlet
