@@ -161,7 +161,8 @@ Deno.serve(async (req) => {
         if (shopifyDomain && shopifyToken) {
           const uploaded = await countCanonicalStatus(entity, 'uploaded');
           const failed = await countCanonicalStatus(entity, 'failed');
-          const localTotal = pending + uploaded + failed;
+          const duplicate = (entity === 'orders' || entity === 'customers') ? await countCanonicalStatus(entity, 'duplicate') : 0;
+          const localTotal = pending + uploaded + failed + duplicate;
           try {
             const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
             let liveCount = 0;
