@@ -282,6 +282,18 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           else if (row.status === 'duplicate') productDuplicate = Number(row.primary_count) || 0;
         }
         counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
+      } else if (rpcError) {
+        // RPC returned error (e.g. timeout) — fall back to upload_jobs
+        const productJob = jobs.find(j => j.entity_type === 'products' && j.status !== 'cancelled');
+        if (productJob) {
+          const uploaded = Math.max(0, productJob.processed_count - productJob.error_count);
+          counts.products = {
+            pending: Math.max(0, productJob.total_count - productJob.processed_count),
+            uploaded,
+            failed: productJob.error_count,
+            duplicate: 0,
+          };
+        }
       }
     } catch {
       // Products RPC timed out — fall back to upload_jobs data
