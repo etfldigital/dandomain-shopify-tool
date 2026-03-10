@@ -259,6 +259,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     };
 
     let anyFailed = false;
+    let failCount = 0;
 
     // Helper: fetch count for a single entity+status, with timeout protection
     const safeCount = async (table: 'canonical_customers' | 'canonical_orders' | 'canonical_categories' | 'canonical_pages', status: 'pending' | 'uploaded' | 'failed' | 'duplicate'): Promise<number> => {
@@ -268,10 +269,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           .select('*', { count: 'exact', head: true })
           .eq('project_id', project.id)
           .eq('status', status as any);
-        if (error) { anyFailed = true; return 0; }
+        if (error) { failCount++; return 0; }
         return count || 0;
       } catch {
-        anyFailed = true;
+        failCount++;
         return 0;
       }
     };
