@@ -10,8 +10,24 @@ type EntityType = "products" | "customers" | "orders" | "categories" | "pages";
 
 type Body = {
   projectId: string;
-  entityTypes?: EntityType[]; // If omitted, defaults to ["products"]
+  entityTypes?: EntityType[];
 };
+
+// Abort-safe fetch with timeout
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeout?: number } = {}
+): Promise<Response> {
+  const { timeout = 8000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -37,56 +53,43 @@ Deno.serve(async (req) => {
       return skippedResponse("missing_or_invalid_auth_header");
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    // Validate user identity from JWT (lightweight - no DB call needed)
+    if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
+      console.error("[shopify-counts] Missing env vars:", {
+        hasUrl: !!supabaseUrl, hasAnon: !!supabaseAnonKey, hasService: !!supabaseServiceKey,
+      });
+      return skippedResponse("missing_env_vars");
+    }
+
     const userClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
-
-    // Service client for reading encrypted Shopify credentials
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Verify ownership: use service role to check project belongs to user
-    // This avoids RLS-based ownership check that was timing out under load
     let userId: string | null = null;
     try {
       const { data: { user } } = await userClient.auth.getUser();
       userId = user?.id || null;
     } catch {
-      // If auth check fails, try to proceed anyway - the service role query
-      // will still validate the project exists
       console.warn("[shopify-counts] auth.getUser() failed, falling back to project-only check");
     }
 
-    // Retry project lookup up to 3 times to handle transient DB timeouts
-    let project: any = null;
-    let projectError: any = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await supabase
-        .from("projects")
-        .select("id,shopify_store_domain,shopify_access_token_encrypted,user_id")
-        .eq("id", projectId)
-        .maybeSingle();
-      project = result.data;
-      projectError = result.error;
-      if (!projectError && project) break;
-      if (attempt < 2) {
-        console.warn(`[shopify-counts] Project lookup attempt ${attempt + 1} failed: ${projectError?.message || 'no data'}, retrying in ${(attempt + 1) * 500}ms...`);
-        await new Promise(r => setTimeout(r, (attempt + 1) * 500));
-      }
-    }
+    // Single attempt project lookup (no retry loop to save time)
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id,shopify_store_domain,shopify_access_token_encrypted,user_id")
+      .eq("id", projectId)
+      .maybeSingle();
 
     if (projectError || !project) {
       const reason = projectError ? `db_error: ${projectError.message}` : "project_not_found";
-      console.error(`[shopify-counts] Project lookup failed after retries: ${reason}`);
-      // Return skipped response instead of 500 so the UI doesn't break
+      console.error(`[shopify-counts] Project lookup failed: ${reason}`);
       return skippedResponse(reason);
     }
 
-    // If we got user ID, verify ownership
     if (userId && project.user_id !== userId) {
       return new Response(JSON.stringify({ success: false, error: "Forbidden" }), {
         status: 403,
@@ -94,15 +97,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Project data already fetched above in the ownership check
-
     const shopifyDomain = String(project.shopify_store_domain || "").trim();
     const shopifyToken = String(project.shopify_access_token_encrypted || "").trim();
     if (!shopifyDomain || !shopifyToken) {
       throw new Error("Shopify credentials not configured");
     }
 
-    // Use a current API version (2025-01) - older versions may be sunset by Shopify
     const baseUrl = `https://${shopifyDomain}/admin/api/2025-01`;
     const headers = {
       "X-Shopify-Access-Token": shopifyToken,
@@ -111,11 +111,6 @@ Deno.serve(async (req) => {
 
     const counts: Record<string, number | null> = {};
 
-    // NOTE: We no longer skip count fetches during active uploads.
-    // Count requests are lightweight (1 REST/GraphQL call per entity type)
-    // and won't meaningfully impact the Shopify API rate limit bucket.
-
-    // Fetch SEQUENTIALLY to avoid Shopify 429 rate limits
     for (const et of typesToFetch) {
       try {
         counts[et] = await fetchCountForEntity(baseUrl, headers, et);
@@ -123,13 +118,11 @@ Deno.serve(async (req) => {
         console.error(`[shopify-counts] Failed to fetch ${et}:`, e);
         counts[et] = null;
       }
-      // Small delay between calls to respect rate limits
       if (typesToFetch.length > 1) {
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => setTimeout(r, 300));
       }
     }
 
-    // Backward compat: if only products requested the old way, include top-level "count"
     const response: Record<string, any> = { success: true, counts };
     if (typesToFetch.length === 1 && typesToFetch[0] === "products" && counts.products !== null) {
       response.count = counts.products;
@@ -155,50 +148,52 @@ async function fetchCountForEntity(
 ): Promise<number> {
   switch (entityType) {
     case "products": {
-      // REST /products/count.json is deprecated in API 2025-01 and returns 0.
-      // Use GraphQL productsCount instead.
       const gqlUrl = `${baseUrl}/graphql.json`;
-      console.log(`[shopify-counts] Fetching products count via GraphQL: ${gqlUrl}`);
-      const r = await fetch(gqlUrl, {
+      const r = await fetchWithTimeout(gqlUrl, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ query: "{ productsCount { count } }" }),
+        timeout: 10000,
       });
+      if (r.status === 429) throw new Error("HTTP 429");
       const body = await r.text();
-      console.log(`[shopify-counts] Products GraphQL response: HTTP ${r.status}, body: ${body}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${body}`);
       const j = JSON.parse(body);
       if (j.errors) throw new Error(`GraphQL errors: ${JSON.stringify(j.errors)}`);
       return j.data?.productsCount?.count ?? 0;
     }
     case "customers": {
-      const r = await fetch(`${baseUrl}/customers/count.json`, { headers });
+      const r = await fetchWithTimeout(`${baseUrl}/customers/count.json`, { headers, timeout: 10000 });
+      if (r.status === 429) throw new Error("HTTP 429");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       return j.count ?? 0;
     }
     case "orders": {
-      const r = await fetch(`${baseUrl}/orders/count.json?status=any`, { headers });
+      const r = await fetchWithTimeout(`${baseUrl}/orders/count.json?status=any`, { headers, timeout: 10000 });
+      if (r.status === 429) throw new Error("HTTP 429");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       return j.count ?? 0;
     }
     case "categories": {
-      // Fetch sequentially to avoid rate limits
-      const r1 = await fetch(`${baseUrl}/smart_collections/count.json`, { headers });
+      const r1 = await fetchWithTimeout(`${baseUrl}/smart_collections/count.json`, { headers, timeout: 10000 });
+      if (r1.status === 429) throw new Error("HTTP 429");
       if (!r1.ok) throw new Error(`smart_collections HTTP ${r1.status}`);
       const j1 = await r1.json();
-      
-      await new Promise(r => setTimeout(r, 200));
-      
-      const r2 = await fetch(`${baseUrl}/custom_collections/count.json`, { headers });
+
+      await new Promise(r => setTimeout(r, 300));
+
+      const r2 = await fetchWithTimeout(`${baseUrl}/custom_collections/count.json`, { headers, timeout: 10000 });
+      if (r2.status === 429) throw new Error("HTTP 429");
       if (!r2.ok) throw new Error(`custom_collections HTTP ${r2.status}`);
       const j2 = await r2.json();
-      
+
       return (j1.count ?? 0) + (j2.count ?? 0);
     }
     case "pages": {
-      const r = await fetch(`${baseUrl}/pages/count.json`, { headers });
+      const r = await fetchWithTimeout(`${baseUrl}/pages/count.json`, { headers, timeout: 10000 });
+      if (r.status === 429) throw new Error("HTTP 429");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       return j.count ?? 0;
