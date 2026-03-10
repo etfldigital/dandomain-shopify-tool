@@ -1545,6 +1545,112 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
             const displayTotal = job && job.status === 'running' ? liveTotal : total;
             const percent = displayTotal > 0 ? (displayProcessed / displayTotal) * 100 : 0;
 
+            // Simplified card for customers and orders
+            if (type === 'customers' || type === 'orders') {
+              const simplifiedProcessed = effectiveUploaded + effectiveFailed + effectiveDuplicate + skipped;
+              const simplifiedTotal = dbTimedOut ? (job?.total_count || 0) : totalFromDb;
+
+              return (
+                <div key={type}>
+                  <SimplifiedEntityCard
+                    type={type}
+                    label={label}
+                    totalRows={simplifiedTotal}
+                    processed={job && job.status === 'running' ? Math.max(simplifiedProcessed, getLiveProcessedCount(job, job.processed_count)) : simplifiedProcessed}
+                    duplicates={effectiveDuplicate}
+                    errors={errors}
+                    shopifyLiveCount={shopifyLiveCounts[type]}
+                    isShopifyLoading={entityLoading[type] || false}
+                    onRefreshShopify={() => fetchShopifyLiveCountForEntity(type, true)}
+                    isRunning={job?.status === 'running'}
+                  />
+                  {/* Keep dropdown menu for actions */}
+                  {!isUploading && (
+                    <div className="flex justify-end -mt-1">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-popover">
+                          {(() => {
+                            const entityLabels: Record<EntityType, string> = {
+                              pages: 'sider', categories: 'collections', products: 'produkter', customers: 'kunder', orders: 'ordrer',
+                            };
+                            const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
+                            const currentIdx = sequenceOrder.indexOf(type);
+                            const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(
+                              predType => {
+                                if (statusCounts[predType].pending === 0) return false;
+                                const localTotal = statusCounts[predType].pending + statusCounts[predType].uploaded + statusCounts[predType].failed;
+                                const liveCount = shopifyLiveCounts[predType];
+                                if (liveCount !== null && liveCount !== undefined && liveCount >= localTotal) return false;
+                                return true;
+                              }
+                            );
+                            const predecessorLabel = predecessorBlocking 
+                              ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
+                              : null;
+                            const jobRunning = job?.status === 'running';
+                            const noPending = effectivePending === 0;
+
+                            return (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    if (predecessorBlocking) {
+                                      toast.error(`Kan ikke starte endnu`, {
+                                        description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
+                                      });
+                                      return;
+                                    }
+                                    handleStartUpload(false, type);
+                                  }}
+                                  disabled={jobRunning || isStarting}
+                                >
+                                  <Play className="w-4 h-4 mr-2" />
+                                  {jobRunning ? `Upload kører allerede…` : `Upload ${entityLabels[type]}`}
+                                </DropdownMenuItem>
+                                {predecessorBlocking && (
+                                  <DropdownMenuItem
+                                    onClick={() => handleStartUploadInternal(false, type, true)}
+                                    disabled={jobRunning || isStarting || noPending}
+                                    className="text-amber-600"
+                                  >
+                                    <AlertTriangle className="w-4 h-4 mr-2" />
+                                    Tving start (ignorer rækkefølge)
+                                  </DropdownMenuItem>
+                                )}
+                              </>
+                            );
+                          })()}
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleStartUpload(true, type)} disabled={effectivePending === 0 || isStarting}>
+                            <FlaskConical className="w-4 h-4 mr-2" />
+                            Test upload (3 stk)
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleResetRequest(type, 'all')} disabled={totalFromDb === 0 && !dbTimedOut}>
+                            <RotateCcw className="w-4 h-4 mr-2" />
+                            Nulstil uploads
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleSync(type)} disabled={syncingEntity !== null}>
+                            {syncingEntity === type ? (
+                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Synkroniserer…</>
+                            ) : (
+                              <><Cloud className="w-4 h-4 mr-2" />Synkroniser med Shopify</>
+                            )}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <div key={type} className="space-y-2">
                 <div className="flex items-center justify-between">
