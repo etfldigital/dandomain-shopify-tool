@@ -296,7 +296,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
       }
     } catch {
-      anyFailed = true;
+      failCount++;
     }
 
     // Fetch remaining entities SEQUENTIALLY to reduce DB load
