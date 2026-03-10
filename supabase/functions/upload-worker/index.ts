@@ -267,7 +267,7 @@ Deno.serve(async (req) => {
           entity_type: entity,
           status: 'running',
           total_count: total,
-          processed_count: uploaded + failed,
+          processed_count: uploaded + failed + duplicate,
           batch_size: batchSize,
           is_test_mode: false,
           started_at: nowIso(),
