@@ -30,6 +30,7 @@ export function SimplifiedEntityCard({
 }: SimplifiedEntityCardProps) {
   const Icon = type === 'customers' ? Users : FileText;
   const percent = totalRows > 0 ? Math.min(100, (processed / totalRows) * 100) : 0;
+  const remaining = Math.max(0, totalRows - processed);
   const isComplete = processed >= totalRows && totalRows > 0;
 
   return (
