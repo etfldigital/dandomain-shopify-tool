@@ -572,13 +572,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       }
     }, 3000);
     
-    // Light polling every 15 seconds (increased from 10s for less flicker)
+    // Light polling every 20 seconds (reduced frequency to ease DB load)
     const pollTimer = window.setInterval(() => {
       fetchJobs();
-      fetchStatusCounts(); // Throttled internally
-      fetchShopifyLiveCounts(); // Throttled internally (30s)
-      fetchManufacturerLookupStatus();
-    }, 15_000);
+      fetchStatusCounts(); // Throttled internally (15s)
+      fetchShopifyLiveCounts(); // Throttled internally (60s)
+    }, 20_000);
 
     // Watchdog is now self-scheduling on the server side (started by upload-worker).
     // No need for browser-side watchdog polling anymore.
