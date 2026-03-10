@@ -1451,21 +1451,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           )}
         </CardHeader>
         <CardContent className="space-y-6">
-          {dbFetchFailed && (
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-sm">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Databasen er under pres — nogle tællere kan vise 0. Tryk på refresh-knappen ved "i Shopify" for at se de aktuelle tal, eller vent og prøv igen.</span>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                className="ml-auto shrink-0 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900"
-                onClick={() => { lastCountsFetchRef.current = 0; fetchStatusCounts(); }}
-              >
-                <RefreshCw className="w-3 h-3 mr-1" />
-                Prøv igen
-              </Button>
-            </div>
-          )}
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
