@@ -321,7 +321,7 @@ Deno.serve(async (req) => {
           let pendingCount = await countCanonicalStatus(entityType, 'pending');
           const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
           const failedCount = await countCanonicalStatus(entityType, 'failed');
-          const duplicateCount = entityType === 'orders' ? await countCanonicalStatus(entityType, 'duplicate') : 0;
+          const duplicateCount = (entityType === 'orders' || entityType === 'customers') ? await countCanonicalStatus(entityType, 'duplicate') : 0;
 
           // PRODUCTS FALLBACK:
           // If products haven't been prepared yet, primary-only counting returns 0.
