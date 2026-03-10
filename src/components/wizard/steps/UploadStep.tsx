@@ -284,7 +284,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
       }
     } catch {
-      // Products RPC also times out — fall back to upload_jobs below
+      // Products RPC timed out — fall back to upload_jobs data
+      const productJob = jobs.find(j => j.entity_type === 'products' && j.status !== 'cancelled');
+      if (productJob) {
+        const uploaded = Math.max(0, productJob.processed_count - productJob.error_count);
+        counts.products = {
+          pending: Math.max(0, productJob.total_count - productJob.processed_count),
+          uploaded,
+          failed: productJob.error_count,
+          duplicate: 0,
+        };
+      }
     }
 
     // For SMALL tables (categories, pages), fetch exact counts from DB
