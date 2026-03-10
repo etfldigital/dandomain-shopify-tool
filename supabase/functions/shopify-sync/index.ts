@@ -488,8 +488,9 @@ async function applyChunk(
       if (extId) shopifyId = dandoIdMap[extId];
 
       if (!shopifyId) {
-        const email = (local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
-        const totalPrice = parseFloat(String(local.data?.total_price || "0")).toFixed(2);
+        // With lightweight select, fields are flat
+        const email = (local.order_email || local.order_email2 || local.data?.customer_email || local.data?.email || "").toLowerCase().trim();
+        const totalPrice = parseFloat(String(local.order_total || local.data?.total_price || "0")).toFixed(2);
         if (email) {
           const fp = `${email}|${totalPrice}`;
           shopifyId = fingerprintMap[fp];
