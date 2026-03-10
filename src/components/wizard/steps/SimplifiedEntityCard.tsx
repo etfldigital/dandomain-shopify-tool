@@ -64,6 +64,12 @@ export function SimplifiedEntityCard({
           </span>
         </div>
         <Progress value={percent} className="h-2" />
+        {remaining > 0 && (
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Tilbage</span>
+            <span className="tabular-nums">{remaining.toLocaleString('da-DK')}</span>
+          </div>
+        )}
       </div>
 
       {/* Stats row */}
