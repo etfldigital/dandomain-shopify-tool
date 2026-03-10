@@ -161,7 +161,8 @@ Deno.serve(async (req) => {
         if (shopifyDomain && shopifyToken) {
           const uploaded = await countCanonicalStatus(entity, 'uploaded');
           const failed = await countCanonicalStatus(entity, 'failed');
-          const localTotal = pending + uploaded + failed;
+          const duplicate = (entity === 'orders' || entity === 'customers') ? await countCanonicalStatus(entity, 'duplicate') : 0;
+          const localTotal = pending + uploaded + failed + duplicate;
           try {
             const shopifyUrl = `https://${shopifyDomain}/admin/api/2025-01`;
             let liveCount = 0;
@@ -255,7 +256,8 @@ Deno.serve(async (req) => {
 
       const uploaded = await countCanonicalStatus(entity, 'uploaded');
       const failed = await countCanonicalStatus(entity, 'failed');
-      const total = pending + uploaded + failed;
+      const duplicate = (entity === 'orders' || entity === 'customers') ? await countCanonicalStatus(entity, 'duplicate') : 0;
+      const total = pending + uploaded + failed + duplicate;
 
       const batchSize = DEFAULT_BATCH_SIZE[entity] || 10;
       const { data: newJob, error } = await supabase
@@ -265,7 +267,7 @@ Deno.serve(async (req) => {
           entity_type: entity,
           status: 'running',
           total_count: total,
-          processed_count: uploaded + failed,
+          processed_count: uploaded + failed + duplicate,
           batch_size: batchSize,
           is_test_mode: false,
           started_at: nowIso(),
@@ -321,7 +323,7 @@ Deno.serve(async (req) => {
           let pendingCount = await countCanonicalStatus(entityType, 'pending');
           const uploadedCount = await countCanonicalStatus(entityType, 'uploaded');
           const failedCount = await countCanonicalStatus(entityType, 'failed');
-          const duplicateCount = entityType === 'orders' ? await countCanonicalStatus(entityType, 'duplicate') : 0;
+          const duplicateCount = (entityType === 'orders' || entityType === 'customers') ? await countCanonicalStatus(entityType, 'duplicate') : 0;
 
           // PRODUCTS FALLBACK:
           // If products haven't been prepared yet, primary-only counting returns 0.
