@@ -256,7 +256,8 @@ Deno.serve(async (req) => {
 
       const uploaded = await countCanonicalStatus(entity, 'uploaded');
       const failed = await countCanonicalStatus(entity, 'failed');
-      const total = pending + uploaded + failed;
+      const duplicate = (entity === 'orders' || entity === 'customers') ? await countCanonicalStatus(entity, 'duplicate') : 0;
+      const total = pending + uploaded + failed + duplicate;
 
       const batchSize = DEFAULT_BATCH_SIZE[entity] || 10;
       const { data: newJob, error } = await supabase
