@@ -251,7 +251,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
     };
 
-    let anyFailed = false;
     let failCount = 0;
 
     // Helper: fetch count for a single entity+status, with timeout protection
