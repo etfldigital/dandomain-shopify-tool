@@ -318,6 +318,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       counts[type] = { pending, uploaded, failed, duplicate };
     }
 
+    // Only show DB pressure warning if MAJORITY of queries failed (>= 8 out of ~17 total)
+    // A single failed query is normal under load and shouldn't alarm the user
+    anyFailed = failCount >= 8;
     setDbFetchFailed(anyFailed);
     setStatusCounts(counts);
     return counts;
