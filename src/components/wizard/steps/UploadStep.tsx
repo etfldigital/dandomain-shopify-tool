@@ -234,9 +234,10 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   }>({ open: false, entityType: null, scope: null, count: 0 });
 
   // Fetch status counts - CACHED to avoid overloading DB
-  // Fetches SEQUENTIALLY to avoid overwhelming the DB with parallel count queries
+  // For large tables (customers, orders), we derive counts from upload_jobs instead of
+  // running expensive exact-count queries that timeout with RLS JOINs on 60k+ rows.
   const fetchStatusCounts = async (): Promise<Record<EntityType, StatusCounts>> => {
-    // Throttle: avoid hammering DB (this was causing UI "freeze" feelings)
+    // Throttle: avoid hammering DB
     const now = Date.now();
     if (now - lastCountsFetchRef.current < 30_000) {
       return statusCounts;
@@ -251,8 +252,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       pages: { pending: 0, uploaded: 0, failed: 0, duplicate: 0 },
     };
 
-    let failCount = 0;
-
     // Helper: fetch count for a single entity+status, with timeout protection
     const safeCount = async (table: 'canonical_customers' | 'canonical_orders' | 'canonical_categories' | 'canonical_pages', status: 'pending' | 'uploaded' | 'failed' | 'duplicate'): Promise<number> => {
       try {
@@ -261,10 +260,9 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           .select('*', { count: 'exact', head: true })
           .eq('project_id', project.id)
           .eq('status', status as any);
-        if (error) { failCount++; return 0; }
+        if (error) { return 0; }
         return count || 0;
       } catch {
-        failCount++;
         return 0;
       }
     };
@@ -275,9 +273,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         p_project_id: project.id,
       });
 
-      if (rpcError) {
-        failCount++;
-      } else if (primaryCounts && Array.isArray(primaryCounts)) {
+      if (!rpcError && primaryCounts && Array.isArray(primaryCounts)) {
         let productPending = 0, productUploaded = 0, productFailed = 0, productDuplicate = 0;
         for (const row of primaryCounts) {
           if (row.status === 'pending') productPending = Number(row.primary_count) || 0;
@@ -286,26 +282,68 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           else if (row.status === 'duplicate') productDuplicate = Number(row.primary_count) || 0;
         }
         counts.products = { pending: productPending, uploaded: productUploaded, failed: productFailed, duplicate: productDuplicate };
+      } else if (rpcError) {
+        // RPC returned error (e.g. timeout) — fall back to upload_jobs
+        const productJob = jobs.find(j => j.entity_type === 'products' && j.status !== 'cancelled');
+        if (productJob) {
+          const uploaded = Math.max(0, productJob.processed_count - productJob.error_count);
+          counts.products = {
+            pending: Math.max(0, productJob.total_count - productJob.processed_count),
+            uploaded,
+            failed: productJob.error_count,
+            duplicate: 0,
+          };
+        }
       }
     } catch {
-      failCount++;
+      // Products RPC timed out — fall back to upload_jobs data
+      const productJob = jobs.find(j => j.entity_type === 'products' && j.status !== 'cancelled');
+      if (productJob) {
+        const uploaded = Math.max(0, productJob.processed_count - productJob.error_count);
+        counts.products = {
+          pending: Math.max(0, productJob.total_count - productJob.processed_count),
+          uploaded,
+          failed: productJob.error_count,
+          duplicate: 0,
+        };
+      }
     }
 
-    // Fetch remaining entities SEQUENTIALLY to reduce DB load
-    // Each entity fetches its 4 statuses in parallel (small batch), but entities are sequential
-    const entityTables = [
-      { type: 'customers' as EntityType, table: 'canonical_customers' as const },
-      { type: 'orders' as EntityType, table: 'canonical_orders' as const },
+    // For SMALL tables (categories, pages), fetch exact counts from DB
+    const smallTables = [
       { type: 'categories' as EntityType, table: 'canonical_categories' as const },
       { type: 'pages' as EntityType, table: 'canonical_pages' as const },
     ];
 
-    for (const { type, table } of entityTables) {
+    for (const { type, table } of smallTables) {
       const pending = await safeCount(table, 'pending');
       const uploaded = await safeCount(table, 'uploaded');
       const failed = await safeCount(table, 'failed');
       const duplicate = await safeCount(table, 'duplicate');
       counts[type] = { pending, uploaded, failed, duplicate };
+    }
+
+    // For LARGE tables (customers, orders), derive counts from upload_jobs
+    // This avoids the exact-count queries that timeout on 60k+ row tables with RLS
+    for (const type of ['customers', 'orders'] as EntityType[]) {
+      const entityJobs = jobs.filter(j => j.entity_type === type && j.status !== 'cancelled');
+      const latestJob = entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : null;
+      
+      if (latestJob) {
+        const processed = latestJob.processed_count;
+        const total = latestJob.total_count;
+        const errors = latestJob.error_count;
+        const skipped = latestJob.skipped_count;
+        // uploaded = processed - errors - skipped (those marked duplicate are part of skipped)
+        const uploaded = Math.max(0, processed - errors);
+        const pending = Math.max(0, total - processed - skipped);
+        counts[type] = {
+          pending,
+          uploaded,
+          failed: errors,
+          duplicate: skipped, // skipped_count represents duplicates in the upload flow
+        };
+      }
     }
 
     setStatusCounts(counts);
