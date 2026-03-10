@@ -202,15 +202,17 @@ function getLocalMatchKey(record: any, entityType: EntityType): string {
     case "categories":
       return (record.slug || record.name || "").toLowerCase().trim();
     case "products": {
-      const title = record.data?.title || "";
+      // With lightweight select, title is a flat field
+      const title = record.product_title || record.data?.title || "";
       return title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "").trim();
     }
     case "customers":
-      return (record.data?.email || "").toLowerCase().trim();
+      // With lightweight select, email is a flat field
+      return (record.customer_email || record.data?.email || "").toLowerCase().trim();
     case "orders":
       return String(record.external_id || "").trim();
     case "pages":
-      return (record.data?.slug || "").toLowerCase().trim();
+      return (record.page_slug || record.data?.slug || "").toLowerCase().trim();
     default:
       return "";
   }
