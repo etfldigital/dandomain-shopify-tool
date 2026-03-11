@@ -1008,7 +1008,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     }
   };
 
-
+  const handlePauseResume = async () => {
     const runningJob = jobs.find(j => j.status === 'running');
     const pausedJob = jobs.find(j => j.status === 'paused');
 
