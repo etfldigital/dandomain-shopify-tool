@@ -174,6 +174,9 @@ Deno.serve(async (req) => {
     // Like getEarliestIncompleteEntity, but also checks Shopify live counts.
     // If Shopify has >= local total items for an entity, consider it "effectively complete"
     // even if local DB still shows pending records (not yet synced).
+    // In manual mode, also skip predecessors that have NO active upload job — the user
+    // explicitly chose to upload only a specific entity, so don't block on entities
+    // that aren't being uploaded (e.g. customers re-extracted but not re-uploaded).
     const getEarliestIncompleteEntityWithShopifyCheck = async (pid: string): Promise<SequencedEntity | null> => {
       projectIdForCounts = pid;
       const { data: proj } = await supabase
@@ -187,6 +190,21 @@ Deno.serve(async (req) => {
       for (const entity of ENTITY_SEQUENCE) {
         const pending = await countCanonicalStatus(entity, 'pending');
         if (pending <= 0) continue;
+
+        // MANUAL MODE ENHANCEMENT: If no active upload job exists for this entity,
+        // it means the user didn't request uploading it. Don't block on it.
+        const { data: activeJobs } = await supabase
+          .from('upload_jobs')
+          .select('id')
+          .eq('project_id', pid)
+          .eq('entity_type', entity)
+          .in('status', ['running', 'pending', 'paused'])
+          .limit(1);
+        
+        if (!activeJobs || activeJobs.length === 0) {
+          console.log(`[WORKER] Sequencing: ${entity} has ${pending} pending locally but no active upload job – skipping gate check`);
+          continue;
+        }
 
         if (shopifyDomain && shopifyToken) {
           const uploaded = await countCanonicalStatus(entity, 'uploaded');
@@ -203,7 +221,6 @@ Deno.serve(async (req) => {
               const b2 = await r2.json();
               liveCount = (b1.count || 0) + (b2.count || 0);
             } else if (entity === 'products') {
-              // REST /products/count.json deprecated in API 2025-01 – use GraphQL
               const r = await fetch(`${shopifyUrl}/graphql.json`, {
                 method: 'POST',
                 headers: { 'X-Shopify-Access-Token': shopifyToken, 'Content-Type': 'application/json' },
