@@ -326,6 +326,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     // For LARGE tables (customers, orders), derive counts from upload_jobs
     // This avoids the exact-count queries that timeout on 60k+ row tables with RLS
     for (const type of ['customers', 'orders'] as EntityType[]) {
+      const table = type === 'customers' ? 'canonical_customers' : 'canonical_orders';
       const entityJobs = jobs.filter(j => j.entity_type === type && j.status !== 'cancelled');
       const latestJob = entityJobs.length > 0 ? entityJobs[entityJobs.length - 1] : null;
       
@@ -343,6 +344,21 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
           failed: errors,
           duplicate: skipped, // skipped_count represents duplicates in the upload flow
         };
+      } else {
+        // No active jobs — try DB count (with timeout fallback to project entity count)
+        const pending = await safeCount(table as any, 'pending');
+        if (pending > 0) {
+          const uploaded = await safeCount(table as any, 'uploaded');
+          const failed = await safeCount(table as any, 'failed');
+          const duplicate = await safeCount(table as any, 'duplicate');
+          counts[type] = { pending, uploaded, failed, duplicate };
+        } else {
+          // DB count may have timed out (returns 0) — use project entity count as fallback
+          const projectCount = type === 'customers' ? project.customer_count : project.order_count;
+          if (projectCount > 0) {
+            counts[type] = { pending: projectCount, uploaded: 0, failed: 0, duplicate: 0 };
+          }
+        }
       }
     }
 
@@ -716,7 +732,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Internal upload starter (used after prepare or for non-product entities)
   const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType, forceMode: boolean = false) => {
-    // Check if there's anything to upload BEFORE starting
+    // Force-refresh counts (bypass throttle) so user always gets fresh data when clicking upload
+    lastCountsFetchRef.current = 0;
     const freshCounts = await fetchStatusCounts();
     
     // If a specific entity type, check that entity's pending count
