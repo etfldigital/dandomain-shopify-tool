@@ -732,7 +732,8 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
 
   // Internal upload starter (used after prepare or for non-product entities)
   const handleStartUploadInternal = async (isTestMode: boolean = false, singleEntityType?: EntityType, forceMode: boolean = false) => {
-    // Check if there's anything to upload BEFORE starting
+    // Force-refresh counts (bypass throttle) so user always gets fresh data when clicking upload
+    lastCountsFetchRef.current = 0;
     const freshCounts = await fetchStatusCounts();
     
     // If a specific entity type, check that entity's pending count
