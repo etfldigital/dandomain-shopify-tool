@@ -190,6 +190,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [prepareResult, setPrepareResult] = useState<PrepareResult | null>(null);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [syncingEntity, setSyncingEntity] = useState<EntityType | null>(null);
+  const [reExtractingEntity, setReExtractingEntity] = useState<EntityType | null>(null);
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
