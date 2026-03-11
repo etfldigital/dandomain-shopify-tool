@@ -28,7 +28,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
-  orders: 25, // Sequential processing with 400ms spacing, single-worker mutex
+  orders: 50, // Parallel processing (3 concurrent), batch DB updates, single-worker mutex
 };
 
 // Enforce strict upload order for dependent entities.
