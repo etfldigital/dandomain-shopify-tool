@@ -979,13 +979,22 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         if (insertError) throw insertError;
       }
       
-      // 6. Update project entity count
+      // 6. Cancel old upload_jobs for this entity so fetchStatusCounts uses fresh DB data
+      const oldJobs = jobs.filter(j => j.entity_type === entityType && j.status !== 'cancelled');
+      for (const oldJob of oldJobs) {
+        await supabase
+          .from('upload_jobs')
+          .update({ status: 'cancelled' })
+          .eq('id', oldJob.id);
+      }
+      
+      // 7. Update project entity count
       const countUpdate = entityType === 'customers'
         ? { customer_count: parsedData.length }
         : { order_count: parsedData.length };
       await supabase.from('projects').update(countUpdate).eq('id', project.id);
       
-      // 7. Update project_files row_count
+      // 8. Update project_files row_count
       await supabase
         .from('project_files')
         .update({ row_count: parsedData.length, status: 'processed' })
@@ -996,11 +1005,11 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         description: `${parsedData.length.toLocaleString('da-DK')} poster parset fra ${projectFile.file_name}`,
       });
       
-      // 8. Refresh counts
+      // 9. Refresh jobs first (so cancelled jobs are reflected), then counts
+      await fetchJobs();
       lastCountsFetchRef.current = 0;
       await fetchStatusCounts();
       await fetchShopifyLiveCounts(true);
-      await fetchJobs();
     } catch (error) {
       toast.error(`Genindlæsning fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
