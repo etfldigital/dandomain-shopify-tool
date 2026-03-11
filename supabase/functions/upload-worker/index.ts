@@ -644,10 +644,23 @@ Deno.serve(async (req) => {
           if (earliest && earliest !== job.entity_type && seqIndex(job.entity_type) > seqIndex(earliest)) {
             console.log(`[WORKER] Sequencing gate: blocking ${job.entity_type} until ${earliest} is complete`);
 
-            // Put this job back to pending so it won't keep running.
+            // ROBUST RETRY: Instead of setting to 'pending' (which is never retried),
+            // keep the job as 'running' with a next_attempt_at so the watchdog retries
+            // the gate check every 15 seconds. This way the job auto-starts once the
+            // predecessor becomes complete.
+            const retryDelayMs = 15_000;
+            const retryUpdate: Record<string, any> = {
+              last_heartbeat_at: nowIso(),
+              next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
+            };
+            // Release mutex so the next attempt can acquire it fresh
+            if (workerLockId) {
+              retryUpdate.worker_lock_id = null;
+              retryUpdate.worker_locked_until = null;
+            }
             await supabase
               .from('upload_jobs')
-              .update({ status: 'pending', last_heartbeat_at: nowIso(), next_attempt_at: null })
+              .update(retryUpdate)
               .eq('id', jobId);
 
             // For manual mode: don't try to start the predecessor (user didn't request it)
@@ -662,7 +675,7 @@ Deno.serve(async (req) => {
             return new Response(JSON.stringify({
               success: true,
               blocked: true,
-              message: `Blocked ${job.entity_type} until ${earliest} is complete`,
+              message: `Blocked ${job.entity_type} until ${earliest} is complete, will retry in ${retryDelayMs / 1000}s`,
               required_entity: earliest,
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
           }
