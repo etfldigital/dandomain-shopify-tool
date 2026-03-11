@@ -2037,6 +2037,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                               </>
                             )}
                           </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleReExtract(type)}
+                            disabled={reExtractingEntity !== null}
+                          >
+                            {reExtractingEntity === type ? (
+                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Genindlæser XML…</>
+                            ) : (
+                              <><RefreshCw className="w-4 h-4 mr-2" />Genindlæs fra XML</>
+                            )}
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     )}
