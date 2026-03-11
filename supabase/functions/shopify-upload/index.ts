@@ -2261,7 +2261,7 @@ async function uploadCustomers(
 }
 
 // ============================================================================
-// ORDERS UPLOAD
+// ORDERS UPLOAD — OPTIMIZED FOR SPEED & STABILITY
 // ============================================================================
 
 async function uploadOrders(
@@ -2281,9 +2281,10 @@ async function uploadOrders(
   jobId?: string | null
 ): Promise<{ success: boolean; processed: number; errors: number; skipped: number; hasMore: boolean; errorDetails?: any[]; rateLimited?: boolean; retryAfterSeconds?: number; newLookupCache?: any; lastBucketUsed?: number; newDuplicateCache?: any }> {
   
+  // Fetch larger batch for parallel processing
   const { data: items, error: fetchError } = await supabase
     .from('canonical_orders')
-    .select('*')
+    .select('id, external_id, data')
     .eq('project_id', projectId)
     .eq('status', 'pending')
     .limit(batchSize);
@@ -2295,17 +2296,11 @@ async function uploadOrders(
 
   // ============================================================================
   // PRE-FLIGHT DUPLICATE CHECK CACHE (PERSISTED ACROSS BATCHES)
-  // The duplicate cache is stored in upload_jobs.duplicate_cache as JSONB.
-  // It contains all known dandomain_order_ids from Shopify,
-  // plus a set of emails already queried. This eliminates redundant API calls.
-  // Fingerprint-based matching was REMOVED (caused false positives).
   // ============================================================================
   const knownDandoIds: Set<string> = new Set();
   const dandoIdToShopifyId: Map<string, string> = new Map();
-  // Persisted email cache: emails already queried in previous batches
   const emailQueryCache: Set<string> = new Set();
 
-  // Restore persisted duplicate cache from upload_jobs (if available)
   let duplicateCacheFromJob: any = null;
   if (jobId) {
     const { data: jobRow } = await supabase
@@ -2317,166 +2312,160 @@ async function uploadOrders(
   }
 
   if (duplicateCacheFromJob) {
-    // Restore dandomain IDs
     for (const [k, v] of Object.entries(duplicateCacheFromJob.dandoIds || {})) {
       knownDandoIds.add(k);
       dandoIdToShopifyId.set(k, String(v));
     }
-    // (fingerprints no longer restored – removed to prevent false positives)
-    // Restore queried emails
     for (const email of (duplicateCacheFromJob.queriedEmails || [])) {
       emailQueryCache.add(email);
     }
     console.log(`[ORDERS] Restored duplicate cache: ${knownDandoIds.size} IDs, ${emailQueryCache.size} queried emails`);
   }
 
-  // Only query Shopify for NEW emails not already in the persisted cache
+  // PARALLEL pre-flight duplicate check (3 concurrent email queries)
   const buildDuplicateCache = async (): Promise<boolean> => {
     const cacheStartTime = Date.now();
     try {
-      const uniqueEmails = new Set<string>();
+      const uniqueEmails: string[] = [];
       for (const item of items) {
         const email = (item.data?.customer_email || item.data?.email || '').trim().toLowerCase();
-        if (email) uniqueEmails.add(email);
+        if (email && !emailQueryCache.has(email) && !uniqueEmails.includes(email)) {
+          uniqueEmails.push(email);
+        }
       }
 
+      if (uniqueEmails.length === 0) {
+        console.log(`[ORDERS] Pre-flight: all ${emailQueryCache.size} emails already cached`);
+        return true;
+      }
+
+      // Query 3 emails concurrently
+      const DUPE_CHECK_CONCURRENCY = 3;
+      const dupeLimit = createConcurrencyLimiter(DUPE_CHECK_CONCURRENCY);
       let queriedCount = 0;
-      let skippedCount = 0;
 
-      for (const email of uniqueEmails) {
-        // Skip if this email was already queried (persisted from previous batch)
-        if (emailQueryCache.has(email)) {
-          skippedCount++;
-          continue;
-        }
+      await Promise.all(
+        uniqueEmails.map(email => dupeLimit(async () => {
+          if (Date.now() - startTime > timeBudget * 0.3) return; // Don't spend >30% of budget on pre-flight
+          try {
+            const searchResult = await shopifyFetch(
+              `${shopifyUrl}/orders.json?email=${encodeURIComponent(email)}&status=any&limit=250`,
+              { headers: { 'X-Shopify-Access-Token': token } },
+              2,
+              'orders'
+            );
 
-        try {
-          const searchResult = await shopifyFetch(
-            `${shopifyUrl}/orders.json?email=${encodeURIComponent(email)}&status=any&limit=250`,
-            { headers: { 'X-Shopify-Access-Token': token } },
-            2,
-            'orders'
-          );
+            if ('rateLimited' in searchResult) return;
 
-          if ('rateLimited' in searchResult) {
-            console.warn('[ORDERS] Pre-flight duplicate check rate limited, skipping remaining emails');
-            break;
-          }
-
-          if (searchResult.response.ok) {
-            const data = JSON.parse(searchResult.body);
-            for (const order of (data.orders || [])) {
-              const noteAttrs = order.note_attributes || [];
-              const dandoAttr = noteAttrs.find((a: any) => a.name === 'dandomain_order_id');
-              if (dandoAttr?.value) {
-                knownDandoIds.add(String(dandoAttr.value));
-                dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
+            if (searchResult.response.ok) {
+              const data = JSON.parse(searchResult.body);
+              for (const order of (data.orders || [])) {
+                const noteAttrs = order.note_attributes || [];
+                const dandoAttr = noteAttrs.find((a: any) => a.name === 'dandomain_order_id');
+                if (dandoAttr?.value) {
+                  knownDandoIds.add(String(dandoAttr.value));
+                  dandoIdToShopifyId.set(String(dandoAttr.value), String(order.id));
+                }
               }
-              // (fingerprint collection removed – only dandomain_order_id is used)
             }
+            emailQueryCache.add(email);
+            queriedCount++;
+          } catch (e) {
+            console.warn(`[ORDERS] Pre-flight check failed for ${email}:`, e instanceof Error ? e.message : e);
+            emailQueryCache.add(email);
           }
+        }))
+      );
 
-          emailQueryCache.add(email);
-          queriedCount++;
-
-          // Small delay only if we actually queried
-          if (queriedCount < uniqueEmails.size - skippedCount) {
-            await sleep(150);
-          }
-        } catch (e) {
-          console.warn(`[ORDERS] Pre-flight check failed for email ${email}:`, e instanceof Error ? e.message : e);
-          emailQueryCache.add(email);
-        }
-      }
-
-      const elapsed = Date.now() - cacheStartTime;
-      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} IDs, queried ${queriedCount} NEW emails, skipped ${skippedCount} cached, took ${elapsed}ms`);
+      console.log(`[ORDERS] Pre-flight cache: ${knownDandoIds.size} IDs, queried ${queriedCount} NEW emails in ${Date.now() - cacheStartTime}ms`);
       return true;
     } catch (e) {
-      const elapsed = Date.now() - cacheStartTime;
-      console.warn(`[ORDERS] Pre-flight duplicate cache build failed (${elapsed}ms):`, e instanceof Error ? e.message : e);
+      console.warn(`[ORDERS] Pre-flight cache build failed:`, e instanceof Error ? e.message : e);
       return false;
     }
   };
 
-  // Build the cache (best-effort, if it fails we still upload)
   await buildDuplicateCache();
 
   // ============================================================================
-  // CACHED LOOKUPS: Reuse product/customer maps from previous batch if available.
-  // Only rebuild if no cache exists. Cache is stored in upload_jobs.lookup_cache.
+  // CACHED LOOKUPS (product/customer maps)
   // ============================================================================
   const productLookup: Map<string, { shopifyProductId: string; shopifyVariantId: string }> = new Map();
   const customerLookup: Map<string, string> = new Map();
   let cacheWasUsed = false;
 
   if (lookupCache && lookupCache.products && lookupCache.customers) {
-    // Restore from cache
-    for (const [k, v] of Object.entries(lookupCache.products)) {
-      productLookup.set(k, v);
-    }
-    for (const [k, v] of Object.entries(lookupCache.customers)) {
-      customerLookup.set(k, v);
-    }
+    for (const [k, v] of Object.entries(lookupCache.products)) productLookup.set(k, v);
+    for (const [k, v] of Object.entries(lookupCache.customers)) customerLookup.set(k, v);
     cacheWasUsed = true;
-    console.log(`[ORDERS] Restored lookup cache: ${productLookup.size} products, ${customerLookup.size} customers (built ${lookupCache.builtAt})`);
-    
-    // Always start with bucket at 0 – never restore stale values.
-    // Trust exclusively X-Shopify-Shop-Api-Call-Limit headers from actual responses.
+    console.log(`[ORDERS] Restored lookup cache: ${productLookup.size} products, ${customerLookup.size} customers`);
     shopifyBucketUsed = 0;
     lastBucketUpdate = Date.now();
-    console.log(`[ORDERS] Bucket initialized at 0/40 (trusting response headers only)`);
   } else {
-    // Build from scratch (first batch only)
+    // Build from scratch - parallel product + customer lookup
     const LOOKUP_PAGE_SIZE = 1000;
 
-    let productOffset = 0;
-    while (true) {
-      const { data: productPage } = await supabase
-        .from('canonical_products')
-        .select('external_id, shopify_id')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded')
-        .not('shopify_id', 'is', null)
-        .range(productOffset, productOffset + LOOKUP_PAGE_SIZE - 1);
-      
-      if (!productPage || productPage.length === 0) break;
-      for (const p of productPage) {
-        if (p.shopify_id) {
-          productLookup.set(p.external_id, { shopifyProductId: p.shopify_id, shopifyVariantId: '' });
+    const buildProductLookup = async () => {
+      let offset = 0;
+      while (true) {
+        const { data: page } = await supabase
+          .from('canonical_products')
+          .select('external_id, shopify_id')
+          .eq('project_id', projectId)
+          .eq('status', 'uploaded')
+          .not('shopify_id', 'is', null)
+          .range(offset, offset + LOOKUP_PAGE_SIZE - 1);
+        if (!page || page.length === 0) break;
+        for (const p of page) {
+          if (p.shopify_id) productLookup.set(p.external_id, { shopifyProductId: p.shopify_id, shopifyVariantId: '' });
         }
+        if (page.length < LOOKUP_PAGE_SIZE) break;
+        offset += LOOKUP_PAGE_SIZE;
       }
-      if (productPage.length < LOOKUP_PAGE_SIZE) break;
-      productOffset += LOOKUP_PAGE_SIZE;
-    }
-    console.log(`[ORDERS] Built product lookup with ${productLookup.size} entries`);
+    };
 
-    let customerOffset = 0;
-    while (true) {
-      const { data: customerPage } = await supabase
-        .from('canonical_customers')
-        .select('external_id, shopify_id, data')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded')
-        .not('shopify_id', 'is', null)
-        .range(customerOffset, customerOffset + LOOKUP_PAGE_SIZE - 1);
-      
-      if (!customerPage || customerPage.length === 0) break;
-      for (const c of customerPage) {
-        if (c.shopify_id) {
-          customerLookup.set(c.external_id, c.shopify_id);
-          if (c.data?.email) customerLookup.set(c.data.email.toLowerCase(), c.shopify_id);
+    const buildCustomerLookup = async () => {
+      let offset = 0;
+      while (true) {
+        const { data: page } = await supabase
+          .from('canonical_customers')
+          .select('external_id, shopify_id, data->>email')
+          .eq('project_id', projectId)
+          .in('status', ['uploaded', 'duplicate'])
+          .not('shopify_id', 'is', null)
+          .range(offset, offset + LOOKUP_PAGE_SIZE - 1);
+        if (!page || page.length === 0) break;
+        for (const c of page) {
+          if (c.shopify_id) {
+            customerLookup.set(c.external_id, c.shopify_id);
+            if (c.email) customerLookup.set(c.email.toLowerCase(), c.shopify_id);
+          }
         }
+        if (page.length < LOOKUP_PAGE_SIZE) break;
+        offset += LOOKUP_PAGE_SIZE;
       }
-      if (customerPage.length < LOOKUP_PAGE_SIZE) break;
-      customerOffset += LOOKUP_PAGE_SIZE;
-    }
-    console.log(`[ORDERS] Built customer lookup with ${customerLookup.size} entries`);
+    };
 
-    // Start bucket at 0 when building fresh (no assumed usage)
+    // Build both lookups in parallel
+    await Promise.all([buildProductLookup(), buildCustomerLookup()]);
+    console.log(`[ORDERS] Built lookups: ${productLookup.size} products, ${customerLookup.size} customers`);
     shopifyBucketUsed = 0;
     lastBucketUpdate = Date.now();
   }
+
+  // ============================================================================
+  // BATCH DB UPDATE COLLECTOR
+  // Instead of updating each order individually, collect all status changes
+  // and write them in bulk at the end of the batch.
+  // ============================================================================
+  interface OrderResult {
+    id: string;
+    externalId: string;
+    status: 'uploaded' | 'failed' | 'duplicate';
+    shopifyId?: string;
+    errorMessage?: string | null;
+  }
+  const batchResults: OrderResult[] = [];
 
   let processed = 0;
   let errors = 0;
@@ -2486,59 +2475,40 @@ async function uploadOrders(
   let retryAfterSecondsGlobal = 0;
 
   // ============================================================================
-  // ADAPTIVE THROTTLE for order processing
-  // Automatically finds the fastest safe speed without manual tuning.
+  // PARALLEL ORDER PROCESSING with concurrency limiter
   // ============================================================================
+  const ORDER_CONCURRENCY = 3; // 3 concurrent Shopify API calls
   const ORDER_MAX_RETRIES = 3;
-  const DELAY_FLOOR_MS = 300;
-  let adaptiveDelayMs = 500; // Start each batch at 500ms
-  let batchHad429 = false;
+  const orderLimit = createConcurrencyLimiter(ORDER_CONCURRENCY);
 
   const processOneOrder = async (item: any): Promise<void> => {
-    // Check time budget
     if (Date.now() - startTime > timeBudget) return;
-    // If another order triggered a global rate limit, stop starting new ones
     if (rateLimitedGlobal) return;
 
     const data = item.data || {};
     const sourceOrderId = String(item.external_id || '');
 
-    // ============================================================================
-    // PRE-FLIGHT DUPLICATE CHECK
-    // Only dandomain_order_id in note_attributes is checked.
-    // Fingerprint matching was removed (caused false positives).
-    // ============================================================================
+    // Pre-flight duplicate check (dandomain_order_id only)
     if (sourceOrderId && knownDandoIds.has(sourceOrderId)) {
       const existingShopifyId = dandoIdToShopifyId.get(sourceOrderId) || 'unknown';
-      const dupeMsg = `Duplicate: dandomain_order_id ${sourceOrderId} already exists in Shopify as order ${existingShopifyId}`;
-      console.log(`[ORDERS] DUPLICATE SKIPPED: ${dupeMsg}`);
-      await supabase
-        .from('canonical_orders')
-        .update({
-          status: 'duplicate',
-          shopify_id: existingShopifyId,
-          error_message: dupeMsg,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', item.id);
+      batchResults.push({
+        id: item.id,
+        externalId: sourceOrderId,
+        status: 'duplicate',
+        shopifyId: existingShopifyId,
+        errorMessage: `Duplicate: dandomain_order_id ${sourceOrderId} already in Shopify as ${existingShopifyId}`,
+      });
       skipped++;
       return;
     }
 
-    // Fingerprint-based duplicate check REMOVED – it caused false positives.
-    // Same customer can have multiple orders with the same total_price.
-    // Only dandomain_order_id (above) is a reliable duplicate signal.
-
     const lineItems = data.line_items || [];
-
-    // Map line items to Shopify products
     const shopifyLineItems: any[] = [];
     let unmappedItems = 0;
 
     for (const li of lineItems) {
       const sku = li.sku || li.product_id || '';
       const productInfo = productLookup.get(sku);
-      
       if (productInfo?.shopifyVariantId) {
         shopifyLineItems.push({
           variant_id: parseInt(productInfo.shopifyVariantId),
@@ -2555,7 +2525,6 @@ async function uploadOrders(
       }
     }
 
-    // Find customer
     const customerEmail = data.customer_email || data.email;
     const customerId = data.customer_external_id || data.customer_id;
     let shopifyCustomerId = customerLookup.get(customerId) || 
@@ -2563,14 +2532,10 @@ async function uploadOrders(
 
     const firstName = data.customer_first_name || '';
     const lastName = data.customer_last_name || '';
-
     const enrichAddress = (addr: any) => {
       if (!addr) return addr;
       return { ...addr, first_name: addr.first_name || firstName, last_name: addr.last_name || lastName };
     };
-
-    const shippingAddress = enrichAddress(data.shipping_address);
-    const billingAddress = enrichAddress(data.billing_address);
 
     const orderPayload: any = {
       order: {
@@ -2580,26 +2545,22 @@ async function uploadOrders(
         send_receipt: false,
         send_fulfillment_receipt: false,
         inventory_behaviour: 'bypass',
-        // Part 3: Include dandomain_order_id as note_attribute for permanent dedup
-        note_attributes: [
-          { name: 'dandomain_order_id', value: sourceOrderId },
-        ],
+        note_attributes: [{ name: 'dandomain_order_id', value: sourceOrderId }],
         ...(shopifyCustomerId ? { customer: { id: parseInt(shopifyCustomerId) } } : {
           ...(customerEmail ? { email: customerEmail } : {}),
           ...(firstName || lastName ? {
             billing_address: { first_name: firstName, last_name: lastName, email: customerEmail || undefined }
           } : {}),
         }),
-        ...(shippingAddress ? { shipping_address: shippingAddress } : {}),
-        ...(billingAddress ? { billing_address: billingAddress } : {}),
+        ...(enrichAddress(data.shipping_address) ? { shipping_address: enrichAddress(data.shipping_address) } : {}),
+        ...(enrichAddress(data.billing_address) ? { billing_address: enrichAddress(data.billing_address) } : {}),
         ...(data.order_date ? { created_at: data.order_date } : data.created_at ? { created_at: data.created_at } : {}),
         ...(data.note ? { note: data.note } : {}),
       },
     };
 
-    // ========== RETRY LOOP (up to 3 attempts with exponential backoff) ==========
+    // Retry loop with exponential backoff
     let lastError = '';
-    let failedStep = 'create_order';
     for (let attempt = 1; attempt <= ORDER_MAX_RETRIES; attempt++) {
       try {
         const result = await shopifyFetch(
@@ -2609,121 +2570,131 @@ async function uploadOrders(
             headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
             body: JSON.stringify(orderPayload),
           },
-          1, // shopifyFetch retries transient errors internally; we handle retries at this level
+          1,
           'orders'
         );
 
         if ('rateLimited' in result) {
-          // Adaptive: increase delay by 500ms on 429
-          adaptiveDelayMs = Math.min(adaptiveDelayMs + 500, 3000);
-          batchHad429 = true;
-          // On rate limit, back off 5s then retry
           if (attempt < ORDER_MAX_RETRIES) {
-            const waitMs = 5000;
-            console.log(`[ORDERS] Order ${item.external_id} rate limited, retry ${attempt}/${ORDER_MAX_RETRIES} in 5s (delay now ${adaptiveDelayMs}ms)`);
-            await sleep(waitMs);
+            console.log(`[ORDERS] ${sourceOrderId} rate limited, retry ${attempt}/${ORDER_MAX_RETRIES} in 5s`);
+            await sleep(5000);
             continue;
           }
-          // Final attempt still rate limited → signal global rate limit
           rateLimitedGlobal = true;
           retryAfterSecondsGlobal = Math.ceil(result.retryAfterMs / 1000);
-          return; // Don't mark as failed - will be retried next batch
+          return;
         }
 
         if (!result.response.ok) {
           lastError = `${result.response.status}: ${result.body.slice(0, 200)}`;
-          // 422 (validation error) = permanent, don't retry
-          if (result.response.status === 422) break;
-          // Other errors: retry with backoff
+          if (result.response.status === 422) break; // Permanent error
           if (attempt < ORDER_MAX_RETRIES) {
-            const waitMs = 1000 * Math.pow(2, attempt - 1);
-            console.warn(`[ORDERS] Order ${item.external_id} failed (${result.response.status}), retry ${attempt}/${ORDER_MAX_RETRIES} in ${waitMs}ms`);
-            await sleep(waitMs);
+            await sleep(1000 * Math.pow(2, attempt - 1));
             continue;
           }
           break;
         }
 
-        // Success!
+        // Success
         const responseData = JSON.parse(result.body);
         const orderId = String(responseData.order.id);
-        await supabase
-          .from('canonical_orders')
-          .update({ 
-            status: 'uploaded', 
-            shopify_id: orderId, 
-            error_message: unmappedItems > 0 ? `${unmappedItems} produkter ikke fundet` : null,
-            updated_at: new Date().toISOString() 
-          })
-          .eq('id', item.id);
+        batchResults.push({
+          id: item.id,
+          externalId: sourceOrderId,
+          status: 'uploaded',
+          shopifyId: orderId,
+          errorMessage: unmappedItems > 0 ? `${unmappedItems} produkter ikke fundet` : null,
+        });
         processed++;
-        return; // Done with this order
+        return;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
-        failedStep = 'create_order';
         if (attempt < ORDER_MAX_RETRIES) {
-          const waitMs = 1000 * Math.pow(2, attempt - 1);
-          console.warn(`[ORDERS] Order ${item.external_id} exception (attempt ${attempt}): ${lastError}, retrying in ${waitMs}ms`);
-          await sleep(waitMs);
+          await sleep(1000 * Math.pow(2, attempt - 1));
           continue;
         }
       }
     }
 
-    // All retries exhausted → mark as failed with detailed info
-    const errorMsg = `[${failedStep}] ${lastError}`.slice(0, 500);
-    console.error(`[ORDERS] Order ${item.external_id} permanently failed after ${ORDER_MAX_RETRIES} attempts: ${errorMsg}`);
-    await supabase
-      .from('canonical_orders')
-      .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
+    // All retries exhausted
+    const errorMsg = `[create_order] ${lastError}`.slice(0, 500);
+    console.error(`[ORDERS] ${sourceOrderId} permanently failed: ${errorMsg}`);
+    batchResults.push({
+      id: item.id,
+      externalId: sourceOrderId,
+      status: 'failed',
+      errorMessage: errorMsg,
+    });
     errors++;
-    errorDetails.push({ externalId: item.external_id, message: errorMsg, step: failedStep });
+    errorDetails.push({ externalId: sourceOrderId, message: errorMsg, step: 'create_order' });
   };
 
-  // Process orders sequentially with adaptive spacing
-  let orderIndex = 0;
-  for (const item of items) {
-    if (rateLimitedGlobal) break;
-    if (Date.now() - startTime > timeBudget) break;
-    await processOneOrder(item);
-    orderIndex++;
+  // Process all orders in parallel with concurrency limit
+  await Promise.all(
+    items.map(item => orderLimit(async () => {
+      if (rateLimitedGlobal || Date.now() - startTime > timeBudget) return;
+      await processOneOrder(item);
+    }))
+  );
 
-    // After the first order, read the actual bucket level from response headers.
-    // If bucket is hot (>20/40), pause to let it recover before continuing.
-    if (orderIndex === 1) {
-      const bucketAfterFirst = getCurrentBucketUsage();
-      console.log(`[ORDERS] Bucket after first order: ${bucketAfterFirst}/40, adaptive delay: ${adaptiveDelayMs}ms`);
-      if (bucketAfterFirst > 20) {
-        const recoveryMs = (bucketAfterFirst - 20) * 500;
-        console.log(`[ORDERS] Bucket recovery pause: ${recoveryMs}ms (bucket=${bucketAfterFirst}/40)`);
-        await sleep(recoveryMs);
-      }
-    }
+  // ============================================================================
+  // BATCH DB UPDATES — write all status changes at once instead of per-order
+  // ============================================================================
+  const now = new Date().toISOString();
 
-    // Adaptive delay: reduce if bucket is healthy
-    if (!rateLimitedGlobal) {
-      const usage = getCurrentBucketUsage();
-      if (usage < 20) {
-        adaptiveDelayMs = Math.max(adaptiveDelayMs - 50, DELAY_FLOOR_MS);
-      }
-      await sleep(adaptiveDelayMs);
-    }
+  // Group by status for efficient batch updates
+  const uploadedResults = batchResults.filter(r => r.status === 'uploaded');
+  const failedResults = batchResults.filter(r => r.status === 'failed');
+  const duplicateResults = batchResults.filter(r => r.status === 'duplicate');
+
+  // Batch update: uploaded orders (chunks of 100 to avoid payload limits)
+  const BATCH_CHUNK = 100;
+  for (let i = 0; i < uploadedResults.length; i += BATCH_CHUNK) {
+    const chunk = uploadedResults.slice(i, i + BATCH_CHUNK);
+    const ids = chunk.map(r => r.id);
+    // For uploaded orders, we need individual updates because shopify_id differs
+    // Use Promise.all for parallel DB writes
+    await Promise.all(chunk.map(r =>
+      supabase.from('canonical_orders').update({
+        status: 'uploaded',
+        shopify_id: r.shopifyId,
+        error_message: r.errorMessage || null,
+        updated_at: now,
+      }).eq('id', r.id)
+    ));
   }
 
-  // After a 429-free batch, reduce delay for next batch
-  if (!batchHad429 && adaptiveDelayMs > DELAY_FLOOR_MS) {
-    adaptiveDelayMs = Math.max(adaptiveDelayMs - 100, DELAY_FLOOR_MS);
-    console.log(`[ORDERS] 429-free batch, reducing delay to ${adaptiveDelayMs}ms for next batch`);
+  // Batch update: failed orders
+  for (let i = 0; i < failedResults.length; i += BATCH_CHUNK) {
+    const chunk = failedResults.slice(i, i + BATCH_CHUNK);
+    await Promise.all(chunk.map(r =>
+      supabase.from('canonical_orders').update({
+        status: 'failed',
+        error_message: r.errorMessage,
+        updated_at: now,
+      }).eq('id', r.id)
+    ));
   }
 
-  const { count: remainingCount } = await supabase
-    .from('canonical_orders')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .eq('status', 'pending');
+  // Batch update: duplicate orders
+  for (let i = 0; i < duplicateResults.length; i += BATCH_CHUNK) {
+    const chunk = duplicateResults.slice(i, i + BATCH_CHUNK);
+    await Promise.all(chunk.map(r =>
+      supabase.from('canonical_orders').update({
+        status: 'duplicate',
+        shopify_id: r.shopifyId,
+        error_message: r.errorMessage,
+        updated_at: now,
+      }).eq('id', r.id)
+    ));
+  }
 
-  // Serialize lookup cache for persistence in upload_jobs
+  console.log(`[ORDERS] Batch DB update: ${uploadedResults.length} uploaded, ${failedResults.length} failed, ${duplicateResults.length} duplicate`);
+
+  // Use hasMore from item count vs batch size (avoid expensive count query)
+  const hasMore = items.length >= batchSize || rateLimitedGlobal;
+
+  // Serialize caches for persistence
   const serializedCache: any = {
     products: Object.fromEntries(productLookup),
     customers: Object.fromEntries(customerLookup),
@@ -2731,7 +2702,6 @@ async function uploadOrders(
     lastBucketUsed: getCurrentBucketUsage(),
   };
 
-  // Serialize duplicate cache for persistence across batches
   const serializedDuplicateCache: any = {
     dandoIds: Object.fromEntries(dandoIdToShopifyId),
     queriedEmails: Array.from(emailQueryCache),
@@ -2742,7 +2712,7 @@ async function uploadOrders(
     processed,
     errors,
     skipped,
-    hasMore: (remainingCount || 0) > 0,
+    hasMore,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
     ...(rateLimitedGlobal ? { rateLimited: true, retryAfterSeconds: retryAfterSecondsGlobal } : {}),
     newLookupCache: serializedCache,

@@ -9,9 +9,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Minimal scheduling delay between batches (per entity type)
 const WORKER_SCHEDULE_DELAY_MS = 200; // Reduced from 500ms: products are now parallelized
-// Orders need a longer delay: each batch uses ~15 Shopify API calls at 2 req/s leak rate.
-// 15s gives the bucket time to recover fully between batches.
-const ORDERS_SCHEDULE_DELAY_MS = 2_000;
+// Orders: reduced from 2000ms – parallel processing with mutex prevents overlap
+const ORDERS_SCHEDULE_DELAY_MS = 500;
 
 // Fire-and-forget background task runner
 const runInBackground = (task: Promise<unknown>) => {
@@ -29,7 +28,7 @@ const DEFAULT_BATCH_SIZE: Record<string, number> = {
   categories: 20,
   products: 25, // ~6 API calls per product (1 create + ~5 images), parallelized images fit within 50s budget
   customers: 20,
-  orders: 25, // Sequential processing with 400ms spacing, single-worker mutex
+  orders: 50, // Parallel processing (3 concurrent), batch DB updates, single-worker mutex
 };
 
 // Enforce strict upload order for dependent entities.
