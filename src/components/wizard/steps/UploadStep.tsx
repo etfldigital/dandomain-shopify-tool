@@ -62,6 +62,7 @@ import {
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { parseCustomersXML, parseOrdersXML } from '@/lib/xml-parser';
 import { UploadErrorReport } from './UploadErrorReport';
 import { DuplicateAnalysisDialog } from './DuplicateAnalysisDialog';
 import { SkippedProductsDialog } from './SkippedProductsDialog';
