@@ -70,61 +70,92 @@ Deno.serve(async (req) => {
       isSequencedEntity(t) ? ENTITY_SEQUENCE.indexOf(t) : -1;
 
     // Reliable count helper for canonical_* tables.
-    // IMPORTANT: For products we ONLY count primary records to match what actually uploads.
-    // Each primary record = one Shopify product (with all variants from _mergedVariants).
+    // For large tables (orders, customers), uses a fast existence check first,
+    // then falls back to project metadata for approximate counts to avoid statement timeouts.
     const countCanonicalStatus = async (entityType: string, status: string): Promise<number> => {
       const tableName = `canonical_${entityType}`;
+      const isLargeTable = entityType === 'orders' || entityType === 'customers';
 
-      let query = supabase
-        .from(tableName)
-        .select('*', { count: 'exact', head: true })
-        .eq('project_id', projectIdForCounts!)
-        .eq('status', status);
+      // Build base query filters
+      const buildQuery = (base: any) => {
+        let q = base.eq('project_id', projectIdForCounts!).eq('status', status);
+        if (entityType === 'categories') q = q.eq('exclude', false);
+        if (entityType === 'products') q = q.eq('data->>_isPrimary', 'true');
+        return q;
+      };
 
-      // Entity-specific filters
-      if (entityType === 'categories') {
-        query = query.eq('exclude', false);
+      // For large tables, first do a fast existence check (limit 1) to avoid timeout
+      if (isLargeTable) {
+        const { data: sample, error: sampleErr } = await buildQuery(
+          supabase.from(tableName).select('id').limit(1)
+        );
+        if (sampleErr) {
+          console.warn(`[WORKER] Existence check failed for ${tableName}/${status}: ${sampleErr.message}`);
+          // Fall back to project metadata
+          return getCountFromProjectMeta(entityType, status);
+        }
+        if (!sample || sample.length === 0) return 0;
+
+        // We know at least 1 exists. Try exact count with a shorter approach.
+        const { count, error } = await buildQuery(
+          supabase.from(tableName).select('*', { count: 'exact', head: true })
+        );
+        if (!error && typeof count === 'number') return count;
+        
+        console.warn(`[WORKER] Exact count timed out for ${tableName}/${status}, using project metadata`);
+        return getCountFromProjectMeta(entityType, status);
       }
 
-      // Products: ONLY count records explicitly marked as primary.
-      // Each primary = 1 Shopify product (secondary variants don't count as separate products).
-      // Records with _isPrimary=null have NOT been processed by prepare-upload yet.
-      if (entityType === 'products') {
-        query = query.eq('data->>_isPrimary', 'true');
-      }
-
-      const { count, error } = await query;
-
+      // Small tables: direct count (categories, pages, products)
+      const { count, error } = await buildQuery(
+        supabase.from(tableName).select('*', { count: 'exact', head: true })
+      );
       if (!error && typeof count === 'number') return count;
 
       if (error) {
-        console.warn(`[WORKER] Count error for ${tableName}/${status}: ${error.message} (fallback to id scan)`);
-      } else {
-        console.warn(`[WORKER] Count returned null for ${tableName}/${status} (fallback to id scan)`);
+        console.warn(`[WORKER] Count error for ${tableName}/${status}: ${error.message}`);
       }
-
-      // Fallback: ID scan (limited, but safer than incorrectly returning 0 and breaking sequencing)
-      let scan = supabase
-        .from(tableName)
-        .select('id')
-        .eq('project_id', projectIdForCounts!)
-        .eq('status', status)
-        .limit(200000);
-
-      if (entityType === 'categories') {
-        scan = scan.eq('exclude', false);
-      }
-
-      // Products: ONLY count primary records (each primary = 1 Shopify product)
-      if (entityType === 'products') {
-        scan = scan.eq('data->>_isPrimary', 'true');
-      }
-
-      const { data: ids, error: scanErr } = await scan;
+      // Fallback for small tables: limited scan
+      const { data: ids, error: scanErr } = await buildQuery(
+        supabase.from(tableName).select('id').limit(10000)
+      );
       if (scanErr) {
         throw new Error(`Failed to count ${tableName}/${status}: ${scanErr.message}`);
       }
       return ids?.length || 0;
+    };
+
+    // Derive approximate counts from project metadata + upload_jobs when DB counts time out
+    const getCountFromProjectMeta = async (entityType: string, status: string): Promise<number> => {
+      // Get total from project
+      const { data: proj } = await supabase
+        .from('projects')
+        .select('customer_count, order_count')
+        .eq('id', projectIdForCounts!)
+        .single();
+      const totalCount = entityType === 'customers' ? (proj?.customer_count || 0) : (proj?.order_count || 0);
+
+      // Get processed counts from upload_jobs
+      const { data: jobs } = await supabase
+        .from('upload_jobs')
+        .select('processed_count, error_count, duplicate_count')
+        .eq('project_id', projectIdForCounts!)
+        .eq('entity_type', entityType)
+        .in('status', ['running', 'completed', 'paused'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      const job = jobs?.[0];
+      if (job) {
+        const processed = (job.processed_count || 0) + (job.error_count || 0) + (job.duplicate_count || 0);
+        if (status === 'pending') return Math.max(0, totalCount - processed);
+        if (status === 'uploaded') return job.processed_count || 0;
+        if (status === 'failed') return job.error_count || 0;
+        if (status === 'duplicate') return job.duplicate_count || 0;
+      }
+
+      // No job data: if asking for pending, assume all are pending
+      return status === 'pending' ? totalCount : 0;
     };
 
     // NOTE: We can only know projectId after parsing the body, but we want helpers above.
