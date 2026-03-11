@@ -62,6 +62,7 @@ import {
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { parseCustomersXML, parseOrdersXML } from '@/lib/xml-parser';
 import { UploadErrorReport } from './UploadErrorReport';
 import { DuplicateAnalysisDialog } from './DuplicateAnalysisDialog';
 import { SkippedProductsDialog } from './SkippedProductsDialog';
@@ -189,6 +190,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
   const [prepareResult, setPrepareResult] = useState<PrepareResult | null>(null);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [syncingEntity, setSyncingEntity] = useState<EntityType | null>(null);
+  const [reExtractingEntity, setReExtractingEntity] = useState<EntityType | null>(null);
   
   // Live speed tracking based on processed_count delta over time
   const [speedHistory, setSpeedHistory] = useState<{ timestamp: number; processed: number }[]>([]);
@@ -893,6 +895,116 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
       toast.error(`Synkronisering fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
     } finally {
       setSyncingEntity(null);
+    }
+  };
+
+  // Re-extract: download XML from storage, re-parse, and re-insert into canonical tables
+  const handleReExtract = async (entityType: EntityType) => {
+    if (entityType !== 'customers' && entityType !== 'orders') return;
+    setReExtractingEntity(entityType);
+    const entityLabel = entityType === 'customers' ? 'Kunder' : 'Ordrer';
+    
+    try {
+      toast.info(`${entityLabel}: Henter XML-fil fra storage…`);
+      
+      // 1. Find the project_file for this entity type
+      const { data: projectFile, error: fileError } = await supabase
+        .from('project_files')
+        .select('storage_path, file_name')
+        .eq('project_id', project.id)
+        .eq('entity_type', entityType)
+        .maybeSingle();
+      
+      if (fileError) throw fileError;
+      if (!projectFile) {
+        toast.error(`Ingen ${entityLabel.toLowerCase()}-fil fundet. Upload en fil i Udtræk-trinnet først.`);
+        return;
+      }
+      
+      // 2. Download XML from Supabase storage (fresh, no cache)
+      const { data: fileBlob, error: downloadError } = await supabase.storage
+        .from('csv-uploads')
+        .download(projectFile.storage_path);
+      
+      if (downloadError) throw downloadError;
+      if (!fileBlob) throw new Error('Kunne ikke downloade filen');
+      
+      const text = await fileBlob.text();
+      toast.info(`${entityLabel}: Parser XML (${(text.length / 1024 / 1024).toFixed(1)} MB)…`);
+      
+      // 3. Parse the XML
+      let parsedData: any[];
+      if (entityType === 'customers') {
+        parsedData = parseCustomersXML(text);
+        // Deduplicate by email
+        const map = new Map<string, any>();
+        parsedData.forEach(c => {
+          const key = c.external_id || c.email;
+          if (key) map.set(key, c);
+        });
+        parsedData = Array.from(map.values());
+      } else {
+        parsedData = parseOrdersXML(text);
+        // Deduplicate by order ID
+        const map = new Map<string, any>();
+        parsedData.forEach(o => {
+          if (o.external_id) map.set(o.external_id, o);
+        });
+        parsedData = Array.from(map.values());
+      }
+      
+      toast.info(`${entityLabel}: Fandt ${parsedData.length.toLocaleString('da-DK')} unikke poster. Sletter gamle data…`);
+      
+      // 4. Delete existing canonical records
+      const table = entityType === 'customers' ? 'canonical_customers' : 'canonical_orders';
+      const { error: deleteError } = await supabase
+        .from(table)
+        .delete()
+        .eq('project_id', project.id);
+      if (deleteError) throw deleteError;
+      
+      // 5. Re-insert in batches
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < parsedData.length; i += BATCH_SIZE) {
+        const batch = parsedData.slice(i, i + BATCH_SIZE).map(item => ({
+          project_id: project.id,
+          external_id: entityType === 'customers' ? (item.external_id || item.email) : item.external_id,
+          data: item,
+          status: 'pending' as const,
+        }));
+        
+        const { error: insertError } = await supabase
+          .from(table)
+          .upsert(batch, { onConflict: 'project_id,external_id' });
+        if (insertError) throw insertError;
+      }
+      
+      // 6. Update project entity count
+      const countUpdate = entityType === 'customers'
+        ? { customer_count: parsedData.length }
+        : { order_count: parsedData.length };
+      await supabase.from('projects').update(countUpdate).eq('id', project.id);
+      
+      // 7. Update project_files row_count
+      await supabase
+        .from('project_files')
+        .update({ row_count: parsedData.length, status: 'processed' })
+        .eq('project_id', project.id)
+        .eq('entity_type', entityType);
+      
+      toast.success(`${entityLabel} genindlæst`, {
+        description: `${parsedData.length.toLocaleString('da-DK')} poster parset fra ${projectFile.file_name}`,
+      });
+      
+      // 8. Refresh counts
+      lastCountsFetchRef.current = 0;
+      await fetchStatusCounts();
+      await fetchShopifyLiveCounts(true);
+      await fetchJobs();
+    } catch (error) {
+      toast.error(`Genindlæsning fejlede: ${error instanceof Error ? error.message : 'Ukendt fejl'}`);
+    } finally {
+      setReExtractingEntity(null);
     }
   };
 
@@ -1653,7 +1765,21 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                             <RotateCcw className="w-4 h-4 mr-2" />
                             Nulstil uploads
                           </DropdownMenuItem>
-                          <DropdownMenuSeparator />
+                          {(type === 'customers' || type === 'orders') && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onClick={() => handleReExtract(type)}
+                                disabled={reExtractingEntity !== null}
+                              >
+                                {reExtractingEntity === type ? (
+                                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Genindlæser XML…</>
+                                ) : (
+                                  <><RefreshCw className="w-4 h-4 mr-2" />Genindlæs fra XML</>
+                                )}
+                              </DropdownMenuItem>
+                            </>
+                          )}
                           <DropdownMenuItem onClick={() => handleSync(type)} disabled={syncingEntity !== null}>
                             {syncingEntity === type ? (
                               <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Synkroniserer…</>
@@ -1909,6 +2035,17 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                                 <Cloud className="w-4 h-4 mr-2" />
                                 Synkroniser med Shopify
                               </>
+                            )}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleReExtract(type)}
+                            disabled={reExtractingEntity !== null}
+                          >
+                            {reExtractingEntity === type ? (
+                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Genindlæser XML…</>
+                            ) : (
+                              <><RefreshCw className="w-4 h-4 mr-2" />Genindlæs fra XML</>
                             )}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
