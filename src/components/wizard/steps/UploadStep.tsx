@@ -2,24 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { EntityCard, EntityMenuItem } from './EntityCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { 
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,10 +31,8 @@ import {
   Pause,
   RotateCcw,
   FlaskConical,
-  MoreVertical,
   Cloud,
   CloudOff,
-  SkipForward,
   PartyPopper,
   ArrowRight,
   RefreshCw,
@@ -54,14 +40,6 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
