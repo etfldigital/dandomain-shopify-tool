@@ -1,22 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { SimplifiedEntityCard } from './SimplifiedEntityCard';
+import { EntityCard, EntityMenuItem } from './EntityCard';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
-import { MultiProgress } from '@/components/ui/multi-progress';
-import { 
+import { Card, CardContent } from '@/components/ui/card';
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,10 +31,8 @@ import {
   Pause,
   RotateCcw,
   FlaskConical,
-  MoreVertical,
   Cloud,
   CloudOff,
-  SkipForward,
   PartyPopper,
   ArrowRight,
   RefreshCw,
@@ -51,14 +40,6 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Badge } from '@/components/ui/badge';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { Project, EntityType } from '@/types/database';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -1469,19 +1450,124 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
     return `Uploader ${label.toLowerCase()}…`;
   };
 
+  // Build menu items for each entity
+  const buildMenuItems = (type: EntityType, job: UploadJob | undefined, effectivePending: number, totalFromDb: number, dbTimedOut: boolean): EntityMenuItem[] => {
+    const entityLabels: Record<EntityType, string> = {
+      pages: 'sider', categories: 'collections', products: 'produkter', customers: 'kunder', orders: 'ordrer',
+    };
+    const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
+    const currentIdx = sequenceOrder.indexOf(type);
+    const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(predType => {
+      if (statusCounts[predType].pending === 0) return false;
+      const localTotal = statusCounts[predType].pending + statusCounts[predType].uploaded + statusCounts[predType].failed;
+      const liveCount = shopifyLiveCounts[predType];
+      if (liveCount !== null && liveCount !== undefined && liveCount >= localTotal) return false;
+      return true;
+    });
+    const predecessorLabel = predecessorBlocking ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label : null;
+    const jobRunning = job?.status === 'running';
+    const noPending = effectivePending === 0;
+
+    const items: EntityMenuItem[] = [];
+
+    // Upload
+    items.push({
+      label: jobRunning ? `Upload kører allerede…` : `Upload ${entityLabels[type]}`,
+      icon: Play,
+      disabled: jobRunning || isStarting,
+      onClick: () => {
+        if (predecessorBlocking) {
+          toast.error(`Kan ikke starte endnu`, {
+            description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
+          });
+          return;
+        }
+        handleStartUpload(false, type);
+      },
+    });
+
+    // Force start
+    if (predecessorBlocking) {
+      items.push({
+        label: 'Tving start (ignorer rækkefølge)',
+        icon: AlertTriangle,
+        disabled: jobRunning || isStarting || noPending,
+        className: 'text-amber-600',
+        onClick: () => handleStartUploadInternal(false, type, true),
+      });
+    }
+
+    // Test
+    items.push({
+      label: 'Test upload (3 stk)',
+      icon: FlaskConical,
+      disabled: effectivePending === 0 || isStarting,
+      separator: 'before',
+      onClick: () => handleStartUpload(true, type),
+    });
+
+    // Reset
+    items.push({
+      label: 'Nulstil uploads',
+      icon: RotateCcw,
+      disabled: totalFromDb === 0 && !dbTimedOut,
+      separator: 'before',
+      onClick: () => handleResetRequest(type, 'all'),
+    });
+
+    // Re-extract (customers/orders only)
+    if (type === 'customers' || type === 'orders') {
+      items.push({
+        label: reExtractingEntity === type ? 'Genindlæser XML…' : 'Genindlæs fra XML',
+        icon: reExtractingEntity === type ? Loader2 : RefreshCw,
+        disabled: reExtractingEntity !== null,
+        separator: 'before',
+        onClick: () => handleReExtract(type),
+      });
+    }
+
+    // Sync
+    items.push({
+      label: syncingEntity === type ? 'Synkroniserer…' : 'Synkroniser med Shopify',
+      icon: syncingEntity === type ? Loader2 : Cloud,
+      disabled: syncingEntity !== null,
+      separator: 'before',
+      onClick: () => handleSync(type),
+    });
+
+    return items;
+  };
+
+  // Overall progress
+  const overallPercent = fixedTotalItems > 0
+    ? Math.min(100, ((fixedTotalItems - fixedTotalPending) / fixedTotalItems) * 100)
+    : 0;
+
+  // Status badge
+  const statusLabel = allCompleted ? 'Færdig' : isPaused ? 'Pauset' : isUploading ? 'Synkroniserer' : 'Klar';
+  const statusVariant = allCompleted ? 'success' : isPaused ? 'warning' : isUploading ? 'default' : 'outline';
+
+  // Sequence order for dots
+  const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-semibold mb-2">Upload til Shopify</h2>
-        <p className="text-muted-foreground">
-          Overfør dine data til Shopify i den optimale rækkefølge
-        </p>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold">Upload til Shopify</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Overfør dine data i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer
+          </p>
+        </div>
+        <Badge variant={statusVariant} className={`text-sm px-3 py-1 ${isUploading && !allCompleted ? 'animate-pulse' : ''}`}>
+          {statusLabel}
+        </Badge>
       </div>
 
-
-      {/* Celebration banner when all completed */}
+      {/* Celebration banner */}
       {allCompleted && (
-        <Card className="border-green-500/50 bg-green-500/10">
+        <Card className="border-green-500/30 bg-green-500/5">
           <CardContent className="pt-6 pb-6">
             <div className="flex items-center justify-center gap-4">
               <div className="w-12 h-12 rounded-full bg-green-500/20 flex items-center justify-center">
@@ -1500,145 +1586,64 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         </Card>
       )}
 
-      {/* Background processing info banner - STABILIZED with stableJob to prevent flicker */}
-      {isUploading && !allCompleted && (
-        <Card className="border-primary/50 bg-primary/5">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-start gap-3">
-              <Cloud className="w-5 h-5 text-primary mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <div className="flex items-center justify-between">
-                  <p className="font-medium text-foreground">Upload kører automatisk i baggrunden</p>
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className={`w-2 h-2 rounded-full ${
-                      secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'
-                    } animate-pulse`} />
-                    {secondsSinceHeartbeat > 60 ? 'Venter på Shopify' : 'Arbejder'}
-                  </span>
-                </div>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Du kan trygt lukke browseren – serveren fortsætter automatisk, også ved rate-limits.
-                </p>
-                {/* Live processing stats - use stableJob to prevent number flickering */}
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-2">
-                  {(stableJob || runningJob) && (
-                    <>
-                      <span>
-                        <span className="font-medium text-foreground tabular-nums">
-                          {(stableJob?.processed_count ?? runningJob?.processed_count ?? 0).toLocaleString('da-DK')}
-                        </span>
-                        {' / '}
-                        <span className="tabular-nums">
-                          {(stableJob?.total_count ?? runningJob?.total_count ?? 0).toLocaleString('da-DK')}
-                        </span>
-                        {' behandlet'}
-                      </span>
-                      {currentSpeed > 0 && (
-                        <span className="tabular-nums">
-                          ~{formatSpeed(currentSpeed)}
-                        </span>
-                      )}
-                      {etaMinutes != null && totalRemainingItems > 0 && (
-                        <span className="tabular-nums">
-                          ~{formatEta(etaMinutes)} tilbage
-                        </span>
-                      )}
-                      {/* Last activity timestamp for reassurance */}
-                      {runningJob?.last_heartbeat_at && (
-                        <span className="text-muted-foreground/70">
-                          Seneste aktivitet: {secondsSinceHeartbeat < 5 ? 'nu' : `${secondsSinceHeartbeat}s siden`}
-                        </span>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
+      {/* Overall progress card */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Upload Progress</CardTitle>
-          <CardDescription>
-            {allCompleted 
-              ? 'Upload er fuldført. Alle data er nu i Shopify.'
-              : 'Data uploades i rækkefølgen: Sider → Collections → Produkter → Kunder → Ordrer'
-            }
-          </CardDescription>
-          {/* Only show live stats while actively uploading, NOT when completed - STABILIZED */}
-          {(isUploading || isStarting) && !allCompleted && (
-            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-              <div className="flex items-center gap-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                <span className="font-medium text-foreground">{getActivityMessage()}</span>
-              </div>
-              <div className="flex items-center gap-4 text-muted-foreground">
-                <span className="flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${
-                    secondsSinceHeartbeat > 60 ? 'bg-warning' : 'bg-success'
-                  } animate-pulse`} />
-                  <span className="text-sm">
-                    {secondsSinceHeartbeat > 60 ? 'Synkroniserer' : 'Aktiv'}
-                  </span>
-                </span>
-                {currentSpeed > 0 ? (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="text-primary font-medium cursor-help flex items-center gap-1 tabular-nums">
-                          ⚡ {formatSpeed(currentSpeed)}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{liveSpeed ? 'Live hastighed (sidste 60 sek)' : 'Seneste batch-hastighed'}</p>
-                        {(stableJob || runningJob)?.last_batch_items && (stableJob || runningJob)?.last_batch_duration_ms && (
-                          <p className="text-muted-foreground text-xs mt-1">
-                            {(stableJob || runningJob)?.last_batch_items} items på {Math.round(((stableJob || runningJob)?.last_batch_duration_ms ?? 0) / 1000)}s
-                          </p>
-                        )}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                ) : (
-                  <span className="text-muted-foreground font-medium flex items-center gap-1">
-                    <span className="inline-block w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
-                    {runningJob?.next_attempt_at ? 'Synkroniserer med Shopify…' : 'Forbereder næste batch…'}
-                  </span>
-                )}
-                {etaMinutes != null && totalRemainingItems > 0 && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="bg-muted px-2 py-0.5 rounded-md font-medium cursor-help tabular-nums">
-                          ~{formatEta(etaMinutes)} tilbage
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{totalRemainingItems.toLocaleString('da-DK')} elementer tilbage</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-              </div>
+        <CardContent className="pt-5 pb-4 space-y-3">
+          {/* Overall progress bar */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 h-2 rounded-full bg-secondary overflow-hidden">
+              <div
+                className={`absolute inset-y-0 left-0 rounded-full transition-all duration-700 ${allCompleted ? 'bg-green-500' : isUploading ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+                style={{ width: `${overallPercent}%` }}
+              />
+              {isUploading && !allCompleted && overallPercent > 0 && (
+                <div
+                  className="absolute inset-y-0 left-0 rounded-full overflow-hidden"
+                  style={{ width: `${overallPercent}%` }}
+                >
+                  <div className="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+                </div>
+              )}
+            </div>
+            <Badge variant="outline" className="text-xs tabular-nums px-2 py-0.5">
+              {Math.round(overallPercent)}%
+            </Badge>
+          </div>
+
+          {/* Speed + ETA chips — only during upload */}
+          {isUploading && !allCompleted && (
+            <div className="flex items-center gap-2 text-xs">
+              <Badge variant="warning" className="gap-1 px-2 py-0.5">
+                ⚡ {currentSpeed > 0 ? formatSpeed(currentSpeed) || '–' : '–'}
+              </Badge>
+              <Badge variant="outline" className="gap-1 px-2 py-0.5 tabular-nums">
+                {etaMinutes != null && totalRemainingItems > 0
+                  ? `~${formatEta(etaMinutes)} tilbage`
+                  : '–'
+                }
+              </Badge>
+              {/* Heartbeat indicator */}
+              <span className="flex items-center gap-1 text-muted-foreground ml-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${secondsSinceHeartbeat > 60 ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`} />
+                {secondsSinceHeartbeat > 60 ? 'Venter' : 'Aktiv'}
+              </span>
+              {/* Activity message */}
+              <span className="text-muted-foreground ml-auto">{getActivityMessage()}</span>
             </div>
           )}
-        </CardHeader>
-        <CardContent className="space-y-6">
+        </CardContent>
+      </Card>
+
+      {/* Entity cards */}
+      <Card>
+        <CardContent className="p-0 divide-y divide-border">
           {ENTITY_CONFIG.map(({ type, icon: Icon, label }) => {
             const job = getJobForEntity(type);
             const counts = statusCounts[type];
-            
-            // Database counts are the SOURCE OF TRUTH for progress
-            // BUT: when DB counts all return 0 (timeout), fall back to job data
             const totalFromDb = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
             const dbTimedOut = totalFromDb === 0 && job && job.total_count > 0;
-            
             const skipped = job?.skipped_count || 0;
             const errors = dbTimedOut ? (job?.error_count || 0) : counts.failed;
-            
-            // When DB timed out, derive progress from the job's own counters
             const effectivePending = dbTimedOut 
               ? Math.max(0, job!.total_count - job!.processed_count)
               : counts.pending;
@@ -1647,628 +1652,187 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               : counts.uploaded;
             const effectiveDuplicate = dbTimedOut ? 0 : counts.duplicate;
             const effectiveFailed = dbTimedOut ? (job?.error_count || 0) : counts.failed;
-            
-            // CRITICAL: Progress is based on database state (or job fallback)
             const processedFromDb = effectiveUploaded + effectiveFailed + effectiveDuplicate;
             const total = (dbTimedOut ? job!.total_count : totalFromDb) + skipped;
             const processedActual = processedFromDb + skipped;
-            
-            // Live progress: use job.processed_count when running (updates via realtime every 2s)
-            // This is MUCH more responsive than statusCounts which only refresh every 15s
             const jobProcessed = job && job.status === 'running' ? job.processed_count : 0;
             const processedLive = job && job.status === 'running' 
               ? Math.max(processedActual, getLiveProcessedCount(job, jobProcessed))
               : processedActual;
-            const isEstimated = Boolean(job && job.status === 'running' && processedLive !== processedActual);
-            
-            // For the total, prefer job.total_count when running (always accurate)
             const liveTotal = job && job.status === 'running' && job.total_count > 0
               ? Math.max(total, job.total_count)
               : total;
-
-            // UI-only: show when worker is waiting for next attempt (rate limit/backoff)
             const waitMs = job?.status === 'running' && job?.next_attempt_at
               ? new Date(job.next_attempt_at).getTime() - uiNow
               : 0;
             const isWaiting = Number.isFinite(waitMs) && waitMs > 0;
-            
-            // CRITICAL: Job is ONLY complete when pending = 0
-            // This ensures the progress bar reaches 100% before showing green checkmark
             const isComplete = effectivePending === 0 && total > 0;
-            const status = isComplete 
-              ? 'completed' 
-              : job?.status || (effectivePending === 0 && total > 0 ? 'completed' : 'pending');
-
-            // Progress percentage: use live count when uploading for responsive updates
             const displayProcessed = job && job.status === 'running' ? processedLive : processedActual;
             const displayTotal = job && job.status === 'running' ? liveTotal : total;
-            const percent = displayTotal > 0 ? (displayProcessed / displayTotal) * 100 : 0;
-
-            // Simplified card for customers and orders
-            if (type === 'customers' || type === 'orders') {
-              const simplifiedProcessed = effectiveUploaded + effectiveFailed + effectiveDuplicate + skipped;
-              const simplifiedTotal = dbTimedOut ? (job?.total_count || 0) : totalFromDb;
-
-              return (
-                <div key={type}>
-                  <SimplifiedEntityCard
-                    type={type}
-                    label={label}
-                    totalRows={simplifiedTotal}
-                    processed={job && job.status === 'running' ? Math.max(simplifiedProcessed, getLiveProcessedCount(job, job.processed_count)) : simplifiedProcessed}
-                    duplicates={effectiveDuplicate}
-                    errors={errors}
-                    shopifyLiveCount={shopifyLiveCounts[type]}
-                    isShopifyLoading={entityLoading[type] || false}
-                    onRefreshShopify={() => fetchShopifyLiveCountForEntity(type, true)}
-                    isRunning={job?.status === 'running'}
-                  />
-                  {/* Keep dropdown menu for actions */}
-                  {!isUploading && (
-                    <div className="flex justify-end -mt-1">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="bg-popover">
-                          {(() => {
-                            const entityLabels: Record<EntityType, string> = {
-                              pages: 'sider', categories: 'collections', products: 'produkter', customers: 'kunder', orders: 'ordrer',
-                            };
-                            const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
-                            const currentIdx = sequenceOrder.indexOf(type);
-                            const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(
-                              predType => {
-                                if (statusCounts[predType].pending === 0) return false;
-                                const localTotal = statusCounts[predType].pending + statusCounts[predType].uploaded + statusCounts[predType].failed;
-                                const liveCount = shopifyLiveCounts[predType];
-                                if (liveCount !== null && liveCount !== undefined && liveCount >= localTotal) return false;
-                                return true;
-                              }
-                            );
-                            const predecessorLabel = predecessorBlocking 
-                              ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
-                              : null;
-                            const jobRunning = job?.status === 'running';
-                            const noPending = effectivePending === 0;
-
-                            return (
-                              <>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    if (predecessorBlocking) {
-                                      toast.error(`Kan ikke starte endnu`, {
-                                        description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
-                                      });
-                                      return;
-                                    }
-                                    handleStartUpload(false, type);
-                                  }}
-                                  disabled={jobRunning || isStarting}
-                                >
-                                  <Play className="w-4 h-4 mr-2" />
-                                  {jobRunning ? `Upload kører allerede…` : `Upload ${entityLabels[type]}`}
-                                </DropdownMenuItem>
-                                {predecessorBlocking && (
-                                  <DropdownMenuItem
-                                    onClick={() => handleStartUploadInternal(false, type, true)}
-                                    disabled={jobRunning || isStarting || noPending}
-                                    className="text-amber-600"
-                                  >
-                                    <AlertTriangle className="w-4 h-4 mr-2" />
-                                    Tving start (ignorer rækkefølge)
-                                  </DropdownMenuItem>
-                                )}
-                              </>
-                            );
-                          })()}
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => handleStartUpload(true, type)} disabled={effectivePending === 0 || isStarting}>
-                            <FlaskConical className="w-4 h-4 mr-2" />
-                            Test upload (3 stk)
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => handleResetRequest(type, 'all')} disabled={totalFromDb === 0 && !dbTimedOut}>
-                            <RotateCcw className="w-4 h-4 mr-2" />
-                            Nulstil uploads
-                          </DropdownMenuItem>
-                          {(type === 'customers' || type === 'orders') && (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={() => handleReExtract(type)}
-                                disabled={reExtractingEntity !== null}
-                              >
-                                {reExtractingEntity === type ? (
-                                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Genindlæser XML…</>
-                                ) : (
-                                  <><RefreshCw className="w-4 h-4 mr-2" />Genindlæs fra XML</>
-                                )}
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                          <DropdownMenuItem onClick={() => handleSync(type)} disabled={syncingEntity !== null}>
-                            {syncingEntity === type ? (
-                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Synkroniserer…</>
-                            ) : (
-                              <><Cloud className="w-4 h-4 mr-2" />Synkroniser med Shopify</>
-                            )}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  )}
-                </div>
-              );
-            }
 
             return (
-              <div key={type} className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      syncingEntity === type ? 'bg-primary/10' :
-                      status === 'completed' ? 'bg-green-100 dark:bg-green-900' :
-                      status === 'failed' ? 'bg-destructive/10' :
-                      status === 'running' ? 'bg-primary/10' :
-                      status === 'paused' ? 'bg-amber-100 dark:bg-amber-900' :
-                      'bg-muted'
-                    }`}>
-                      {syncingEntity === type ? (
-                        <RefreshCw className="w-4 h-4 text-primary animate-spin" />
-                      ) : status === 'completed' ? (
-                        <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400" />
-                      ) : status === 'failed' ? (
-                        <AlertCircle className="w-4 h-4 text-destructive" />
-                      ) : status === 'running' ? (
-                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
-                      ) : status === 'paused' ? (
-                        <Pause className="w-4 h-4 text-amber-600" />
-                      ) : (
-                        <Icon className="w-4 h-4 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <span className="font-medium">{label}</span>
-                      {/* Always show entity status - even when counts are 0 */}
-                      {(() => {
-                        return (
-                        <div className="text-xs text-muted-foreground">
-                          {/* Show raw vs grouped count for products */}
-                          {isComplete ? (
-                            <span className="text-green-600 font-medium">
-                              {total.toLocaleString('da-DK')} behandlet
-                              {effectiveUploaded > 0 && ` (${effectiveUploaded.toLocaleString('da-DK')} ny`}
-                              {effectiveDuplicate > 0 && `, ${effectiveDuplicate.toLocaleString('da-DK')} duplikater`}
-                              {skipped > 0 && `, ${skipped.toLocaleString('da-DK')} eksisterende`}
-                              {effectiveFailed > 0 && `, ${effectiveFailed.toLocaleString('da-DK')} fejlet`}
-                              {(effectiveUploaded > 0 || effectiveDuplicate > 0 || skipped > 0 || effectiveFailed > 0) && ')'}
-                            </span>
-                          ) : (
-                            <span>
-                              {effectivePending > 0 && <span className="mr-2">{effectivePending.toLocaleString('da-DK')} afventer</span>}
-                              {/* Show Shopify live count for all entity types */}
-                              {(() => {
-                                const liveCount = shopifyLiveCounts[type];
-                                const isEntityLoading = entityLoading[type] || false;
-                                
-                                if (isEntityLoading) {
-                                  return (
-                                    <span className="text-muted-foreground mr-2">
-                                      <Loader2 className="w-3 h-3 inline animate-spin mr-1" />
-                                      henter fra Shopify…
-                                    </span>
-                                  );
-                                }
-                                if (liveCount !== null && liveCount !== undefined) {
-                                  return (
-                                    <span className="text-green-600 mr-2">
-                                      {liveCount.toLocaleString('da-DK')} i Shopify
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
-                                        className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
-                                        title={`Opdater ${label} Shopify-tal`}
-                                      >
-                                        <RefreshCw className="w-3 h-3" />
-                                      </button>
-                                    </span>
-                                  );
-                                }
-                                if (shopifyLiveCounts.isLoading) {
-                                  return <span className="text-muted-foreground mr-2"><Loader2 className="w-3 h-3 inline animate-spin mr-1" />henter…</span>;
-                                }
-                                // Show "– i Shopify" with clickable refresh for failed/unknown state
-                                return (
-                                  <span className="text-muted-foreground mr-2">
-                                    – i Shopify
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); fetchShopifyLiveCountForEntity(type, true); }}
-                                      className="ml-1 inline-flex items-center hover:text-foreground"
-                                      title="Hent Shopify-tal"
-                                    >
-                                      <RefreshCw className="w-3 h-3" />
-                                    </button>
-                                  </span>
-                                );
-                              })()}
-                              {effectiveDuplicate > 0 && <span className="text-amber-600 mr-2">{effectiveDuplicate.toLocaleString('da-DK')} duplikater</span>}
-                              {skipped > 0 && <span className="text-amber-600 mr-2">{skipped.toLocaleString('da-DK')} eksisterende</span>}
-                              {effectiveFailed > 0 && <span className="text-destructive">{effectiveFailed.toLocaleString('da-DK')} fejlet</span>}
-                            </span>
-                          )}
-                        </div>
-                        );
-                      })()}
+              <EntityCard
+                key={type}
+                label={label}
+                icon={Icon}
+                processed={displayProcessed}
+                total={displayTotal}
+                duplicates={effectiveDuplicate}
+                errors={errors}
+                skipped={skipped}
+                shopifyLiveCount={shopifyLiveCounts[type]}
+                isShopifyLoading={entityLoading[type] || false}
+                onRefreshShopify={() => fetchShopifyLiveCountForEntity(type, true)}
+                isRunning={job?.status === 'running'}
+                isComplete={isComplete}
+                isPaused={job?.status === 'paused'}
+                isWaiting={isWaiting}
+                isSyncing={syncingEntity === type}
+                menuItems={buildMenuItems(type, job, effectivePending, totalFromDb, !!dbTimedOut)}
+                onErrorClick={() => {
+                  // Scroll to error report section
+                  const errorSection = document.querySelector('[data-error-report]');
+                  errorSection?.scrollIntoView({ behavior: 'smooth' });
+                }}
+              />
+            );
+          })}
+        </CardContent>
+      </Card>
 
-                      {/* Live progress during uploads */}
-                      {isUploading && job?.status === 'running' && (
-                        <div className="mt-1 text-[11px] text-muted-foreground/80">
-                          <span className="tabular-nums font-medium text-primary">
-                            Uploader {displayProcessed.toLocaleString('da-DK')} / {displayTotal.toLocaleString('da-DK')}
-                          </span>
-                          {isWaiting && (
-                            <>
-                              <span className="mx-2">•</span>
-                              <span>Venter på Shopify (genoptager automatisk)</span>
-                            </>
-                          )}
-                          {isEstimated && !isWaiting && (
-                            <>
-                              <span className="mx-2">•</span>
-                              <span>Opdaterer…</span>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {/* Speed shown only in header - removed duplicate here */}
-                    {/* Skipped count removed - no longer shown */}
-                    {errors > 0 && (
-                      <span className="flex items-center gap-1 text-destructive text-sm">
-                        <AlertCircle className="w-3 h-3" />
-                        {errors} fejl
-                      </span>
-                    )}
-                    {isUploading && (
-                      <span className="text-sm text-muted-foreground">
-                        <span className="text-green-600 font-medium">
-                          {processedActual.toLocaleString('da-DK')}
-                        </span>
-                        {' / '}
-                        <span>{total.toLocaleString('da-DK')}</span>
-                      </span>
-                    )}
-                    {!isUploading && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="bg-popover">
-                          {/* Upload single entity type */}
-                          {(() => {
-                            const entityLabels: Record<EntityType, string> = {
-                              pages: 'sider',
-                              categories: 'collections',
-                              products: 'produkter',
-                              customers: 'kunder',
-                              orders: 'ordrer',
-                            };
-                            const sequenceOrder: EntityType[] = ['pages', 'categories', 'products', 'customers', 'orders'];
-                            const currentIdx = sequenceOrder.indexOf(type);
-                            // Check if any predecessor entity still has pending items
-                            // BUT: if Shopify live count >= local total, consider it "done" even if local DB hasn't synced
-                            const predecessorBlocking = sequenceOrder.slice(0, currentIdx).find(
-                              predType => {
-                                if (statusCounts[predType].pending === 0) return false;
-                                // If Shopify already has at least as many as local total, predecessor is effectively done
-                                const localTotal = statusCounts[predType].pending + statusCounts[predType].uploaded + statusCounts[predType].failed;
-                                const liveCount = shopifyLiveCounts[predType];
-                                if (liveCount !== null && liveCount !== undefined && liveCount >= localTotal) return false;
-                                return true;
-                              }
-                            );
-                            const predecessorLabel = predecessorBlocking 
-                              ? ENTITY_CONFIG.find(e => e.type === predecessorBlocking)?.label 
-                              : null;
-                            const jobRunning = job?.status === 'running';
-                            const noPending = effectivePending === 0;
-
-                          return (
-                              <>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    if (predecessorBlocking) {
-                                      toast.error(`Kan ikke starte endnu`, {
-                                        description: `${predecessorLabel} skal uploades først – der er stadig ${statusCounts[predecessorBlocking].pending.toLocaleString('da-DK')} afventende.`,
-                                      });
-                                      return;
-                                    }
-                                    handleStartUpload(false, type);
-                                  }}
-                                  disabled={jobRunning || isStarting}
-                                >
-                                  <Play className="w-4 h-4 mr-2" />
-                                  {jobRunning 
-                                    ? `Upload kører allerede…` 
-                                    : `Upload ${entityLabels[type]}`}
-                                </DropdownMenuItem>
-                                {predecessorBlocking && (
-                                  <DropdownMenuItem
-                                    onClick={() => {
-                                      handleStartUploadInternal(false, type, true);
-                                    }}
-                                    disabled={jobRunning || isStarting || noPending}
-                                    className="text-amber-600"
-                                  >
-                                    <AlertTriangle className="w-4 h-4 mr-2" />
-                                    Tving start (ignorer rækkefølge)
-                                  </DropdownMenuItem>
-                                )}
-                              </>
-                            );
-                          })()}
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem 
-                            onClick={() => handleStartUpload(true, type)}
-                            disabled={effectivePending === 0 || isStarting}
-                          >
-                            <FlaskConical className="w-4 h-4 mr-2" />
-                            Test upload (3 stk)
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem 
-                            onClick={() => handleResetRequest(type, 'all')}
-                            disabled={totalFromDb === 0 && !dbTimedOut}
-                          >
-                            <RotateCcw className="w-4 h-4 mr-2" />
-                            Nulstil uploads
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => handleSync(type)}
-                            disabled={syncingEntity !== null}
-                          >
-                            {syncingEntity === type ? (
-                              <>
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                Synkroniserer…
-                              </>
-                            ) : (
-                              <>
-                                <Cloud className="w-4 h-4 mr-2" />
-                                Synkroniser med Shopify
-                              </>
-                            )}
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => handleReExtract(type)}
-                            disabled={reExtractingEntity !== null}
-                          >
-                            {reExtractingEntity === type ? (
-                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Genindlæser XML…</>
-                            ) : (
-                              <><RefreshCw className="w-4 h-4 mr-2" />Genindlæs fra XML</>
-                            )}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
-                  </div>
-                </div>
-                {(isUploading || job || totalFromDb > 0 || dbTimedOut) && (
-                  <MultiProgress 
-                    className="h-2"
-                    total={total}
-                    segments={[
-                      { 
-                        value: effectiveUploaded, 
-                        className: "bg-green-500",
-                        label: `${effectiveUploaded.toLocaleString('da-DK')} uploadet` 
-                      },
-                      { 
-                        value: effectiveDuplicate, 
-                        className: "bg-amber-400",
-                        label: `${effectiveDuplicate.toLocaleString('da-DK')} duplikater` 
-                      },
-                      { 
-                        value: skipped, 
-                        className: "bg-yellow-300",
-                        label: `${skipped} sprunget over (allerede i Shopify)` 
-                      },
-                      { 
-                        value: effectiveFailed, 
-                        className: "bg-destructive",
-                        label: `${effectiveFailed.toLocaleString('da-DK')} fejlet` 
-                      },
-                    ]}
-                  />
+      {/* Footer: sequence dots + action buttons */}
+      <div className="flex items-center justify-between">
+        {/* Sequence dots */}
+        <div className="flex items-center gap-2">
+          {sequenceOrder.map((type, i) => {
+            const counts = statusCounts[type];
+            const total = counts.pending + counts.uploaded + counts.failed + counts.duplicate;
+            const isDone = counts.pending === 0 && total > 0;
+            const isActive = jobs.some(j => j.entity_type === type && j.status === 'running');
+            return (
+              <div key={type} className="flex items-center gap-2">
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className={`w-3 h-3 rounded-full transition-colors ${
+                        isDone ? 'bg-green-500' : isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground/20'
+                      }`} />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{ENTITY_CONFIG[i].label}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                {i < sequenceOrder.length - 1 && (
+                  <div className="w-4 h-px bg-border" />
                 )}
               </div>
             );
           })}
+        </div>
 
-          {isUploading && (
-            <div className="pt-4 border-t space-y-3">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">
-                  Total: {fixedTotalUploaded.toLocaleString('da-DK')} / {fixedTotalItems.toLocaleString('da-DK')}
-                </span>
-                <div className="flex items-center gap-3">
-                  {totalSkipped > 0 && (
-                    <button 
-                      onClick={() => setShowSkippedProducts(true)}
-                      className="text-amber-600 hover:text-amber-700 hover:underline cursor-pointer"
-                    >
-                      {totalSkipped} sprunget over
-                    </button>
-                  )}
-                  {totalErrors > 0 && (
-                    <span className="text-destructive">{totalErrors} fejl</span>
-                  )}
-                </div>
-              </div>
-              
-            </div>
+        {/* Action buttons */}
+        <div className="flex items-center gap-3">
+          {!isUploading && !allCompleted && !isPreparing && (
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="outline" onClick={() => handleStartUpload(true)} disabled={isStarting}>
+                      <FlaskConical className="w-4 h-4 mr-2" />
+                      Test
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="font-medium mb-1">Test upload</p>
+                    <p className="text-sm text-muted-foreground">
+                      Uploader kun 3 af hver til Shopify for at teste
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Button onClick={() => handleStartUpload(false)} disabled={isStarting}>
+                {isStarting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                Start upload
+              </Button>
+            </>
           )}
 
-
-          {/* Summary when not uploading */}
-          {!isUploading && fixedTotalItems > 0 && (
-            <div className="pt-4 border-t">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">
-                  Total: {fixedTotalItems.toLocaleString('da-DK')} elementer
-                </span>
-                <div className="flex items-center gap-3">
-                  {fixedTotalUploaded > 0 && (
-                    <span className="text-green-600">{fixedTotalUploaded.toLocaleString('da-DK')} uploadet</span>
-                  )}
-                  {fixedTotalPending > 0 && (
-                    <span className="text-muted-foreground">{fixedTotalPending.toLocaleString('da-DK')} pending</span>
-                  )}
-                  {fixedTotalFailed > 0 && (
-                    <span className="text-destructive">{fixedTotalFailed.toLocaleString('da-DK')} fejlet</span>
-                  )}
-                </div>
-              </div>
-            </div>
+          {isPreparing && (
+            <Button disabled className="min-w-[200px]">
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Forbereder produkter...
+            </Button>
           )}
-        </CardContent>
-      </Card>
 
-      {/* Action Buttons */}
-      <div className="flex justify-end gap-3">
-        {/* Show Test + Start buttons when not uploading and not fully completed */}
-        {!isUploading && !allCompleted && !isPreparing && (
-          <>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="outline" onClick={() => handleStartUpload(true)} disabled={isStarting}>
-                    <FlaskConical className="w-4 h-4 mr-2" />
-                    Test
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  <p className="font-medium mb-1">Test upload</p>
-                  <p className="text-sm text-muted-foreground">
-                    Uploader kun 3 af hver kategori til Shopify for at teste at alt virker korrekt
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            <Button onClick={() => handleStartUpload(false)} disabled={isStarting}>
-              {isStarting ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4 mr-2" />
-              )}
-              Start upload
+          {hasFailed && !isUploading && !allCompleted && (
+            <Button onClick={handleRetry} variant="outline">
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Prøv igen
             </Button>
-          </>
-        )}
+          )}
 
-        {/* Show preparing spinner */}
-        {isPreparing && (
-          <Button disabled className="min-w-[200px]">
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            Forbereder produkter...
-          </Button>
-        )}
-
-        {/* Show retry button when there are failed items and not currently uploading */}
-        {hasFailed && !isUploading && !allCompleted && (
-          <Button onClick={handleRetry} variant="outline">
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Prøv igen
-          </Button>
-        )}
-
-        {/* Show pause/stop only while actively uploading and NOT completed */}
-        {isUploading && !allCompleted && (
-          <>
-            <Button variant="outline" onClick={handlePauseResume}>
-              {isPaused ? (
-                <>
-                  <Play className="w-4 h-4 mr-2" />
-                  Fortsæt
-                </>
-              ) : (
-                <>
-                  <Pause className="w-4 h-4 mr-2" />
-                  Pause
-                </>
-              )}
-            </Button>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      onClick={handleForceRestart}
-                      disabled={isForceRestarting}
-                    >
+          {isUploading && !allCompleted && (
+            <>
+              <Button variant="outline" onClick={handlePauseResume}>
+                {isPaused ? <><Play className="w-4 h-4 mr-2" />Fortsæt</> : <><Pause className="w-4 h-4 mr-2" />Pause</>}
+              </Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="outline" onClick={handleForceRestart} disabled={isForceRestarting}>
                       <RefreshCw className={`w-4 h-4 mr-2 ${isForceRestarting ? 'animate-spin' : ''}`} />
                       {isForceRestarting ? 'Genstarter…' : 'Genstart'}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  <p className="font-medium mb-1">Force genstart</p>
-                  <p className="text-sm text-muted-foreground">
-                    Nulstiller rate limit cooldown og genstarter upload hvis den er gået i stå
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            <Button variant="destructive" onClick={handleCancel}>
-              <CloudOff className="w-4 h-4 mr-2" />
-              Stop
-            </Button>
-          </>
-        )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="font-medium mb-1">Force genstart</p>
+                    <p className="text-sm text-muted-foreground">
+                      Nulstiller rate limit cooldown og genstarter upload
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Button variant="destructive" onClick={handleCancel}>
+                <CloudOff className="w-4 h-4 mr-2" />
+                Stop
+              </Button>
+            </>
+          )}
 
-        {/* When ALL entity types are 100% uploaded (no pending): show "Start igen" and "Videre" */}
-        {allCompleted && (
-          <>
-            <Button variant="outline" onClick={() => handleStartUpload(false)}>
-              <RotateCcw className="w-4 h-4 mr-2" />
-              Start igen
-            </Button>
-            <Button onClick={onNext} className="bg-green-600 hover:bg-green-700">
-              <ArrowRight className="w-4 h-4 mr-2" />
-              Videre
-            </Button>
-          </>
-        )}
+          {allCompleted && (
+            <>
+              <Button variant="outline" onClick={() => handleStartUpload(false)}>
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Start igen
+              </Button>
+              <Button onClick={onNext} className="bg-green-600 hover:bg-green-700">
+                <ArrowRight className="w-4 h-4 mr-2" />
+                Videre
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
+      {/* Dialogs — all preserved */}
+      <div data-error-report>
+        <UploadErrorReport 
+          projectId={project.id}
+          jobs={jobs.map(j => ({
+            id: j.id,
+            entity_type: j.entity_type,
+            skipped_count: j.skipped_count,
+            error_count: j.error_count,
+            error_details: (j.error_details || []).filter(e => e.externalId !== '__worker__'),
+          }))}
+          statusCounts={statusCounts}
+          onRetryFailed={handleRetryFailed}
+          isRetrying={retryingEntityType}
+          retryingIds={retryingIds}
+        />
+      </div>
 
-      {/* Skipped products section removed */}
-
-      {/* Error and Skipped Report Section */}
-      <UploadErrorReport 
-        projectId={project.id}
-        jobs={jobs.map(j => ({
-          id: j.id,
-          entity_type: j.entity_type,
-          skipped_count: j.skipped_count,
-          error_count: j.error_count,
-          error_details: (j.error_details || []).filter(e => e.externalId !== '__worker__'),
-        }))}
-        statusCounts={statusCounts}
-        onRetryFailed={handleRetryFailed}
-        isRetrying={retryingEntityType}
-        retryingIds={retryingIds}
-      />
-
-      {/* Skipped Products Dialog */}
       <SkippedProductsDialog
         open={showSkippedProducts}
         onOpenChange={setShowSkippedProducts}
@@ -2276,7 +1840,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         skippedCount={totalSkipped}
       />
 
-      {/* Rejected Products Dialog */}
       <RejectedProductsDialog
         open={showRejectedProducts}
         onOpenChange={setShowRejectedProducts}
@@ -2284,7 +1847,6 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         rejectedCount={prepareResult?.rejected || 0}
       />
 
-      {/* Duplicate Analysis Dialog */}
       <DuplicateAnalysisDialog
         open={showDuplicateAnalysis}
         onOpenChange={setShowDuplicateAnalysis}
@@ -2317,7 +1879,7 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Prepare Confirmation Dialog - Two-Phase Upload */}
+      {/* Prepare Confirmation Dialog */}
       <AlertDialog open={showPrepareConfirm} onOpenChange={(open) => !open && setShowPrepareConfirm(false)}>
         <AlertDialogContent className="max-w-md">
           <AlertDialogHeader>
@@ -2337,34 +1899,28 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
                         produkter oprettes i Shopify
                       </div>
                     </div>
-                    
-                    <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Varianter i alt:</span>
-                        <span className="font-medium text-foreground">{prepareResult.variants.toLocaleString('da-DK')}</span>
+                    <div className="grid grid-cols-3 gap-3 text-center text-sm">
+                      <div className="bg-muted rounded-lg p-3">
+                        <div className="font-semibold text-foreground">{prepareResult.totalRecords.toLocaleString('da-DK')}</div>
+                        <div className="text-muted-foreground text-xs">rækker i alt</div>
                       </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Gns. varianter pr. produkt:</span>
-                        <span className="font-medium text-foreground">
-                          {prepareResult.groups > 0 
-                            ? (prepareResult.variants / prepareResult.groups).toFixed(1).replace('.', ',')
-                            : '–'}
-                        </span>
+                      <div className="bg-muted rounded-lg p-3">
+                        <div className="font-semibold text-foreground">{prepareResult.variants.toLocaleString('da-DK')}</div>
+                        <div className="text-muted-foreground text-xs">varianter</div>
                       </div>
-                      {prepareResult.rejected > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowPrepareConfirm(false);
-                            setShowRejectedProducts(true);
-                          }}
-                          className="flex justify-between text-sm text-destructive pt-1 border-t border-border/50 w-full hover:underline cursor-pointer"
-                        >
-                          <span>Afvist (klik for detaljer):</span>
-                          <span className="font-medium">{prepareResult.rejected.toLocaleString('da-DK')}</span>
-                        </button>
-                      )}
+                      <div className="bg-muted rounded-lg p-3">
+                        <div className="font-semibold text-foreground">{prepareResult.rejected.toLocaleString('da-DK')}</div>
+                        <div className="text-muted-foreground text-xs">afvist</div>
+                      </div>
                     </div>
+                    {prepareResult.rejected > 0 && (
+                      <button
+                        onClick={() => { setShowPrepareConfirm(false); setShowRejectedProducts(true); }}
+                        className="text-sm text-amber-600 hover:text-amber-700 hover:underline cursor-pointer block mx-auto"
+                      >
+                        Se {prepareResult.rejected.toLocaleString('da-DK')} afviste produkter →
+                      </button>
+                    )}
                   </>
                 )}
               </div>

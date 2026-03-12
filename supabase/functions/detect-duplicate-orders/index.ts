@@ -54,11 +54,11 @@ Deno.serve(async (req) => {
     let page = 0;
 
     while (hasMore) {
-      const url = pageInfo
+      const url: string = pageInfo
         ? `${shopifyUrl}/orders.json?limit=250&status=any&page_info=${pageInfo}`
         : `${shopifyUrl}/orders.json?limit=250&status=any`;
 
-      const response = await fetch(url, {
+      const response: Response = await fetch(url, {
         headers: { 'X-Shopify-Access-Token': shopifyToken },
       });
 
@@ -81,9 +81,9 @@ Deno.serve(async (req) => {
       console.log(`[DETECT-DUPES] Page ${page}: fetched ${orders.length} orders (total: ${allOrders.length})`);
 
       // Check for next page
-      const linkHeader = response.headers.get('Link');
+      const linkHeader: string | null = response.headers.get('Link');
       if (linkHeader?.includes('rel="next"')) {
-        const match = linkHeader.match(/<[^>]*page_info=([^>&]+)[^>]*>;\s*rel="next"/);
+        const match: RegExpMatchArray | null = linkHeader.match(/<[^>]*page_info=([^>&]+)[^>]*>;\s*rel="next"/);
         pageInfo = match ? match[1] : null;
         if (!pageInfo) hasMore = false;
       } else {

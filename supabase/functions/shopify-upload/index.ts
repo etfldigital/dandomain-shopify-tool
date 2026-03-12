@@ -2146,7 +2146,7 @@ async function uploadCustomers(
   let rateLimitedEarly = false;
 
   const results = await Promise.all(
-    items.map(item => customerLimit(async () => {
+    items.map((item: any) => customerLimit(async () => {
       if (rateLimitedEarly || Date.now() - startTime > timeBudget) return null;
       const r = await processCustomer(item);
       if (r.result === 'rateLimited') rateLimitedEarly = true;
@@ -2594,7 +2594,7 @@ async function uploadOrders(
 
   // Process all orders in parallel with concurrency limit
   await Promise.all(
-    items.map(item => orderLimit(async () => {
+    items.map((item: any) => orderLimit(async () => {
       if (rateLimitedGlobal || Date.now() - startTime > timeBudget) return;
       await processOneOrder(item);
     }))

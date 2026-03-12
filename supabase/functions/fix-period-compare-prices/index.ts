@@ -173,7 +173,7 @@ Deno.serve(async (req) => {
           });
         } catch (e) {
           errors++;
-          results.push({ shopify_id: p.shopify_id, title: d.title, error: e.message });
+          results.push({ shopify_id: p.shopify_id, title: d.title, error: (e as Error).message });
         }
       }
     }
@@ -189,7 +189,7 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     console.error('Error:', error);
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: (error as Error).message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
