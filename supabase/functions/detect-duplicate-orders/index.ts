@@ -54,11 +54,11 @@ Deno.serve(async (req) => {
     let page = 0;
 
     while (hasMore) {
-      const url = pageInfo
+      const url: string = pageInfo
         ? `${shopifyUrl}/orders.json?limit=250&status=any&page_info=${pageInfo}`
         : `${shopifyUrl}/orders.json?limit=250&status=any`;
 
-      const response = await fetch(url, {
+      const response: Response = await fetch(url, {
         headers: { 'X-Shopify-Access-Token': shopifyToken },
       });
 
