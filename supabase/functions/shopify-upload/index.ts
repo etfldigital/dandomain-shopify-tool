@@ -2594,7 +2594,7 @@ async function uploadOrders(
 
   // Process all orders in parallel with concurrency limit
   await Promise.all(
-    items.map(item => orderLimit(async () => {
+    items.map((item: any) => orderLimit(async () => {
       if (rateLimitedGlobal || Date.now() - startTime > timeBudget) return;
       await processOneOrder(item);
     }))
