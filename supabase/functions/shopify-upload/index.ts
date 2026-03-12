@@ -2146,7 +2146,7 @@ async function uploadCustomers(
   let rateLimitedEarly = false;
 
   const results = await Promise.all(
-    items.map(item => customerLimit(async () => {
+    items.map((item: any) => customerLimit(async () => {
       if (rateLimitedEarly || Date.now() - startTime > timeBudget) return null;
       const r = await processCustomer(item);
       if (r.result === 'rateLimited') rateLimitedEarly = true;
