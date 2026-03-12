@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { SimplifiedEntityCard } from './SimplifiedEntityCard';
+import { EntityCard, EntityMenuItem } from './EntityCard';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
-import { MultiProgress } from '@/components/ui/multi-progress';
+import { Card, CardContent } from '@/components/ui/card';
 import { 
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
   Tooltip,
   TooltipContent,
   TooltipProvider,
