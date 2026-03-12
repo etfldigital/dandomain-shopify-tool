@@ -1648,12 +1648,12 @@ export function UploadStep({ project, onNext }: UploadStepProps) {
               ? Math.max(0, job!.total_count - job!.processed_count)
               : counts.pending;
             const effectiveUploaded = dbTimedOut 
-              ? job!.processed_count - (job?.error_count || 0)
+              ? Math.max(0, job!.processed_count - (job?.error_count || 0) - skipped)
               : counts.uploaded;
             const effectiveDuplicate = dbTimedOut ? 0 : counts.duplicate;
             const effectiveFailed = dbTimedOut ? (job?.error_count || 0) : counts.failed;
             const processedFromDb = effectiveUploaded + effectiveFailed + effectiveDuplicate;
-            const total = (dbTimedOut ? job!.total_count : totalFromDb) + skipped;
+            const total = dbTimedOut ? job!.total_count : (totalFromDb + skipped);
             const processedActual = processedFromDb + skipped;
             const jobProcessed = job && job.status === 'running' ? job.processed_count : 0;
             const processedLive = job && job.status === 'running' 
