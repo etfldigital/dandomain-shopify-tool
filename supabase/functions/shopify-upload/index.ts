@@ -695,54 +695,21 @@ async function uploadProducts(
 
   console.log(`[PRODUCTS] Batch complete: processed=${processed}, skipped=${skipped}, errors=${errors} (${PRODUCT_CONCURRENCY} concurrent)`);
 
-  const { count: remainingCount } = await supabase
-    .from('canonical_products')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .eq('status', 'pending');
+  // Use hasMore from item count vs batch size (avoid expensive count query)
+  const hasMore = entries.length >= batchSize || rateLimited;
 
   return {
     success: true,
     processed,
     errors,
     skipped,
-    hasMore: (remainingCount || 0) > 0,
+    hasMore,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
     ...(rateLimited ? { rateLimited: true, retryAfterSeconds } : {}),
   };
 }
 
-function groupProductsByTitle(products: any[]): Map<string, any[]> {
-  const groups: Map<string, any[]> = new Map();
-  
-  for (const product of products) {
-    const data = product.data || {};
-    const title = String(data._groupTitle || data.title || '').trim();
-    const originalTitle = String(data.title || '').trim();
-    const vendor = resolveVendorName(String(data.vendor || '').trim(), originalTitle, title);
 
-    const preKey = String(data._groupKey || '').trim();
-    if (preKey) {
-      const key = preKey.toLowerCase();
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(product);
-      continue;
-    }
-    
-    let transformedTitle = title;
-    if (vendor && title.toLowerCase().startsWith(vendor.toLowerCase())) {
-      transformedTitle = title.substring(vendor.length).replace(/^[\s\-–—:]+/, '').trim();
-    }
-    if (!transformedTitle) transformedTitle = title;
-    transformedTitle = transformedTitle.replace(/\s+/g, ' ').trim();
-    
-    const groupKey = transformedTitle.toLowerCase();
-    if (!groups.has(groupKey)) groups.set(groupKey, []);
-    groups.get(groupKey)!.push(product);
-  }
-  
-  return groups;
-}
 
 async function resolveGroupProductBarcode(
   supabase: any,
@@ -2015,18 +1982,12 @@ async function uploadCategories(
     }
   }
 
-  const { count: remainingCount } = await supabase
-    .from('canonical_categories')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .eq('status', 'pending')
-    .eq('exclude', false);
-
+  // Use hasMore from item count vs batch size (avoid expensive count query)
   return {
     success: true,
     processed,
     errors,
-    hasMore: (remainingCount || 0) > 0,
+    hasMore: items.length >= batchSize,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
@@ -2062,52 +2023,32 @@ async function uploadCustomers(
   let skipped = 0;
   const errorDetails: { externalId: string; message: string }[] = [];
 
-  const CUSTOMER_CONCURRENCY = 5;
+  // OPTIMIZED: 8 concurrent (was 5). Each customer now uses only 1 API call
+  // instead of 2 (removed search-before-create). Duplicates are detected via
+  // Shopify's 422 "email has already been taken" response.
+  const CUSTOMER_CONCURRENCY = 8;
   const customerLimit = createConcurrencyLimiter(CUSTOMER_CONCURRENCY);
+
+  // Batch DB update collector — avoid per-customer DB writes during processing
+  interface CustomerResult {
+    id: string;
+    externalId: string;
+    status: 'uploaded' | 'failed' | 'duplicate';
+    shopifyId?: string;
+    errorMessage?: string | null;
+  }
+  const batchCustomerResults: CustomerResult[] = [];
 
   const processCustomer = async (item: any): Promise<{ result: 'processed' | 'skipped' | 'error' | 'rateLimited'; errorDetail?: { externalId: string; message: string } }> => {
     const data = item.data || {};
     const email = data.email?.trim();
     
     if (!email) {
-      await supabase
-        .from('canonical_customers')
-        .update({ status: 'failed', error_message: 'Missing email', updated_at: new Date().toISOString() })
-        .eq('id', item.id);
+      batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'failed', errorMessage: 'Missing email' });
       return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Missing email' } };
     }
 
-    // Check if customer already exists in Shopify by email
-    const searchResult = await shopifyFetch(
-      `${shopifyUrl}/customers/search.json?query=email:${encodeURIComponent(email)}`,
-      { headers: { 'X-Shopify-Access-Token': token } }
-    );
-
-    if ('rateLimited' in searchResult) {
-      return { result: 'rateLimited' };
-    }
-
-    if (searchResult.response.ok) {
-      try {
-        const searchData = JSON.parse(searchResult.body);
-        if (searchData.customers && searchData.customers.length > 0) {
-          const existingCustomer = searchData.customers[0];
-          await supabase
-            .from('canonical_customers')
-            .update({ 
-              status: 'duplicate', 
-              shopify_id: String(existingCustomer.id), 
-              error_message: 'Skipped: duplicate email already in Shopify',
-              updated_at: new Date().toISOString() 
-            })
-            .eq('id', item.id);
-          // Return 'skipped' — NOT an error, NOT a processed success
-          return { result: 'skipped' };
-        }
-      } catch { /* proceed to create */ }
-    }
-
-    // Build customer payload
+    // Build customer payload — POST directly, skip search (saves 1 API call per customer)
     const customerPayload: any = {
       customer: {
         email: email,
@@ -2119,7 +2060,6 @@ async function uploadCustomers(
       },
     };
 
-    // Include phone only if present
     if (data.phone) {
       customerPayload.customer.phone = data.phone;
     }
@@ -2137,15 +2077,19 @@ async function uploadCustomers(
       return { result: 'rateLimited' };
     }
 
-    // If creation failed due to phone number issue, retry WITHOUT phone
-    if (!createResult.response.ok && data.phone) {
+    // Handle failure responses
+    if (!createResult.response.ok) {
       const errorBody = createResult.body.toLowerCase();
-      const isPhoneError = errorBody.includes('phone') || errorBody.includes('telefon');
-      
-      if (isPhoneError) {
-        console.log(`[CUSTOMERS] Retrying ${email} without phone (phone error: ${createResult.body.slice(0, 100)})`);
-        
-        // Remove phone and retry
+
+      // Duplicate email — Shopify returns 422 with "email has already been taken"
+      if (errorBody.includes('email') && (errorBody.includes('taken') || errorBody.includes('already') || errorBody.includes('duplicate'))) {
+        batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'duplicate', errorMessage: 'Skipped: email already exists in Shopify' });
+        return { result: 'skipped' };
+      }
+
+      // Phone number error — retry without phone (1 extra API call only when needed)
+      if (data.phone && (errorBody.includes('phone') || errorBody.includes('telefon'))) {
+        console.log(`[CUSTOMERS] Retrying ${email} without phone`);
         delete customerPayload.customer.phone;
         const retryResult = await shopifyFetch(
           `${shopifyUrl}/customers.json`,
@@ -2156,65 +2100,45 @@ async function uploadCustomers(
           }
         );
 
-        if ('rateLimited' in retryResult) {
-          return { result: 'rateLimited' };
-        }
+        if ('rateLimited' in retryResult) return { result: 'rateLimited' };
 
         if (retryResult.response.ok) {
           try {
             const responseData = JSON.parse(retryResult.body);
-            const customerId = String(responseData.customer.id);
-            await supabase
-              .from('canonical_customers')
-              .update({ status: 'uploaded', shopify_id: customerId, error_message: 'Uploaded without phone (invalid/conflicting)', updated_at: new Date().toISOString() })
-              .eq('id', item.id);
+            batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'uploaded', shopifyId: String(responseData.customer.id), errorMessage: 'Uploaded without phone (invalid/conflicting)' });
             return { result: 'processed' };
           } catch {
+            batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'failed', errorMessage: 'Parse error after phone retry' });
             return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Parse error after phone retry' } };
           }
         }
-        // If retry also failed, fall through to error handling below
+
+        // Phone retry also failed — check if it's now a duplicate
+        const retryBody = retryResult.body.toLowerCase();
+        if (retryBody.includes('email') && (retryBody.includes('taken') || retryBody.includes('already'))) {
+          batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'duplicate', errorMessage: 'Skipped: email already exists in Shopify' });
+          return { result: 'skipped' };
+        }
+
         const retryErrorMsg = `${retryResult.response.status}: ${retryResult.body.slice(0, 100)}`;
-        await supabase
-          .from('canonical_customers')
-          .update({ status: 'failed', error_message: retryErrorMsg, updated_at: new Date().toISOString() })
-          .eq('id', item.id);
+        batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'failed', errorMessage: retryErrorMsg });
         return { result: 'error', errorDetail: { externalId: item.external_id, message: retryErrorMsg } };
       }
-    }
 
-    if (!createResult.response.ok) {
-      // Check if it's a duplicate email error from Shopify (email already taken)
-      const errorBody = createResult.body.toLowerCase();
-      if (errorBody.includes('email') && (errorBody.includes('taken') || errorBody.includes('already') || errorBody.includes('duplicate'))) {
-        await supabase
-          .from('canonical_customers')
-          .update({ 
-            status: 'duplicate', 
-            error_message: 'Skipped: email already exists in Shopify (create rejected)',
-            updated_at: new Date().toISOString() 
-          })
-          .eq('id', item.id);
-        return { result: 'skipped' };
-      }
-
+      // Other error
       const errorMsg = `${createResult.response.status}: ${createResult.body.slice(0, 100)}`;
-      await supabase
-        .from('canonical_customers')
-        .update({ status: 'failed', error_message: errorMsg, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
+      batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'failed', errorMessage: errorMsg });
       return { result: 'error', errorDetail: { externalId: item.external_id, message: errorMsg } };
     }
 
+    // Success
     try {
       const responseData = JSON.parse(createResult.body);
       const customerId = String(responseData.customer.id);
-      await supabase
-        .from('canonical_customers')
-        .update({ status: 'uploaded', shopify_id: customerId, error_message: null, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
+      batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'uploaded', shopifyId: customerId });
       return { result: 'processed' };
     } catch {
+      batchCustomerResults.push({ id: item.id, externalId: item.external_id, status: 'failed', errorMessage: 'Failed to parse response' });
       return { result: 'error', errorDetail: { externalId: item.external_id, message: 'Failed to parse response' } };
     }
   };
@@ -2240,22 +2164,61 @@ async function uploadCustomers(
     }
   }
 
+  // ============================================================================
+  // BATCH DB UPDATES — write all status changes at once instead of per-customer
+  // ============================================================================
+  const now = new Date().toISOString();
+  const BATCH_CHUNK = 100;
+
+  const uploadedCustomers = batchCustomerResults.filter(r => r.status === 'uploaded');
+  const failedCustomers = batchCustomerResults.filter(r => r.status === 'failed');
+  const duplicateCustomers = batchCustomerResults.filter(r => r.status === 'duplicate');
+
+  // Uploaded: individual updates (shopify_id differs per customer)
+  for (let i = 0; i < uploadedCustomers.length; i += BATCH_CHUNK) {
+    const chunk = uploadedCustomers.slice(i, i + BATCH_CHUNK);
+    await Promise.all(chunk.map(r =>
+      supabase.from('canonical_customers').update({
+        status: 'uploaded', shopify_id: r.shopifyId, error_message: r.errorMessage || null, updated_at: now,
+      }).eq('id', r.id)
+    ));
+  }
+
+  // Failed: individual updates (error_message differs)
+  for (let i = 0; i < failedCustomers.length; i += BATCH_CHUNK) {
+    const chunk = failedCustomers.slice(i, i + BATCH_CHUNK);
+    await Promise.all(chunk.map(r =>
+      supabase.from('canonical_customers').update({
+        status: 'failed', error_message: r.errorMessage, updated_at: now,
+      }).eq('id', r.id)
+    ));
+  }
+
+  // Duplicates: bulk update (same error_message for all)
+  if (duplicateCustomers.length > 0) {
+    const dupIds = duplicateCustomers.map(r => r.id);
+    for (let i = 0; i < dupIds.length; i += BATCH_CHUNK) {
+      await supabase.from('canonical_customers').update({
+        status: 'duplicate', error_message: 'Skipped: email already exists in Shopify', updated_at: now,
+      }).in('id', dupIds.slice(i, i + BATCH_CHUNK));
+    }
+  }
+
+  console.log(`[CUSTOMERS] Batch DB update: ${uploadedCustomers.length} uploaded, ${failedCustomers.length} failed, ${duplicateCustomers.length} duplicate`);
+
   if (rateLimitedEarly) {
     return { success: true, processed, errors, skipped, hasMore: true, rateLimited: true, retryAfterSeconds: 5 };
   }
 
-  const { count: remainingCount } = await supabase
-    .from('canonical_customers')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .eq('status', 'pending');
+  // Use hasMore from item count vs batch size (avoid expensive count query)
+  const hasMore = items.length >= batchSize || rateLimitedEarly;
 
   return {
     success: true,
     processed,
     errors,
     skipped,
-    hasMore: (remainingCount || 0) > 0,
+    hasMore,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
@@ -2477,7 +2440,7 @@ async function uploadOrders(
   // ============================================================================
   // PARALLEL ORDER PROCESSING with concurrency limiter
   // ============================================================================
-  const ORDER_CONCURRENCY = 3; // 3 concurrent Shopify API calls
+  const ORDER_CONCURRENCY = 5; // 5 concurrent Shopify API calls (was 3)
   const ORDER_MAX_RETRIES = 3;
   const orderLimit = createConcurrencyLimiter(ORDER_CONCURRENCY);
 
@@ -2801,17 +2764,12 @@ async function uploadPages(
     }
   }
 
-  const { count: remainingCount } = await supabase
-    .from('canonical_pages')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .eq('status', 'pending');
-
+  // Use hasMore from item count vs batch size (avoid expensive count query)
   return {
     success: true,
     processed,
     errors,
-    hasMore: (remainingCount || 0) > 0,
+    hasMore: items.length >= batchSize,
     errorDetails: errorDetails.length > 0 ? errorDetails : undefined,
   };
 }
