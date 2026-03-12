@@ -173,7 +173,7 @@ Deno.serve(async (req) => {
           });
         } catch (e) {
           errors++;
-          results.push({ shopify_id: p.shopify_id, title: d.title, error: e.message });
+          results.push({ shopify_id: p.shopify_id, title: d.title, error: (e as Error).message });
         }
       }
     }
