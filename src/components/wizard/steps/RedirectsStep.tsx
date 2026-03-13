@@ -1100,10 +1100,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={async () => {
-                // Combined flow: fetch sitemaps then match
                 if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl)) {
+                  autoMatchAfterFetchRef.current = true;
                   await fetchSitemaps();
-                  // After fetch, generateRedirects will run via the effect below
                 } else {
                   await generateRedirects();
                 }
