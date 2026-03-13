@@ -69,24 +69,24 @@ export function ShopifyDestinationSearch({
     try {
       const allEntities: ShopifyEntity[] = [];
 
-      // Helper to fetch all rows with pagination (default limit is 1000)
-      const fetchAll = async <T,>(
-        table: string,
+      const fetchAllRows = async (
+        table: 'canonical_products' | 'canonical_categories' | 'canonical_pages',
         select: string,
-        filters: Record<string, string>
-      ): Promise<T[]> => {
+        projectIdVal: string,
+      ) => {
         const PAGE_SIZE = 1000;
         let offset = 0;
-        const allRows: T[] = [];
+        const allRows: any[] = [];
         while (true) {
-          let query = supabase.from(table).select(select) as any;
-          for (const [key, value] of Object.entries(filters)) {
-            query = query.eq(key, value);
-          }
-          const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+          const { data, error } = await supabase
+            .from(table)
+            .select(select)
+            .eq('project_id', projectIdVal)
+            .eq('status', 'uploaded')
+            .range(offset, offset + PAGE_SIZE - 1);
           if (error) throw error;
           if (!data || data.length === 0) break;
-          allRows.push(...(data as T[]));
+          allRows.push(...data);
           if (data.length < PAGE_SIZE) break;
           offset += PAGE_SIZE;
         }
@@ -94,10 +94,7 @@ export function ShopifyDestinationSearch({
       };
 
       // Products
-      const products = await fetchAll<{ id: string; data: unknown; shopify_id: string | null }>(
-        'canonical_products', 'id, data, shopify_id',
-        { project_id: projectId, status: 'uploaded' }
-      );
+      const products = await fetchAllRows('canonical_products', 'id, data, shopify_id', projectId);
 
       for (const product of products) {
         const data = product.data as Record<string, unknown>;
