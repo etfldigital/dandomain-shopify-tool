@@ -326,7 +326,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dandomanUrls, isFetchingSitemaps]);
 
-
+  const loadRedirects = async () => {
     setIsLoading(true);
     try {
       const allRedirects: ProjectRedirect[] = [];
