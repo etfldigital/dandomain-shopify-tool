@@ -1151,23 +1151,64 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   )}
 
                                   {/* Product card display for matched destination */}
-                                  {redirect.new_path && redirect.new_path !== '/' && (
-                                    <div className="flex items-center gap-2 p-1.5 rounded-md bg-muted/30 border border-border/40">
-                                      <div className="w-8 h-8 rounded border border-border/60 bg-background flex items-center justify-center shrink-0 overflow-hidden">
-                                        {redirect.matchedImageUrl ? (
-                                          <img src={redirect.matchedImageUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
-                                        ) : (
-                                          getTypeIcon(redirect.old_type)
+                                  {redirect.new_path && redirect.new_path !== '/' && (() => {
+                                    const shopifyBaseUrl = project.shopify_store_domain
+                                      ? `https://${project.shopify_store_domain.replace(/^https?:\/\//, '').replace(/\/$/, '')}`
+                                      : null;
+                                    const fullNewUrl = shopifyBaseUrl ? `${shopifyBaseUrl}${redirect.new_path}` : null;
+
+                                    return (
+                                      <div className="flex items-center gap-2 p-1.5 rounded-md bg-muted/30 border border-border/40 group/card">
+                                        <div className="w-10 h-10 rounded border border-border/60 bg-background flex items-center justify-center shrink-0 overflow-hidden">
+                                          {redirect.matchedImageUrl ? (
+                                            <img 
+                                              src={redirect.matchedImageUrl} 
+                                              alt={redirect.matchedTitle || ''} 
+                                              className="w-full h-full object-cover" 
+                                              loading="lazy"
+                                              onError={(e) => {
+                                                // Hide broken image, show icon fallback
+                                                const target = e.target as HTMLImageElement;
+                                                target.style.display = 'none';
+                                                const parent = target.parentElement;
+                                                if (parent) {
+                                                  parent.innerHTML = '';
+                                                  parent.classList.add('flex', 'items-center', 'justify-center');
+                                                  const span = document.createElement('span');
+                                                  span.className = 'text-muted-foreground text-xs';
+                                                  span.textContent = redirect.old_type === 'product' ? '📦' : redirect.old_type === 'category' ? '📁' : '📄';
+                                                  parent.appendChild(span);
+                                                }
+                                              }}
+                                            />
+                                          ) : (
+                                            <span className="text-muted-foreground">
+                                              {getTypeIcon(redirect.old_type)}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          {redirect.matchedTitle && (
+                                            <div className="text-xs font-medium truncate">{redirect.matchedTitle}</div>
+                                          )}
+                                          <div className="flex items-center gap-1">
+                                            <span className="text-[10px] text-muted-foreground font-mono truncate">{redirect.new_path}</span>
+                                          </div>
+                                        </div>
+                                        {fullNewUrl && (
+                                          <a
+                                            href={fullNewUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="h-8 w-8 flex items-center justify-center shrink-0 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                                            title={`Åbn ${redirect.new_path} i Shopify`}
+                                          >
+                                            <ExternalLink className="w-4 h-4" />
+                                          </a>
                                         )}
                                       </div>
-                                      <div className="flex-1 min-w-0">
-                                        {redirect.matchedTitle && (
-                                          <div className="text-xs font-medium truncate">{redirect.matchedTitle}</div>
-                                        )}
-                                        <div className="text-[10px] text-muted-foreground font-mono truncate">{redirect.new_path}</div>
-                                      </div>
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
 
                                   {/* Search to change destination — type-filtered, no free text */}
                                   {redirect.status !== 'created' && (
