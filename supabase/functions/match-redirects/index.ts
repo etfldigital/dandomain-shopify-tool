@@ -17,7 +17,7 @@ interface MatchedRedirect {
   entity_id: string;
   new_path: string;
   confidence_score: number;
-  matched_by: 'exact' | 'sku' | 'title' | 'ai';
+  matched_by: 'exact' | 'external_id' | 'sku' | 'title' | 'ai';
   ai_suggestions?: Array<{
     entity_id: string;
     new_path: string;
