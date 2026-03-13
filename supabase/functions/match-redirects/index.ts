@@ -634,6 +634,7 @@ Deno.serve(async (req) => {
         total: oldPaths.length,
         matchedByStrategy: {
           exact: matchedRedirects.filter(r => r.matched_by === 'exact').length,
+          external_id: matchedRedirects.filter(r => r.matched_by === 'external_id').length,
           sku: matchedRedirects.filter(r => r.matched_by === 'sku').length,
           title: matchedRedirects.filter(r => r.matched_by === 'title').length,
           ai: matchedRedirects.filter(r => r.matched_by === 'ai').length,
