@@ -1008,7 +1008,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         </CardHeader>
         <CardContent className="space-y-6">
           {/* Sitemap inputs */}
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="product-sitemap">Produkt-sitemap URL</Label>
               <Input
@@ -1025,6 +1025,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                 placeholder="https://din-shop.dk/shop/GoogleSitemapCategories.asp?LangId=26"
                 value={categorySitemapUrl}
                 onChange={(e) => setCategorySitemapUrl(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="page-sitemap">Side-sitemap URL</Label>
+              <Input
+                id="page-sitemap"
+                placeholder="https://din-shop.dk/sitemap-pages.xml"
+                value={pageSitemapUrl}
+                onChange={(e) => setPageSitemapUrl(e.target.value)}
               />
             </div>
           </div>
