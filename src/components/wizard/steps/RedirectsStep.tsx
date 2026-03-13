@@ -312,13 +312,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         JSON.stringify({
           productSitemapUrl,
           categorySitemapUrl,
+          pageSitemapUrl,
           dandomainUrls: dandomanUrls,
         })
       );
     } catch (e) {
       console.warn('Could not persist Redirects step inputs to storage', e);
     }
-  }, [persistKey, productSitemapUrl, categorySitemapUrl, dandomanUrls]);
+  }, [persistKey, productSitemapUrl, categorySitemapUrl, pageSitemapUrl, dandomanUrls]);
 
   // Auto-match after sitemap fetch (combined flow)
   useEffect(() => {
