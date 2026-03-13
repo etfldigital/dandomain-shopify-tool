@@ -1140,7 +1140,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                 onClick={() => {
                   const tabRedirects = activeTab === 'all'
                     ? redirects.filter(r => r.status !== 'created' && r.status !== 'failed')
-                    : redirects.filter(r => r.status === activeTab && r.status !== 'created' && r.status !== 'failed');
+                    : redirects.filter(r => r.status === (activeTab as string) && r.status !== 'created' && r.status !== 'failed');
                   const ids = new Set(tabRedirects.map(r => r.id));
                   setRedirects(prev => prev.map(r => ids.has(r.id) ? { ...r, selected: true, status: r.status === 'needs_review' ? 'auto_approved' : r.status } : r));
                   toast({ title: 'Godkendt', description: `${redirects.filter(r => r.status === 'needs_review').length} redirects godkendt` });
