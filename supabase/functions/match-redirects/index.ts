@@ -258,6 +258,122 @@ Deno.serve(async (req) => {
 
     console.log(`Matching ${oldPaths.length} URLs for project ${projectId} (useAi=${shouldUseAi})`);
 
+    // ── Handle backfill: fetch real Shopify handles for categories missing them ──
+    {
+      const { data: missingHandles } = await supabase
+        .from('canonical_categories')
+        .select('id, shopify_collection_id')
+        .eq('project_id', projectId)
+        .not('shopify_collection_id', 'is', null)
+        .is('shopify_handle', null);
+
+      if (missingHandles && missingHandles.length > 0) {
+        console.log(`[BACKFILL] ${missingHandles.length} categories missing shopify_handle, fetching from Shopify...`);
+
+        // Get project credentials
+        const { data: project } = await supabase
+          .from('projects')
+          .select('shopify_store_domain, shopify_access_token_encrypted')
+          .eq('id', projectId)
+          .single();
+
+        if (project?.shopify_store_domain && project?.shopify_access_token_encrypted) {
+          const domain = project.shopify_store_domain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+          const token = project.shopify_access_token_encrypted;
+
+          // Fetch all smart collections from Shopify (paginated)
+          const collectionMap = new Map<string, string>(); // collection_id → handle
+          let pageInfo: string | null = null;
+          let hasMore = true;
+
+          while (hasMore) {
+            const url = pageInfo
+              ? `https://${domain}/admin/api/2025-01/smart_collections.json?limit=250&page_info=${pageInfo}`
+              : `https://${domain}/admin/api/2025-01/smart_collections.json?limit=250`;
+
+            try {
+              const resp = await fetch(url, {
+                headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
+              });
+
+              if (!resp.ok) {
+                console.error(`[BACKFILL] Shopify API error: ${resp.status}`);
+                break;
+              }
+
+              const data = await resp.json();
+              for (const col of data.smart_collections || []) {
+                collectionMap.set(String(col.id), String(col.handle || ''));
+              }
+
+              // Check Link header for pagination
+              const linkHeader = resp.headers.get('link') || '';
+              const nextMatch = linkHeader.match(/<[^>]*page_info=([^>&]+)[^>]*>;\s*rel="next"/);
+              if (nextMatch) {
+                pageInfo = nextMatch[1];
+              } else {
+                hasMore = false;
+              }
+            } catch (err) {
+              console.error(`[BACKFILL] Fetch error:`, err);
+              hasMore = false;
+            }
+          }
+
+          // Also fetch custom collections
+          pageInfo = null;
+          hasMore = true;
+          while (hasMore) {
+            const url = pageInfo
+              ? `https://${domain}/admin/api/2025-01/custom_collections.json?limit=250&page_info=${pageInfo}`
+              : `https://${domain}/admin/api/2025-01/custom_collections.json?limit=250`;
+
+            try {
+              const resp = await fetch(url, {
+                headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
+              });
+
+              if (!resp.ok) break;
+
+              const data = await resp.json();
+              for (const col of data.custom_collections || []) {
+                collectionMap.set(String(col.id), String(col.handle || ''));
+              }
+
+              const linkHeader = resp.headers.get('link') || '';
+              const nextMatch = linkHeader.match(/<[^>]*page_info=([^>&]+)[^>]*>;\s*rel="next"/);
+              if (nextMatch) {
+                pageInfo = nextMatch[1];
+              } else {
+                hasMore = false;
+              }
+            } catch (err) {
+              console.error(`[BACKFILL] Custom collections fetch error:`, err);
+              hasMore = false;
+            }
+          }
+
+          console.log(`[BACKFILL] Fetched ${collectionMap.size} collections from Shopify`);
+
+          // Update categories with their real handles
+          let backfilled = 0;
+          for (const cat of missingHandles) {
+            const handle = collectionMap.get(cat.shopify_collection_id!);
+            if (handle) {
+              await supabase
+                .from('canonical_categories')
+                .update({ shopify_handle: handle, updated_at: new Date().toISOString() })
+                .eq('id', cat.id);
+              backfilled++;
+            }
+          }
+          console.log(`[BACKFILL] Updated ${backfilled}/${missingHandles.length} category handles`);
+        } else {
+          console.warn(`[BACKFILL] No Shopify credentials found for project ${projectId}`);
+        }
+      }
+    }
+
     // Fetch ALL entities (not just uploaded) — we need to match URLs against future Shopify paths too
     const entities: UploadedEntity[] = [];
 
