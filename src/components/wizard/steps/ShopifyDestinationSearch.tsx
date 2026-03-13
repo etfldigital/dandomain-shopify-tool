@@ -135,10 +135,7 @@ export function ShopifyDestinationSearch({
       }
 
       // Pages
-      const pages = await fetchAll<{ id: string; data: unknown; shopify_id: string | null }>(
-        'canonical_pages', 'id, data, shopify_id',
-        { project_id: projectId, status: 'uploaded' }
-      );
+      const pages = await fetchAllRows('canonical_pages', 'id, data, shopify_id', projectId);
 
       for (const pg of pages) {
         const data = pg.data as Record<string, unknown>;
