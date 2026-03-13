@@ -491,7 +491,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       
       toast({
         title: 'Sitemaps hentet',
-        description: `Fandt ${data.stats.products} produkter, ${data.stats.categories} kategorier, ${data.stats.unknown} ukendte`,
+        description: `Fandt ${data.stats.products} produkter, ${data.stats.categories} kategorier, ${data.stats.pages || 0} sider, ${data.stats.unknown} ukendte`,
       });
     } catch (err) {
       console.error('Error fetching sitemaps:', err);
