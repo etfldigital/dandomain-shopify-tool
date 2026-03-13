@@ -855,6 +855,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       setRedirects([]);
       setProductSitemapUrl('');
       setCategorySitemapUrl('');
+      setPageSitemapUrl('');
       setDandomainUrls([]);
       
       // Clear localStorage
