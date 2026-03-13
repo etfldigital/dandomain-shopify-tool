@@ -82,10 +82,17 @@ function normalizeForComparison(text: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Extract potential product name from URL slug (removes ID suffix)
+// Extract potential name from URL slug (removes ID suffix for both products and categories)
 function extractProductNameFromSlug(slug: string): string {
   const withoutExtension = slug.replace(/\.html$/, '');
-  const withoutId = withoutExtension.replace(/-\d+[pc]?\d*$/, '').replace(/-[A-Z0-9]+p$/, '');
+  // Remove product ID suffix: -32129p, -0641p, -10001-0DA-39-40p
+  // Remove category ID suffix: -100c1, -42c1, -174s1
+  // Remove section suffix: -4s1, -6s1, -7s1
+  const withoutId = withoutExtension
+    .replace(/-\d+[pP]$/, '')           // product: -32129p
+    .replace(/-[\w-]+-[\w-]+[pP]$/, '') // product with complex SKU: -10001-0DA-39-40p  
+    .replace(/-\d+[cCsS]\d*$/, '')      // category/section: -100c1, -4s1
+    .replace(/-[A-Z0-9]+p$/, '');       // fallback
   return withoutId;
 }
 
