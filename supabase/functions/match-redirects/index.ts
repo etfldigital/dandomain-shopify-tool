@@ -98,7 +98,7 @@ function extractProductNameFromSlug(slug: string): string {
 
 // Generate Shopify handle from title
 function generateShopifyHandle(title: string): string {
-  return title
+  const handle = title
     .toLowerCase()
     .trim()
     .replace(/[æ]/g, 'ae')
@@ -109,6 +109,13 @@ function generateShopifyHandle(title: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .substring(0, 255);
+
+  // Safety check — handle must NEVER contain spaces
+  if (handle.includes(' ')) {
+    console.error(`[REDIRECT] generateShopifyHandle produced handle with spaces: "${handle}" from title "${title}"`);
+    return handle.replace(/\s+/g, '-');
+  }
+  return handle;
 }
 
 // Compute Dice coefficient between two strings
