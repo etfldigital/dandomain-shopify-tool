@@ -1,17 +1,16 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
-import { 
-  Search, 
-  Package, 
-  FolderOpen, 
-  FileText, 
+import {
+  Search,
+  Package,
+  FolderOpen,
+  FileText,
   Check,
   ExternalLink,
-  ImageOff
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { OldUrlType } from '@/lib/redirect-matcher';
@@ -36,11 +35,42 @@ export interface ShopifyEntity {
   imageUrl?: string | null;
 }
 
+interface LiveSearchResponse {
+  success?: boolean;
+  entities?: ShopifyEntity[];
+  error?: string;
+}
+
 function generateShopifyHandle(title: string): string {
   return title.toLowerCase().trim()
     .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
     .replace(/\s+/g, '-').replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-')
     .replace(/^-|-$/g, '').substring(0, 255);
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/æ/g, 'ae')
+    .replace(/ø/g, 'oe')
+    .replace(/å/g, 'aa')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function matchesEntityQuery(entity: ShopifyEntity, query: string): boolean {
+  const normalizedQuery = normalizeForSearch(query);
+  if (!normalizedQuery) return true;
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+
+  const title = normalizeForSearch(entity.title);
+  const handle = normalizeForSearch(entity.handle.replace(/-/g, ' '));
+
+  return tokens.every((token) => title.includes(token) || handle.includes(token));
 }
 
 export function ShopifyDestinationSearch({
@@ -55,8 +85,9 @@ export function ShopifyDestinationSearch({
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [entities, setEntities] = useState<ShopifyEntity[]>([]);
+  const [liveEntities, setLiveEntities] = useState<ShopifyEntity[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [isLiveSearching, setIsLiveSearching] = useState(false);
 
   useEffect(() => {
     if (open && entities.length === 0) {
@@ -103,7 +134,7 @@ export function ShopifyDestinationSearch({
         const handle = storedHandle || generateShopifyHandle(title);
         const images = (data?.images as string[]) || [];
         const imageUrl = images[0] || null;
-        
+
         if (title && product.shopify_id) {
           allEntities.push({
             id: product.id,
@@ -121,7 +152,7 @@ export function ShopifyDestinationSearch({
 
       for (const category of categories) {
         const handle = category.shopify_handle || generateShopifyHandle(category.shopify_tag || category.name);
-        
+
         if (category.name && category.shopify_collection_id) {
           allEntities.push({
             id: category.id,
@@ -143,7 +174,7 @@ export function ShopifyDestinationSearch({
         const slug = data?.slug as string;
         const storedHandle = data?.shopify_handle as string | null;
         const handle = storedHandle || slug || generateShopifyHandle(title);
-        
+
         if (title && pg.shopify_id) {
           allEntities.push({
             id: pg.id,
@@ -175,25 +206,80 @@ export function ShopifyDestinationSearch({
     }
   }, [filterByOldType]);
 
-  const filteredEntities = useMemo(() => {
+  const localFilteredEntities = useMemo(() => {
     let result = entities;
 
-    // Type filter: strict — only show compatible type
     if (compatibleType) {
-      result = result.filter(e => e.type === compatibleType);
+      result = result.filter((e) => e.type === compatibleType);
     }
 
-    // Search filter
     if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(
-        e => e.title.toLowerCase().includes(query) || 
-             e.handle.toLowerCase().includes(query)
-      );
+      result = result.filter((e) => matchesEntityQuery(e, searchQuery));
     }
 
     return result.slice(0, 50);
   }, [entities, compatibleType, searchQuery]);
+
+  // Live Shopify fallback search for stores where local uploaded entities are incomplete
+  useEffect(() => {
+    if (!open) return;
+
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      setLiveEntities([]);
+      setIsLiveSearching(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      setIsLiveSearching(true);
+      try {
+        const { data, error } = await supabase.functions.invoke('search-shopify-entities', {
+          body: {
+            projectId,
+            query,
+            type: compatibleType ?? undefined,
+            limit: 30,
+          },
+        });
+
+        if (error) throw error;
+
+        const response = (data || {}) as LiveSearchResponse;
+        const candidates = Array.isArray(response.entities) ? response.entities : [];
+        const safeEntities = candidates
+          .filter((e) => !compatibleType || e.type === compatibleType)
+          .filter((e) => matchesEntityQuery(e, query));
+
+        setLiveEntities(safeEntities);
+      } catch (err) {
+        console.error('Live Shopify search failed:', err);
+        setLiveEntities([]);
+      } finally {
+        setIsLiveSearching(false);
+      }
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [open, searchQuery, projectId, compatibleType]);
+
+  const filteredEntities = useMemo(() => {
+    if (liveEntities.length === 0) return localFilteredEntities;
+
+    const merged: ShopifyEntity[] = [...localFilteredEntities];
+    const existingByPath = new Set(merged.map((e) => e.path));
+
+    for (const entity of liveEntities) {
+      if (!existingByPath.has(entity.path)) {
+        merged.push(entity);
+        existingByPath.add(entity.path);
+      }
+    }
+
+    return merged.slice(0, 50);
+  }, [localFilteredEntities, liveEntities]);
 
   const handleSelect = (entity: ShopifyEntity) => {
     onSelect(entity.path, entity);
@@ -225,10 +311,10 @@ export function ShopifyDestinationSearch({
     <PopoverTrigger asChild>
       <button
         className={cn(
-          "flex items-center gap-2 w-full h-8 px-3 rounded-md border border-input bg-background text-sm",
-          "hover:bg-accent hover:text-accent-foreground transition-colors",
-          disabled && "opacity-50 cursor-not-allowed",
-          !currentValue && "text-muted-foreground"
+          'flex items-center gap-2 w-full h-8 px-3 rounded-md border border-input bg-background text-sm',
+          'hover:bg-accent hover:text-accent-foreground transition-colors',
+          disabled && 'opacity-50 cursor-not-allowed',
+          !currentValue && 'text-muted-foreground'
         )}
         disabled={disabled}
       >
@@ -244,8 +330,8 @@ export function ShopifyDestinationSearch({
     <PopoverTrigger asChild>
       <button
         className={cn(
-          "h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md hover:bg-accent transition-colors",
-          disabled && "opacity-50 cursor-not-allowed"
+          'h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md hover:bg-accent transition-colors',
+          disabled && 'opacity-50 cursor-not-allowed'
         )}
         disabled={disabled}
       >
@@ -257,8 +343,8 @@ export function ShopifyDestinationSearch({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {triggerElement}
-      <PopoverContent 
-        className="w-[420px] p-0" 
+      <PopoverContent
+        className="w-[420px] p-0"
         align="start"
         side="bottom"
         sideOffset={4}
@@ -267,7 +353,6 @@ export function ShopifyDestinationSearch({
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              ref={inputRef}
               placeholder={`Søg ${typeLabel}...`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -281,6 +366,11 @@ export function ShopifyDestinationSearch({
               Viser kun {typeLabel} (type-sikker filtrering)
             </div>
           )}
+          {searchQuery.trim().length >= 2 && (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              Søger både i uploadede data og live i Shopify
+            </div>
+          )}
         </div>
 
         <ScrollArea className="h-[340px]">
@@ -290,31 +380,33 @@ export function ShopifyDestinationSearch({
             </div>
           ) : filteredEntities.length === 0 ? (
             <div className="p-4 text-center text-sm text-muted-foreground">
-              {searchQuery ? 'Ingen resultater' : `Ingen uploadede ${typeLabel}`}
+              {isLiveSearching
+                ? 'Søger i Shopify...'
+                : searchQuery
+                  ? 'Ingen resultater'
+                  : `Ingen uploadede ${typeLabel}`}
             </div>
           ) : (
             <div className="p-1">
               {filteredEntities.map((entity) => (
                 <button
-                  key={entity.id}
+                  key={`${entity.type}-${entity.id}-${entity.path}`}
                   onClick={() => handleSelect(entity)}
                   className={cn(
-                    "w-full text-left px-3 py-2.5 rounded-md hover:bg-muted transition-colors",
-                    "flex items-center gap-3 group",
-                    currentValue === entity.path && "bg-muted"
+                    'w-full text-left px-3 py-2.5 rounded-md hover:bg-muted transition-colors',
+                    'flex items-center gap-3 group',
+                    currentValue === entity.path && 'bg-muted'
                   )}
                 >
-                  {/* Product image thumbnail */}
                   <div className="w-10 h-10 rounded-md border border-border/60 bg-muted/30 flex items-center justify-center shrink-0 overflow-hidden">
                     {entity.imageUrl ? (
-                      <img 
-                        src={entity.imageUrl} 
+                      <img
+                        src={entity.imageUrl}
                         alt={entity.title}
                         className="w-full h-full object-cover"
                         loading="lazy"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = 'none';
-                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
                         }}
                       />
                     ) : (
@@ -348,8 +440,8 @@ export function ShopifyDestinationSearch({
                   </div>
 
                   <Check className={cn(
-                    "w-4 h-4 shrink-0",
-                    currentValue === entity.path ? "text-primary" : "text-transparent"
+                    'w-4 h-4 shrink-0',
+                    currentValue === entity.path ? 'text-primary' : 'text-transparent'
                   )} />
                 </button>
               ))}
