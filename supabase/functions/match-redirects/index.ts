@@ -451,11 +451,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Pages — include all
+    // Pages — only uploaded with a shopify_id
     const { data: pages } = await supabase
       .from('canonical_pages')
       .select('id, external_id, data, shopify_id')
-      .eq('project_id', projectId);
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null);
 
     for (const page of pages || []) {
       const data = page.data as Record<string, unknown>;
