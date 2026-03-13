@@ -374,15 +374,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch ALL entities (not just uploaded) — we need to match URLs against future Shopify paths too
+    // Only include entities that actually exist in Shopify (uploaded with valid IDs)
     const entities: UploadedEntity[] = [];
 
-    // Products — include all statuses except 'duplicate'
+    // Products — only uploaded with a shopify_id
     const { data: products } = await supabase
       .from('canonical_products')
       .select('id, external_id, data, shopify_id')
       .eq('project_id', projectId)
-      .neq('status', 'duplicate');
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null);
 
     for (const product of products || []) {
       const data = product.data as Record<string, unknown>;
