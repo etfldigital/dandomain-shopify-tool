@@ -1,60 +1,44 @@
 
 
-## Investigation Results
+## Plan: Fix Redirect Destination URLs and Category Matching
 
-The "i Shopify" refresh button is **NOT broken by CORS**. The full flow works correctly:
+### Problem
+Collections get wrong Shopify URLs (e.g., `/collections/Dear Denier` with spaces) because `shopify_tag` is used as the handle instead of the actual Shopify-generated handle. Category source paths also don't match DanDomain sitemap URL formats.
 
-1. Browser calls backend Edge Function `shopify-products-count` via `supabase.functions.invoke()` -- confirmed in console logs and network requests
-2. Edge Function calls Shopify REST API at `https://alexandrasdk.myshopify.com/admin/api/2025-01/products/count.json?status=any`
-3. Shopify returns `{"count":0}` -- HTTP 200, not an error
+### Changes
 
-This is confirmed by edge function logs showing dozens of calls all returning `{"count":0}`. Meanwhile, the same function correctly returns customers (16,215), orders (4,539), categories (405), and pages (1).
-
-### Root Cause
-
-The Shopify REST Products API (`/products/count.json`) was deprecated starting in API version `2024-10`. In version `2025-01`, this endpoint returns 0 even though products exist. The upload works because `POST /products.json` still functions for creation, but the count endpoint is broken.
-
-### Plan
-
-**1. Fix `shopify-products-count` Edge Function** -- use GraphQL for products count instead of the deprecated REST endpoint
-
-Replace the products case in `fetchCountForEntity` with a GraphQL query:
-```graphql
-{ productsCount { count } }
+**1. Database migration**
+Add `shopify_handle` column to `canonical_categories`:
+```sql
+ALTER TABLE canonical_categories ADD COLUMN IF NOT EXISTS shopify_handle text;
 ```
 
-This hits `POST /admin/api/2025-01/graphql.json` which is the supported way to count products in newer API versions. All other entity types (customers, orders, categories, pages) keep their current REST endpoints since those still work.
+**2. `supabase/functions/shopify-upload/index.ts` — Store Shopify handle for collections**
+- Change `existingCollections` map from `Map<string, string>` to `Map<string, { id: string; handle: string }>`, storing both `col.id` and `col.handle` from the Shopify response
+- When matching an existing collection (line 1870-1876): save `shopify_handle` alongside `shopify_collection_id`
+- When creating a new collection (line 1912-1918): extract `responseData.smart_collection.handle` and save it to `shopify_handle`
 
-**2. No frontend changes needed**
+**3. `supabase/functions/match-redirects/index.ts` — Use real handles + sitemap paths**
+- Update categories SELECT query (line 288) to include `shopify_handle`
+- Change category entity building (lines 291-302):
+  - Use `category.shopify_handle || generateShopifyHandle(category.shopify_tag || category.name)` for handle
+  - Build sitemap-style source_path: `/shop/${slug}-${extId}c1.html` when slug and external_id are available
+  - Also register clean slug path (`/shop/${slug}/`) in a secondary lookup for matching
+- Add space-safety check to `generateShopifyHandle`
 
-The frontend code in `UploadStep.tsx` already:
-- Calls the backend Edge Function (not Shopify directly)
-- Has per-entity-type refresh via `fetchShopifyLiveCountForEntity()`
-- Displays "–" when fetch fails (`null` values)
-- Logs responses to console
+**4. `src/lib/xml-parser.ts` — No changes needed**
+The sitemap path construction will be done in `match-redirects` using the slug and external_id already stored in the database, so no XML parser changes are required.
 
-The only change is in the backend Edge Function.
+### Files changed
+| File | Change |
+|------|--------|
+| Database migration | Add `shopify_handle text` column to `canonical_categories` |
+| `shopify-upload/index.ts` | Store `handle` from Shopify API response for both new and existing collections |
+| `match-redirects/index.ts` | Use `shopify_handle` for collection paths, build sitemap-format source paths, add safety check to handle generation |
 
-### Technical Detail
-
-```text
-Current (broken):
-  GET /admin/api/2025-01/products/count.json?status=any → {"count": 0}
-
-Fixed:
-  POST /admin/api/2025-01/graphql.json
-  Body: { "query": "{ productsCount { count } }" }
-  → {"data": {"productsCount": {"count": 431}}}
-```
-
-### Files to change
-
-- `supabase/functions/shopify-products-count/index.ts` -- replace REST products count with GraphQL query
-- `supabase/functions/upload-worker/index.ts` -- also fix the products count at line 172 which has the same bug (used for sequencing gate)
-
-### Not changing
-- Upload logic, payload mapping, retry logic
-- "Afventer" count logic
-- Frontend UploadStep.tsx
-- Watchdog mechanism
+### Files NOT changed
+- `xml-parser.ts` (not needed — match-redirects builds paths from DB data)
+- `create-redirects/index.ts`
+- `RedirectsStep.tsx`
+- `ShopifyDestinationSearch.tsx`
 
