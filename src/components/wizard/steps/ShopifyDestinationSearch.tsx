@@ -40,6 +40,7 @@ export function ShopifyDestinationSearch({
   onSelect,
   disabled = false,
   shopifyDomain,
+  inline = false,
 }: ShopifyDestinationSearchProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
