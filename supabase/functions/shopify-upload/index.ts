@@ -1840,7 +1840,7 @@ async function uploadCategories(
     try {
       const data = JSON.parse(result.body);
       for (const col of data.smart_collections || []) {
-        existingCollections.set(col.title.toLowerCase(), String(col.id));
+        existingCollections.set(col.title.toLowerCase(), { id: String(col.id), handle: String(col.handle || '') });
       }
       
       const linkHeader = result.response.headers.get('Link');

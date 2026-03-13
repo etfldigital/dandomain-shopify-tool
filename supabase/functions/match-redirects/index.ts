@@ -292,20 +292,43 @@ Deno.serve(async (req) => {
     // Categories — include all
     const { data: categories } = await supabase
       .from('canonical_categories')
-      .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
+      .select('id, external_id, slug, shopify_collection_id, name, shopify_tag, shopify_handle')
       .eq('project_id', projectId);
 
     for (const category of categories || []) {
-      const handle = category.shopify_tag || generateShopifyHandle(category.name);
+      // Use the ACTUAL Shopify handle (stored during upload), not the tag name
+      const handle = (category as Record<string, unknown>).shopify_handle as string
+        || generateShopifyHandle(category.shopify_tag || category.name);
+      const slug = category.slug;
+      const extId = category.external_id;
+      // Build DanDomain sitemap-style path for matching: /shop/{slug}-{id}c1.html
+      const sitemapPath = slug && extId ? `/shop/${slug}-${extId}c1.html` : null;
+      const cleanSlugPath = slug ? `/shop/${slug}/` : null;
+
       if (category.name) {
         entities.push({
           id: category.id,
-          source_path: category.slug ? `/shop/${category.slug}/` : null,
+          source_path: sitemapPath || cleanSlugPath,
           shopify_handle: `/collections/${handle}`,
           entity_type: 'category',
           title: category.name,
           external_id: category.external_id,
         });
+
+        // Also register the clean slug path as an alternative for matching
+        if (sitemapPath && cleanSlugPath) {
+          const idx = entities.length - 1;
+          // We'll add to pathToEntity map below after entities array is complete
+          // Store as additional source path
+          entities.push({
+            id: category.id,
+            source_path: cleanSlugPath,
+            shopify_handle: `/collections/${handle}`,
+            entity_type: 'category',
+            title: category.name,
+            external_id: category.external_id,
+          });
+        }
       }
     }
 

@@ -26,6 +26,7 @@ export type Database = {
           parent_external_id: string | null
           project_id: string
           shopify_collection_id: string | null
+          shopify_handle: string | null
           shopify_tag: string | null
           slug: string | null
           status: Database["public"]["Enums"]["canonical_status"]
@@ -42,6 +43,7 @@ export type Database = {
           parent_external_id?: string | null
           project_id: string
           shopify_collection_id?: string | null
+          shopify_handle?: string | null
           shopify_tag?: string | null
           slug?: string | null
           status?: Database["public"]["Enums"]["canonical_status"]
@@ -58,6 +60,7 @@ export type Database = {
           parent_external_id?: string | null
           project_id?: string
           shopify_collection_id?: string | null
+          shopify_handle?: string | null
           shopify_tag?: string | null
           slug?: string | null
           status?: Database["public"]["Enums"]["canonical_status"]
