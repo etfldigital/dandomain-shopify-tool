@@ -272,6 +272,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoMatchAfterFetchRef = useRef(false);
 
   // ============================================
   // DATA LOADING
@@ -315,6 +316,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       console.warn('Could not persist Redirects step inputs to storage', e);
     }
   }, [persistKey, productSitemapUrl, categorySitemapUrl, dandomanUrls]);
+
+  // Auto-match after sitemap fetch (combined flow)
+  useEffect(() => {
+    if (autoMatchAfterFetchRef.current && dandomanUrls.length > 0 && !isFetchingSitemaps) {
+      autoMatchAfterFetchRef.current = false;
+      generateRedirects();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dandomanUrls, isFetchingSitemaps]);
 
   const loadRedirects = async () => {
     setIsLoading(true);
@@ -1038,6 +1048,36 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
           </div>
 
+          {/* Paste URLs textarea */}
+          <div className="space-y-2">
+            <Label htmlFor="paste-urls">Eller indsæt URLs manuelt (én per linje)</Label>
+            <textarea
+              id="paste-urls"
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
+              placeholder={`https://din-shop.dk/shop/produkt-123p.html\nhttps://din-shop.dk/shop/kategori-45c1.html`}
+              onBlur={(e) => {
+                const text = e.target.value.trim();
+                if (!text) return;
+                const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+                if (lines.length === 0) return;
+                const urls: SitemapUrl[] = lines.map(line => ({
+                  loc: normalizePath(line),
+                  type: classifyUrlType(line),
+                }));
+                setDandomainUrls(prev => {
+                  const existingPaths = new Set(prev.map(u => u.loc));
+                  const newUrls = urls.filter(u => !existingPaths.has(u.loc));
+                  return [...prev, ...newUrls];
+                });
+                e.target.value = '';
+                toast({
+                  title: 'URLs tilføjet',
+                  description: `${lines.length} URLs indsat`,
+                });
+              }}
+            />
+          </div>
+
           {/* URL counts */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
             <div className="text-center p-3 bg-muted/30 rounded-lg">
@@ -1068,11 +1108,18 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         <CardContent>
           <div className="flex flex-wrap gap-3">
             <Button
-              onClick={generateRedirects}
-              disabled={isGenerating || dandomanUrls.length === 0}
+              onClick={async () => {
+                if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl)) {
+                  autoMatchAfterFetchRef.current = true;
+                  await fetchSitemaps();
+                } else {
+                  await generateRedirects();
+                }
+              }}
+              disabled={isGenerating || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl)}
             >
-              {isGenerating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-              {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs (kun sitemap/fil)` : 'Match URLs (hent sitemap først)'}
+              {(isGenerating || isFetchingSitemaps) ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+              {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs` : 'Hent og match URLs'}
             </Button>
 
             <Button
@@ -1093,11 +1140,49 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
           </div>
 
+          {/* Bulk actions */}
+          {redirects.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const tabRedirects = activeTab === 'all'
+                    ? redirects.filter(r => r.status !== 'created' && r.status !== 'failed')
+                    : redirects.filter(r => r.status === (activeTab as string) && r.status !== 'created' && r.status !== 'failed');
+                  const ids = new Set(tabRedirects.map(r => r.id));
+                  setRedirects(prev => prev.map(r => ids.has(r.id) ? { ...r, selected: true, status: r.status === 'needs_review' ? 'auto_approved' : r.status } : r));
+                  toast({ title: 'Godkendt', description: `${redirects.filter(r => r.status === 'needs_review').length} redirects godkendt` });
+                }}
+                disabled={stats.needsReview === 0}
+              >
+                <CheckCircle className="w-3 h-3 mr-1" />
+                Godkend alle i fanen
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const noMatchIds = redirects.filter(r => r.status === 'no_match').map(r => r.id);
+                  if (noMatchIds.length === 0) return;
+                  await supabase.from('project_redirects').delete().in('id', noMatchIds);
+                  setRedirects(prev => prev.filter(r => r.status !== 'no_match'));
+                  toast({ title: 'Fjernet', description: `${noMatchIds.length} uden match fjernet` });
+                }}
+                disabled={stats.noMatch === 0}
+              >
+                <XCircle className="w-3 h-3 mr-1" />
+                Fjern alle uden match ({stats.noMatch})
+              </Button>
+            </div>
+          )}
+
           {(isGenerating || isAiMatching || isCreating) && progress.total > 0 && (
             <div className="mt-4">
               <Progress value={(progress.current / progress.total) * 100} />
               <p className="text-sm text-muted-foreground mt-1">
-                {progress.current} af {progress.total}...
+                {isGenerating && isFetchingSitemaps ? 'Henter URLs...' : isGenerating ? 'Matcher URLs...' : isAiMatching ? 'AI-matching...' : 'Opretter i Shopify...'}
+                {' '}{progress.current} af {progress.total}
               </p>
             </div>
           )}
@@ -1283,6 +1368,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                 {redirect.matched_by && (
                                   <div className="text-[10px] text-muted-foreground mt-0.5">
                                     {redirect.matched_by === 'exact' && 'Eksakt'}
+                                    {redirect.matched_by === 'external_id' && 'ID'}
                                     {redirect.matched_by === 'sku' && 'SKU'}
                                     {redirect.matched_by === 'title' && 'Titel'}
                                     {redirect.matched_by === 'ai' && '✨ AI'}

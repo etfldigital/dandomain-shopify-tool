@@ -63,16 +63,20 @@ Deno.serve(async (req) => {
     const shopifyDomain = project.shopify_store_domain;
     const shopifyToken = project.shopify_access_token_encrypted;
 
-    // Get redirects to create - build query carefully
+    // Get redirects to create
+    // When specific IDs are provided (from UI selection), use those directly.
+    // Otherwise, get all non-created redirects.
     let query = supabase
       .from('project_redirects')
       .select('*')
-      .eq('project_id', projectId)
-      .eq('status', 'pending');
+      .eq('project_id', projectId);
 
-    // Only add .in() filter if we have specific IDs
     if (redirectIds && Array.isArray(redirectIds) && redirectIds.length > 0) {
+      // Trust the UI selection — don't filter by status
       query = query.in('id', redirectIds);
+    } else {
+      // Fallback: exclude already-created ones
+      query = query.not('status', 'eq', 'created');
     }
 
     // Apply order and limit last
