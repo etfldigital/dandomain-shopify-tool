@@ -244,15 +244,15 @@ Deno.serve(async (req) => {
 
     console.log(`Matching ${oldPaths.length} URLs for project ${projectId} (useAi=${shouldUseAi})`);
 
-    // Fetch all uploaded entities
+    // Fetch ALL entities (not just uploaded) — we need to match URLs against future Shopify paths too
     const entities: UploadedEntity[] = [];
 
-    // Products
+    // Products — include all statuses except 'duplicate'
     const { data: products } = await supabase
       .from('canonical_products')
       .select('id, external_id, data, shopify_id')
       .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .neq('status', 'duplicate');
 
     for (const product of products || []) {
       const data = product.data as Record<string, unknown>;
@@ -262,7 +262,7 @@ Deno.serve(async (req) => {
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || generateShopifyHandle(title);
 
-      if (product.shopify_id) {
+      if (title) {
         entities.push({
           id: product.id,
           source_path: sourcePath,
