@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { Label } from '@/components/ui/label';
-import { ShopifyDestinationSearch } from './ShopifyDestinationSearch';
+import { ShopifyDestinationSearch, type ShopifyEntity } from './ShopifyDestinationSearch';
 import * as XLSX from 'xlsx';
 import {
   matchUrls,
@@ -25,7 +25,8 @@ import {
 import { 
   ArrowRight, Check, X, Download, Upload, RefreshCw, ExternalLink,
   AlertCircle, Loader2, Search, FileSpreadsheet, AlertTriangle,
-  Package, FolderOpen, FileText, Globe, Info, CheckCircle, HelpCircle, XCircle
+  Package, FolderOpen, FileText, Globe, Info, CheckCircle, HelpCircle, XCircle,
+  Clock, ImageOff, ThumbsUp
 } from 'lucide-react';
 
 // ============================================
@@ -51,29 +52,40 @@ interface RedirectRow {
   confidence_score: number;
   matched_by?: string;
   suggestions: Array<{ destination: ShopifyDestination; score: number }>;
+  /** Display info for the matched destination */
+  matchedTitle?: string;
+  matchedImageUrl?: string | null;
 }
 
-type RedirectStatus = 'auto_approved' | 'needs_review' | 'no_match' | 'pending' | 'created' | 'failed';
-type TabType = 'auto_approved' | 'needs_review' | 'no_match' | 'all';
+/**
+ * Three UI statuses:
+ * - pending_approval: suggestion from auto-matching or user selection, not yet approved
+ * - approved: user has actively clicked "Approve"
+ * - no_match: no suggestion found, requires manual selection
+ * 
+ * Plus backend statuses: created, failed
+ */
+type RedirectStatus = 'pending_approval' | 'approved' | 'no_match' | 'created' | 'failed';
+type TabType = 'pending_approval' | 'approved' | 'no_match' | 'all';
 
 interface SitemapUrl {
   loc: string;
   type: OldUrlType;
 }
 
-interface ShopifyEntity {
+interface MatcherShopifyEntity {
   id: string;
   type: ShopifyUrlType;
   title: string;
   handle: string;
   path: string;
+  imageUrl?: string | null;
 }
 
 // ============================================
 // CONSTANTS
 // ============================================
 
-const AUTO_APPROVE_THRESHOLD = 80;
 const REVIEW_THRESHOLD = 50;
 const ITEMS_PER_PAGE = 100;
 
@@ -116,19 +128,18 @@ function generateShopifyHandle(title: string): string {
 }
 
 function getRedirectStatus(confidence: number): RedirectStatus {
-  if (confidence >= AUTO_APPROVE_THRESHOLD) return 'auto_approved';
-  if (confidence >= REVIEW_THRESHOLD) return 'needs_review';
+  if (confidence >= REVIEW_THRESHOLD) return 'pending_approval';
   return 'no_match';
 }
 
-function getStatusInfo(status: RedirectStatus): { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ReactNode } {
+function getStatusInfo(status: RedirectStatus): { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' | 'warning' | 'success'; icon: React.ReactNode } {
   switch (status) {
-    case 'auto_approved': return { label: 'Auto-godkendt', variant: 'default', icon: <CheckCircle className="w-3 h-3" /> };
-    case 'needs_review': return { label: 'Kræver gennemsyn', variant: 'secondary', icon: <HelpCircle className="w-3 h-3" /> };
+    case 'pending_approval': return { label: 'Afventer godkendelse', variant: 'warning', icon: <Clock className="w-3 h-3" /> };
+    case 'approved': return { label: 'Godkendt', variant: 'success', icon: <CheckCircle className="w-3 h-3" /> };
     case 'no_match': return { label: 'Ingen match', variant: 'destructive', icon: <XCircle className="w-3 h-3" /> };
-    case 'created': return { label: 'Oprettet', variant: 'default', icon: <Check className="w-3 h-3" /> };
+    case 'created': return { label: 'Oprettet i Shopify', variant: 'default', icon: <Check className="w-3 h-3" /> };
     case 'failed': return { label: 'Fejlet', variant: 'destructive', icon: <X className="w-3 h-3" /> };
-    default: return { label: 'Afventer', variant: 'outline', icon: null };
+    default: return { label: 'Ukendt', variant: 'outline', icon: null };
   }
 }
 
@@ -157,7 +168,6 @@ function getTypeIcon(type: OldUrlType) {
   }
 }
 
-// Check if new_path type is compatible with old_type
 function isTypeMismatch(oldType: OldUrlType, newPath: string): boolean {
   if (!newPath || newPath === '/') return false;
   if (oldType === 'product' && !newPath.startsWith('/products/')) return true;
@@ -176,7 +186,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
   // Data state
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
-  const [shopifyEntities, setShopifyEntities] = useState<ShopifyEntity[]>([]);
+  const [shopifyEntities, setShopifyEntities] = useState<MatcherShopifyEntity[]>([]);
   const [dandomanUrls, setDandomainUrls] = useState<SitemapUrl[]>([]);
 
   // Loading states
@@ -186,7 +196,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [isFetchingSitemaps, setIsFetchingSitemaps] = useState(false);
 
   // UI state
-  const [activeTab, setActiveTab] = useState<TabType>('auto_approved');
+  const [activeTab, setActiveTab] = useState<TabType>('pending_approval');
   const [searchQuery, setSearchQuery] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [currentPage, setCurrentPage] = useState(1);
@@ -209,7 +219,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     loadShopifyEntities();
   }, [project.id]);
 
-  // Suggest sitemap URL from project domain
   useEffect(() => {
     if (productSitemapUrl) return;
     const origin = getUrlOrigin(project.dandomain_base_url) || getUrlOrigin(project.dandomain_shop_url);
@@ -277,7 +286,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         let uiStatus: RedirectStatus;
         if (dbStatus === 'created') uiStatus = 'created';
         else if (dbStatus === 'failed') uiStatus = 'failed';
+        else if (dbStatus === 'approved') uiStatus = 'approved';
         else uiStatus = getRedirectStatus(confidence);
+
+        // Extract suggestion info
+        const suggestions = (r as unknown as { ai_suggestions?: Array<{ entity_id: string; new_path: string; title: string; score: number }> }).ai_suggestions || [];
 
         return {
           id: r.id,
@@ -288,10 +301,11 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           old_type: classifyOldUrl(r.old_path),
           status: uiStatus,
           error_message: r.error_message,
-          selected: uiStatus === 'auto_approved',
+          selected: false,
           confidence_score: confidence,
           matched_by: (r as unknown as { matched_by?: string }).matched_by,
           suggestions: [],
+          matchedTitle: suggestions[0]?.title || undefined,
         };
       }));
     } catch (err) {
@@ -304,7 +318,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
   const loadShopifyEntities = async () => {
     try {
-      const entities: ShopifyEntity[] = [];
+      const entities: MatcherShopifyEntity[] = [];
 
       const { data: products } = await supabase
         .from('canonical_products')
@@ -316,8 +330,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const data = p.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
         const handle = (data?.shopify_handle as string) || generateShopifyHandle(title);
+        const images = (data?.images as string[]) || [];
         if (p.shopify_id && title) {
-          entities.push({ id: p.id, type: 'product', title, handle, path: `/products/${handle}` });
+          entities.push({ id: p.id, type: 'product', title, handle, path: `/products/${handle}`, imageUrl: images[0] || null });
         }
       }
 
@@ -331,7 +346,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const storedHandle = (c as Record<string, unknown>).shopify_handle as string | null;
         const handle = storedHandle || generateShopifyHandle(c.shopify_tag || c.name);
         if (c.shopify_collection_id && c.name) {
-          entities.push({ id: c.id, type: 'collection', title: c.name, handle, path: `/collections/${handle}` });
+          entities.push({ id: c.id, type: 'collection', title: c.name, handle, path: `/collections/${handle}`, imageUrl: null });
         }
       }
 
@@ -347,7 +362,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const slug = (data?.slug as string) || '';
         const handle = (data?.shopify_handle as string) || slug || generateShopifyHandle(title);
         if (pg.shopify_id && handle) {
-          entities.push({ id: pg.id, type: 'page', title, handle, path: `/pages/${handle}` });
+          entities.push({ id: pg.id, type: 'page', title, handle, path: `/pages/${handle}`, imageUrl: null });
         }
       }
 
@@ -358,7 +373,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   };
 
   // ============================================
-  // SITEMAP FETCHING (still via edge function for CORS)
+  // SITEMAP FETCHING
   // ============================================
 
   const fetchSitemaps = async () => {
@@ -381,8 +396,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       if (data.error) throw new Error(data.error);
 
       setDandomainUrls(data.urls || []);
-
-      // Clear existing non-created redirects
       await supabase.from('project_redirects').delete().eq('project_id', project.id).neq('status', 'created');
       setRedirects([]);
 
@@ -399,7 +412,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   };
 
   // ============================================
-  // CLIENT-SIDE MATCHING (core new feature)
+  // CLIENT-SIDE MATCHING — all results are "pending_approval"
   // ============================================
 
   const runClientSideMatching = useCallback(async () => {
@@ -416,37 +429,38 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     setProgress({ current: 0, total: dandomanUrls.length });
 
     try {
-      // Clear existing non-created redirects
       await supabase.from('project_redirects').delete().eq('project_id', project.id).neq('status', 'created');
 
-      // Build destinations with word extraction
       const destinations = buildShopifyDestinations(shopifyEntities);
 
-      // Process in chunks to avoid freezing the UI
+      // Build a lookup for entity info (title, image)
+      const entityLookup = new Map<string, MatcherShopifyEntity>();
+      for (const e of shopifyEntities) {
+        entityLookup.set(e.id, e);
+      }
+
       const CHUNK_SIZE = 200;
       const allResults: MatchResult[] = [];
 
       for (let i = 0; i < dandomanUrls.length; i += CHUNK_SIZE) {
         const chunk = dandomanUrls.slice(i, i + CHUNK_SIZE);
-        
-        // Yield to UI thread
         await new Promise(resolve => setTimeout(resolve, 0));
-
         const chunkResults = matchUrls(chunk, destinations);
         allResults.push(...chunkResults);
-
         setProgress({ current: Math.min(i + CHUNK_SIZE, dandomanUrls.length), total: dandomanUrls.length });
       }
 
-      // Convert results to RedirectRows and save to database
       const newRedirects: RedirectRow[] = [];
       const dbInserts: Array<Record<string, unknown>> = [];
 
       for (const result of allResults) {
         const id = crypto.randomUUID();
         const confidence = result.score;
-        const status = getRedirectStatus(confidence);
+        // ALL matches start as pending_approval — never auto-approved
+        const status: RedirectStatus = confidence >= REVIEW_THRESHOLD ? 'pending_approval' : 'no_match';
         const entityType: RedirectEntityType = result.oldType === 'category' ? 'category' : result.oldType === 'page' ? 'page' : 'product';
+        
+        const matchedEntity = result.matchedDestination ? entityLookup.get(result.matchedDestination.id) : null;
 
         const row: RedirectRow = {
           id,
@@ -457,10 +471,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           old_type: result.oldType,
           status,
           error_message: null,
-          selected: status === 'auto_approved',
+          selected: false,
           confidence_score: confidence,
           matched_by: result.matchMethod,
           suggestions: result.suggestions,
+          matchedTitle: matchedEntity?.title || result.matchedDestination?.title,
+          matchedImageUrl: matchedEntity?.imageUrl || null,
         };
 
         newRedirects.push(row);
@@ -469,7 +485,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           id,
           project_id: project.id,
           entity_type: entityType,
-          entity_id: result.matchedDestination?.id || 'unmatched',
+          entity_id: result.matchedDestination?.id || crypto.randomUUID(),
           old_path: result.oldUrl,
           new_path: result.matchedDestination?.path || '/',
           status: 'pending',
@@ -484,7 +500,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         });
       }
 
-      // Batch insert to database
       const BATCH_SIZE = 500;
       for (let i = 0; i < dbInserts.length; i += BATCH_SIZE) {
         const batch = dbInserts.slice(i, i + BATCH_SIZE);
@@ -494,12 +509,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       setRedirects(newRedirects);
 
-      const matched = newRedirects.filter(r => r.confidence_score >= REVIEW_THRESHOLD).length;
-      const unmatched = newRedirects.length - matched;
+      const matched = newRedirects.filter(r => r.status === 'pending_approval').length;
+      const unmatched = newRedirects.filter(r => r.status === 'no_match').length;
       
       toast({
-        title: 'Matching fuldført (client-side)',
-        description: `${matched} matchet, ${unmatched} kræver manuel gennemgang`,
+        title: 'Matching fuldført',
+        description: `${matched} forslag afventer godkendelse, ${unmatched} uden match`,
       });
     } catch (err) {
       console.error('Error in client-side matching:', err);
@@ -511,35 +526,32 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   }, [dandomanUrls, shopifyEntities, project.id, toast]);
 
   // ============================================
-  // SHOPIFY CREATION (still via edge function)
+  // SHOPIFY CREATION — only approved redirects
   // ============================================
 
   const createRedirectsInShopify = async () => {
-    const selectedRedirects = redirects.filter(r => 
-      r.selected && (r.status === 'auto_approved' || r.status === 'needs_review')
-    );
-    if (selectedRedirects.length === 0) {
-      toast({ title: 'Ingen valgt', description: 'Vælg mindst én redirect at oprette', variant: 'destructive' });
+    const approvedRedirects = redirects.filter(r => r.status === 'approved');
+    if (approvedRedirects.length === 0) {
+      toast({ title: 'Ingen godkendte', description: 'Godkend mindst én redirect før oprettelse i Shopify', variant: 'destructive' });
       return;
     }
 
-    // TYPE SAFETY CHECK: Block any cross-type redirects
-    const mismatches = selectedRedirects.filter(r => isTypeMismatch(r.old_type, r.new_path));
+    const mismatches = approvedRedirects.filter(r => isTypeMismatch(r.old_type, r.new_path));
     if (mismatches.length > 0) {
       toast({
         title: 'Type-fejl forhindret!',
-        description: `${mismatches.length} redirects har forkert type-match (f.eks. produkt → kollektion). Ret dem først.`,
+        description: `${mismatches.length} redirects har forkert type-match. Ret dem først.`,
         variant: 'destructive',
       });
       return;
     }
 
     setIsCreating(true);
-    setProgress({ current: 0, total: selectedRedirects.length });
+    setProgress({ current: 0, total: approvedRedirects.length });
 
     try {
       const { data, error } = await supabase.functions.invoke('create-redirects', {
-        body: { projectId: project.id, redirectIds: selectedRedirects.map(r => r.id) },
+        body: { projectId: project.id, redirectIds: approvedRedirects.map(r => r.id) },
       });
       if (error) throw error;
       toast({ title: 'Redirects oprettet', description: `${data.created} oprettet, ${data.failed} fejlede` });
@@ -588,24 +600,38 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   };
 
-  const downloadAsCSV = () => {
-    const filtered = activeTab === 'all' ? redirects : redirects.filter(r => r.status === activeTab);
+  const downloadApprovedCSV = () => {
+    const approved = redirects.filter(r => r.status === 'approved');
+    if (approved.length === 0) {
+      toast({ title: 'Ingen godkendte', description: 'Der er ingen godkendte redirects at eksportere', variant: 'destructive' });
+      return;
+    }
+
+    // Show warning if pending/no_match remain
+    const pending = redirects.filter(r => r.status === 'pending_approval').length;
+    const noMatch = redirects.filter(r => r.status === 'no_match').length;
+    if (pending > 0 || noMatch > 0) {
+      toast({
+        title: 'Advarsel',
+        description: `Der er stadig ${pending} afventende og ${noMatch} uden match. Kun godkendte eksporteres.`,
+      });
+    }
+
     const csv = [
-      ['old_url', 'new_url', 'type', 'score', 'status', 'match_method'].join(','),
-      ...filtered.map(r => [r.old_path, r.new_path, r.old_type, r.confidence_score, r.status, r.matched_by || ''].map(v => `"${v}"`).join(',')),
+      ['old_url', 'new_url', 'status', 'score'].join(','),
+      ...approved.map(r => [r.old_path, r.new_path, 'approved', r.confidence_score].map(v => `"${v}"`).join(',')),
     ].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `redirects-${project.name}.csv`;
+    a.download = `redirects-approved-${project.name}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const downloadAsExcel = () => {
-    const filtered = activeTab === 'all' ? redirects : redirects.filter(r => r.status === activeTab);
-    const data = filtered.map(r => ({
+  const downloadAllExcel = () => {
+    const data = redirects.map(r => ({
       'Gammel URL': r.old_path,
       'Ny URL': r.new_path,
       'Type': getTypeLabel(r.old_type),
@@ -623,6 +649,61 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // UI ACTIONS
   // ============================================
 
+  /** Approve a single redirect */
+  const approveRedirect = async (id: string) => {
+    const redirect = redirects.find(r => r.id === id);
+    if (!redirect || !redirect.new_path || redirect.new_path === '/') {
+      toast({ title: 'Ingen destination', description: 'Vælg en destination først', variant: 'destructive' });
+      return;
+    }
+    if (isTypeMismatch(redirect.old_type, redirect.new_path)) {
+      toast({
+        title: 'Type-mismatch!',
+        description: `${getTypeLabel(redirect.old_type)} kan kun redirectes til ${redirect.old_type === 'product' ? '/products/' : redirect.old_type === 'category' ? '/collections/' : '/pages/'}`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setRedirects(prev => prev.map(r => r.id === id ? { ...r, status: 'approved' as RedirectStatus } : r));
+    try {
+      await supabase.from('project_redirects').update({ status: 'approved' }).eq('id', id);
+    } catch (err) {
+      console.error('Error approving redirect:', err);
+    }
+  };
+
+  /** Unapprove (revert to pending) */
+  const unapproveRedirect = async (id: string) => {
+    setRedirects(prev => prev.map(r => r.id === id ? { ...r, status: 'pending_approval' as RedirectStatus } : r));
+    try {
+      await supabase.from('project_redirects').update({ status: 'pending' }).eq('id', id);
+    } catch (err) {
+      console.error('Error unapproving redirect:', err);
+    }
+  };
+
+  /** Bulk approve all selected in current tab */
+  const bulkApproveSelected = async () => {
+    const toApprove = filteredRedirects.filter(r => r.selected && r.status === 'pending_approval' && r.new_path && r.new_path !== '/' && !isTypeMismatch(r.old_type, r.new_path));
+    if (toApprove.length === 0) {
+      toast({ title: 'Ingen valgt', description: 'Vælg mindst én redirect at godkende', variant: 'destructive' });
+      return;
+    }
+
+    const ids = new Set(toApprove.map(r => r.id));
+    setRedirects(prev => prev.map(r => ids.has(r.id) ? { ...r, status: 'approved' as RedirectStatus } : r));
+
+    // Batch update in DB
+    const idArray = Array.from(ids);
+    for (let i = 0; i < idArray.length; i += 100) {
+      const batch = idArray.slice(i, i + 100);
+      await supabase.from('project_redirects').update({ status: 'approved' }).in('id', batch);
+    }
+
+    toast({ title: 'Godkendt', description: `${toApprove.length} redirects godkendt` });
+  };
+
   const toggleSelection = (id: string) => {
     setRedirects(prev => prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r));
   };
@@ -634,8 +715,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     setRedirects(prev => prev.map(r => ids.has(r.id) ? { ...r, selected: !allSelected } : r));
   };
 
-  const updateNewPath = async (id: string, newPath: string) => {
-    // Find the redirect to check type safety
+  /** User selected a product/collection from the search — sets destination but does NOT auto-approve */
+  const updateNewPath = async (id: string, newPath: string, entity?: ShopifyEntity) => {
     const redirect = redirects.find(r => r.id === id);
     if (redirect && isTypeMismatch(redirect.old_type, newPath)) {
       toast({
@@ -648,8 +729,15 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       return;
     }
 
+    // Set destination but keep status as pending_approval — user must still click "Approve"
     setRedirects(prev => prev.map(r => r.id === id ? {
-      ...r, new_path: newPath, confidence_score: 100, status: 'auto_approved' as RedirectStatus, matched_by: 'manual',
+      ...r,
+      new_path: newPath,
+      confidence_score: 100,
+      status: (r.status === 'no_match' || r.status === 'pending_approval') ? 'pending_approval' as RedirectStatus : r.status,
+      matched_by: 'manual',
+      matchedTitle: entity?.title || r.matchedTitle,
+      matchedImageUrl: entity?.imageUrl || r.matchedImageUrl,
     } : r));
 
     try {
@@ -687,19 +775,19 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     if (activeTab !== 'all') filtered = filtered.filter(r => r.status === activeTab);
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(r => r.old_path.toLowerCase().includes(q) || r.new_path.toLowerCase().includes(q));
+      filtered = filtered.filter(r => r.old_path.toLowerCase().includes(q) || r.new_path.toLowerCase().includes(q) || (r.matchedTitle || '').toLowerCase().includes(q));
     }
     return filtered;
   }, [redirects, activeTab, searchQuery]);
 
   const stats = useMemo(() => ({
     total: redirects.length > 0 ? redirects.length : dandomanUrls.length,
-    autoApproved: redirects.filter(r => r.status === 'auto_approved').length,
-    needsReview: redirects.filter(r => r.status === 'needs_review').length,
+    pendingApproval: redirects.filter(r => r.status === 'pending_approval').length,
+    approved: redirects.filter(r => r.status === 'approved').length,
     noMatch: redirects.filter(r => r.status === 'no_match').length,
     created: redirects.filter(r => r.status === 'created').length,
     failed: redirects.filter(r => r.status === 'failed').length,
-    selected: redirects.filter(r => r.selected && r.status !== 'created').length,
+    selectedInTab: filteredRedirects.filter(r => r.selected && r.status !== 'created' && r.status !== 'failed').length,
     typeMismatches: redirects.filter(r => isTypeMismatch(r.old_type, r.new_path)).length,
     dandomain: {
       products: dandomanUrls.filter(u => u.type === 'product').length,
@@ -712,7 +800,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       collections: shopifyEntities.filter(u => u.type === 'collection').length,
       pages: shopifyEntities.filter(u => u.type === 'page').length,
     },
-  }), [redirects, dandomanUrls, shopifyEntities]);
+  }), [redirects, dandomanUrls, shopifyEntities, filteredRedirects]);
 
   // ============================================
   // RENDER
@@ -745,7 +833,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <Info className="w-4 h-4 mt-0.5 text-primary shrink-0" />
               <div className="text-sm text-muted-foreground">
                 <p className="font-medium text-foreground mb-1">Semantisk matching</p>
-                <p>Matching baseres på indholdets betydning — brandnavn, produkttype, navne — ikke bogstavlighed. "Sandaler" matcher aldrig til "Sale".</p>
+                <p>Matching baseres på indholdets betydning — brandnavn, produkttype, navne — ikke bogstavlighed.</p>
               </div>
             </div>
             <div className="flex items-start gap-2">
@@ -753,19 +841,25 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-sm text-muted-foreground">
                 <p className="font-medium text-foreground mb-1">Streng type-sikkerhed</p>
                 <p>
-                  Produkter redirectes <strong>KUN</strong> til <code>/products/</code> — aldrig til kollektioner.<br />
-                  Kategorier redirectes <strong>KUN</strong> til <code>/collections/</code> — aldrig til produkter.
+                  Produkter redirectes <strong>KUN</strong> til <code>/products/</code>. Kategorier <strong>KUN</strong> til <code>/collections/</code>.
                 </p>
               </div>
             </div>
             <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 mt-0.5 text-primary shrink-0" />
+              <Clock className="w-4 h-4 mt-0.5 text-yellow-600 dark:text-yellow-400 shrink-0" />
               <div className="text-sm text-muted-foreground">
-                <p className="font-medium text-foreground mb-1">Scoring</p>
+                <p className="font-medium text-foreground mb-1">Ingen auto-godkendelse</p>
                 <p>
-                  <span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-1 align-middle" /> <strong>80-100%:</strong> Auto-godkendt &nbsp;
-                  <span className="inline-block w-3 h-3 rounded-full bg-yellow-500 mr-1 align-middle" /> <strong>50-79%:</strong> Kræver gennemsyn &nbsp;
-                  <span className="inline-block w-3 h-3 rounded-full bg-red-500 mr-1 align-middle" /> <strong>Under 50%:</strong> Ingen match
+                  Alle matches er <strong>forslag</strong>. Du skal aktivt klikke "Godkend" på hver redirect — selv ved 100% score.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <Package className="w-4 h-4 mt-0.5 text-primary shrink-0" />
+              <div className="text-sm text-muted-foreground">
+                <p className="font-medium text-foreground mb-1">Vælg produkt — ikke URL</p>
+                <p>
+                  Du vælger et <strong>produkt eller kollektion</strong> fra listen — URL'en sættes automatisk. Der er ingen fri tekst-indtastning.
                 </p>
               </div>
             </div>
@@ -780,12 +874,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             <div className="flex items-center gap-3 text-destructive">
               <AlertTriangle className="w-6 h-6 shrink-0" />
               <div>
-                <p className="font-semibold">
-                  {stats.typeMismatches} redirect(s) har type-mismatch!
-                </p>
-                <p className="text-sm opacity-80">
-                  Der er produkt-URLs der peger på kollektioner (eller omvendt). Disse SKAL rettes før oprettelse i Shopify.
-                </p>
+                <p className="font-semibold">{stats.typeMismatches} redirect(s) har type-mismatch!</p>
+                <p className="text-sm opacity-80">Der er produkt-URLs der peger på kollektioner (eller omvendt). Disse SKAL rettes.</p>
               </div>
             </div>
           </CardContent>
@@ -801,7 +891,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Sitemap inputs */}
           <div className="grid md:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="product-sitemap">Produkt-sitemap URL</Label>
@@ -829,7 +918,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
           </div>
 
-          {/* Paste URLs textarea */}
           <div className="space-y-2">
             <Label htmlFor="paste-urls">Eller indsæt URLs manuelt (én per linje)</Label>
             <textarea
@@ -893,12 +981,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               disabled={isMatching || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
             >
               {(isMatching || isFetchingSitemaps) ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-              {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs` : 'Hent og match URLs'}
+              {dandomanUrls.length > 0 ? `Generer forslag for ${dandomanUrls.length} URLs` : 'Hent og match URLs'}
             </Button>
 
-            <Button onClick={createRedirectsInShopify} disabled={isCreating || stats.selected === 0}>
+            <Button onClick={createRedirectsInShopify} disabled={isCreating || stats.approved === 0} variant="default">
               {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-              Opret i Shopify ({stats.selected})
+              Opret godkendte i Shopify ({stats.approved})
             </Button>
 
             <Button onClick={handleReset} variant="outline" className="text-destructive hover:text-destructive">
@@ -911,22 +999,19 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           {redirects.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
               <Button variant="outline" size="sm"
-                onClick={() => {
-                  const toApprove = redirects.filter(r => r.status === 'needs_review');
-                  const ids = new Set(toApprove.map(r => r.id));
-                  setRedirects(prev => prev.map(r => ids.has(r.id) ? { ...r, selected: true, status: 'auto_approved' } : r));
-                  toast({ title: 'Godkendt', description: `${toApprove.length} redirects godkendt` });
-                }}
-                disabled={stats.needsReview === 0}
+                onClick={bulkApproveSelected}
+                disabled={stats.selectedInTab === 0}
               >
-                <CheckCircle className="w-3 h-3 mr-1" />
-                Godkend alle i gennemsyn
+                <ThumbsUp className="w-3 h-3 mr-1" />
+                Godkend valgte ({stats.selectedInTab})
               </Button>
               <Button variant="outline" size="sm"
                 onClick={async () => {
                   const noMatchIds = redirects.filter(r => r.status === 'no_match').map(r => r.id);
                   if (noMatchIds.length === 0) return;
-                  await supabase.from('project_redirects').delete().in('id', noMatchIds);
+                  for (let i = 0; i < noMatchIds.length; i += 100) {
+                    await supabase.from('project_redirects').delete().in('id', noMatchIds.slice(i, i + 100));
+                  }
                   setRedirects(prev => prev.filter(r => r.status !== 'no_match'));
                   toast({ title: 'Fjernet', description: `${noMatchIds.length} uden match fjernet` });
                 }}
@@ -936,13 +1021,13 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                 Fjern alle uden match ({stats.noMatch})
               </Button>
               <div className="ml-auto flex gap-2">
-                <Button variant="outline" size="sm" onClick={downloadAsCSV}>
+                <Button variant="outline" size="sm" onClick={downloadApprovedCSV}>
                   <Download className="w-3 h-3 mr-1" />
-                  CSV
+                  Eksportér godkendte (CSV)
                 </Button>
-                <Button variant="outline" size="sm" onClick={downloadAsExcel}>
+                <Button variant="outline" size="sm" onClick={downloadAllExcel}>
                   <Download className="w-3 h-3 mr-1" />
-                  Excel
+                  Alle (Excel)
                 </Button>
               </div>
             </div>
@@ -952,7 +1037,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             <div className="mt-4">
               <Progress value={(progress.current / progress.total) * 100} />
               <p className="text-sm text-muted-foreground mt-1">
-                {isMatching ? 'Matcher URLs (client-side)...' : 'Opretter i Shopify...'}
+                {isMatching ? 'Genererer forslag...' : 'Opretter i Shopify...'}
                 {' '}{progress.current} af {progress.total}
               </p>
             </div>
@@ -965,24 +1050,23 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Check className="w-5 h-5 text-primary" />
               Redirect-tabel ({stats.total})
             </CardTitle>
             <CardDescription>
-              Gennemgå matches og godkend før de oprettes i Shopify
+              Alle matches er forslag — godkend hver enkelt før oprettelse i Shopify
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v as TabType); setCurrentPage(1); }}>
               <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                 <TabsList>
-                  <TabsTrigger value="auto_approved" className="gap-1">
-                    <CheckCircle className="w-3 h-3" />
-                    Godkendt ({stats.autoApproved})
+                  <TabsTrigger value="pending_approval" className="gap-1">
+                    <Clock className="w-3 h-3" />
+                    Afventer ({stats.pendingApproval})
                   </TabsTrigger>
-                  <TabsTrigger value="needs_review" className="gap-1">
-                    <HelpCircle className="w-3 h-3" />
-                    Gennemsyn ({stats.needsReview})
+                  <TabsTrigger value="approved" className="gap-1">
+                    <CheckCircle className="w-3 h-3" />
+                    Godkendt ({stats.approved})
                   </TabsTrigger>
                   <TabsTrigger value="no_match" className="gap-1">
                     <XCircle className="w-3 h-3" />
@@ -1011,9 +1095,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                         <TableHead>Gammel URL</TableHead>
                         <TableHead className="w-20">Type</TableHead>
                         <TableHead className="w-10"></TableHead>
-                        <TableHead>Ny URL (Shopify)</TableHead>
+                        <TableHead>Foreslået match</TableHead>
                         <TableHead className="w-20">Score</TableHead>
-                        <TableHead className="w-32">Status</TableHead>
+                        <TableHead className="w-36">Status / Handling</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1062,37 +1146,55 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   {typeMismatch && (
                                     <div className="flex items-center gap-1 text-destructive text-xs font-semibold">
                                       <AlertTriangle className="w-3 h-3" />
-                                      TYPE-MISMATCH! {getTypeLabel(redirect.old_type)} → {redirect.new_path.startsWith('/products/') ? 'Produkt' : redirect.new_path.startsWith('/collections/') ? 'Kollektion' : 'Side'}
+                                      TYPE-MISMATCH!
                                     </div>
                                   )}
-                                  <div className="flex items-center gap-1">
-                                    {redirect.status === 'created' ? (
-                                      <span className="font-mono text-xs text-muted-foreground truncate">{redirect.new_path}</span>
-                                    ) : (
-                                      <ShopifyDestinationSearch
-                                        projectId={project.id}
-                                        currentValue={redirect.new_path}
-                                        onSelect={(path) => updateNewPath(redirect.id, path)}
-                                        disabled={false}
-                                        shopifyDomain={project.shopify_store_domain || undefined}
-                                        inline={true}
-                                      />
-                                    )}
-                                    {project.shopify_store_domain && redirect.new_path && (
-                                      <a href={`https://${project.shopify_store_domain.replace(/^https?:\/\//, '')}${redirect.new_path}`}
-                                        target="_blank" rel="noopener noreferrer"
-                                        className="h-8 w-8 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary">
-                                        <ExternalLink className="w-3.5 h-3.5" />
-                                      </a>
-                                    )}
-                                  </div>
-                                  {/* Suggestions for unmatched */}
-                                  {(redirect.status === 'needs_review' || redirect.status === 'no_match') && 
+
+                                  {/* Product card display for matched destination */}
+                                  {redirect.new_path && redirect.new_path !== '/' && (
+                                    <div className="flex items-center gap-2 p-1.5 rounded-md bg-muted/30 border border-border/40">
+                                      <div className="w-8 h-8 rounded border border-border/60 bg-background flex items-center justify-center shrink-0 overflow-hidden">
+                                        {redirect.matchedImageUrl ? (
+                                          <img src={redirect.matchedImageUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                        ) : (
+                                          getTypeIcon(redirect.old_type)
+                                        )}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        {redirect.matchedTitle && (
+                                          <div className="text-xs font-medium truncate">{redirect.matchedTitle}</div>
+                                        )}
+                                        <div className="text-[10px] text-muted-foreground font-mono truncate">{redirect.new_path}</div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Search to change destination — type-filtered, no free text */}
+                                  {redirect.status !== 'created' && (
+                                    <ShopifyDestinationSearch
+                                      projectId={project.id}
+                                      currentValue={redirect.new_path}
+                                      onSelect={(path, entity) => updateNewPath(redirect.id, path, entity)}
+                                      disabled={false}
+                                      shopifyDomain={project.shopify_store_domain || undefined}
+                                      inline={true}
+                                      filterByOldType={redirect.old_type}
+                                    />
+                                  )}
+
+                                  {/* Suggestions for review */}
+                                  {redirect.status !== 'approved' && redirect.status !== 'created' && 
                                    redirect.suggestions && redirect.suggestions.length > 1 && (
                                     <div className="mt-1 space-y-0.5">
-                                      <span className="text-[10px] text-muted-foreground">Forslag:</span>
+                                      <span className="text-[10px] text-muted-foreground">Andre forslag:</span>
                                       {redirect.suggestions.slice(1, 3).map((s, idx) => (
-                                        <button key={idx} onClick={() => updateNewPath(redirect.id, s.destination.path)}
+                                        <button key={idx} onClick={() => {
+                                          const entity = shopifyEntities.find(e => e.id === s.destination.id);
+                                          updateNewPath(redirect.id, s.destination.path, entity ? {
+                                            id: entity.id, type: entity.type, title: entity.title,
+                                            handle: entity.handle, path: entity.path, imageUrl: entity.imageUrl,
+                                          } : undefined);
+                                        }}
                                           className="block w-full text-left px-2 py-0.5 text-xs rounded bg-muted/50 hover:bg-muted transition-colors">
                                           <span className="font-medium">{s.destination.title}</span>
                                           <span className="text-muted-foreground ml-1">({s.score}%)</span>
@@ -1117,15 +1219,42 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                 )}
                               </TableCell>
                               <TableCell>
-                                <Badge variant={statusInfo.variant} className="gap-1">
-                                  {statusInfo.icon}
-                                  {statusInfo.label}
-                                </Badge>
-                                {redirect.error_message && (
-                                  <div className="text-xs text-destructive mt-1 truncate max-w-[120px]" title={redirect.error_message}>
-                                    {redirect.error_message}
-                                  </div>
-                                )}
+                                <div className="space-y-1">
+                                  <Badge variant={statusInfo.variant as any} className="gap-1">
+                                    {statusInfo.icon}
+                                    {statusInfo.label}
+                                  </Badge>
+
+                                  {/* Action buttons */}
+                                  {redirect.status === 'pending_approval' && redirect.new_path && redirect.new_path !== '/' && (
+                                    <Button
+                                      size="sm"
+                                      variant="default"
+                                      className="w-full h-7 text-xs"
+                                      onClick={() => approveRedirect(redirect.id)}
+                                    >
+                                      <ThumbsUp className="w-3 h-3 mr-1" />
+                                      Godkend
+                                    </Button>
+                                  )}
+                                  {redirect.status === 'approved' && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="w-full h-7 text-xs"
+                                      onClick={() => unapproveRedirect(redirect.id)}
+                                    >
+                                      <X className="w-3 h-3 mr-1" />
+                                      Fortryd
+                                    </Button>
+                                  )}
+
+                                  {redirect.error_message && (
+                                    <div className="text-xs text-destructive truncate max-w-[120px]" title={redirect.error_message}>
+                                      {redirect.error_message}
+                                    </div>
+                                  )}
+                                </div>
                               </TableCell>
                             </TableRow>
                           );
