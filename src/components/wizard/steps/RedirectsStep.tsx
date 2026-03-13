@@ -1136,7 +1136,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                   await generateRedirects();
                 }
               }}
-              disabled={isGenerating || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl)}
+              disabled={isGenerating || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
             >
               {(isGenerating || isFetchingSitemaps) ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
               {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs` : 'Hent og match URLs'}
