@@ -1865,14 +1865,15 @@ async function uploadCategories(
     if (Date.now() - startTime > timeBudget) break;
 
     const tagName = item.shopify_tag || item.name;
-    const existingId = existingCollections.get(tagName.toLowerCase());
+    const existing = existingCollections.get(tagName.toLowerCase());
     
-    if (existingId) {
+    if (existing) {
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_collection_id: existingId, error_message: null, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: existing.id, shopify_handle: existing.handle, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
+      console.log(`[CATEGORIES] Matched existing collection "${tagName}" → handle="${existing.handle}", id=${existing.id}`);
       continue;
     }
 
