@@ -1913,11 +1913,13 @@ async function uploadCategories(
     try {
       const responseData = JSON.parse(result.body);
       const collectionId = String(responseData.smart_collection.id);
+      const shopifyHandle = String(responseData.smart_collection.handle || '');
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_collection_id: collectionId, error_message: null, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: collectionId, shopify_handle: shopifyHandle, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
+      console.log(`[CATEGORIES] Created collection "${tagName}" → handle="${shopifyHandle}", id=${collectionId}`);
     } catch {
       errors++;
     }
