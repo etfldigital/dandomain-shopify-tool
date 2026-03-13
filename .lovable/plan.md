@@ -1,61 +1,60 @@
 
 
-## Plan: Page Sitemap, Better Matching, Inline Destination Search
+## Investigation Results
 
-### 1. Add page sitemap field — `parse-sitemap/index.ts`
-- Add `pageSitemapUrl` to `ParseSitemapRequest` interface
-- Add `'page'` to `SitemapUrl.type` union: `'product' | 'category' | 'page' | 'unknown'`
-- Update `classifyUrl` to accept and pass through `'page'` as sourceType
-- Destructure `pageSitemapUrl` from request body (line 107)
-- Update validation (line 116): `if (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)`
-- Add page sitemap parsing block after category block (after line 155), passing `'page'` as sourceType
-- Add `pages` count to stats response (line 168)
+The "i Shopify" refresh button is **NOT broken by CORS**. The full flow works correctly:
 
-### 2. Add page sitemap field — `RedirectsStep.tsx`
-- Add `pageSitemapUrl` state (after line 256)
-- Update `SitemapUrl` interface (line 78) to include `'page'` type
-- Change grid from `md:grid-cols-2` to `md:grid-cols-3` (line 1004), add third input for page sitemap
-- Update `fetchSitemaps` (line 453): validate `pageSitemapUrl`, send it in body
-- Update localStorage persistence (lines 288-318) to include `pageSitemapUrl`
-- Update "Hent sitemaps" disabled check (line 1028) to include `pageSitemapUrl`
-- Update `handleReset` (line 853) to clear `pageSitemapUrl`
-- Add page count to dandomain stats display (line 1082 area)
-- Update toast description (line 488) to include pages count
+1. Browser calls backend Edge Function `shopify-products-count` via `supabase.functions.invoke()` -- confirmed in console logs and network requests
+2. Edge Function calls Shopify REST API at `https://alexandrasdk.myshopify.com/admin/api/2025-01/products/count.json?status=any`
+3. Shopify returns `{"count":0}` -- HTTP 200, not an error
 
-### 3. Add Strategy 2.5 (handle matching) and Strategy 4.5 (fuzzy/Dice) — `match-redirects/index.ts`
-- Add `'handle'` to `matched_by` union in `MatchedRedirect` interface (line 20)
-- After Strategy 2 SKU match (line 437), add Strategy 2.5:
-  - Extract clean slug via `extractProductNameFromSlug(slug)`, normalize it
-  - Compare against each entity's Shopify handle (last segment after `/`)
-  - Exact handle match → confidence 92, `matchedBy = 'handle'`
-  - Partial containment (both > 5 chars) → confidence 75, `matchedBy = 'handle'`
-- After Strategy 4 partial title match (line 493), add Strategy 4.5:
-  - Dice coefficient (bigram overlap) between `normalizedName` and entity titles
-  - Threshold ≥ 0.6, confidence = `Math.round(score * 80)`, `matchedBy = 'title'`
-- Add `'handle'` to `matchedByStrategy` stats in response (line 636)
+This is confirmed by edge function logs showing dozens of calls all returning `{"count":0}`. Meanwhile, the same function correctly returns customers (16,215), orders (4,539), categories (405), and pages (1).
 
-### 4. Update `matched_by` display in `RedirectsStep.tsx`
-- Add handle display label (after line 1373): `{redirect.matched_by === 'handle' && 'Handle'}`
+### Root Cause
 
-### 5. Inline mode for `ShopifyDestinationSearch`
-- Add `inline?: boolean` prop to interface
-- When `inline={true}`, render an input-like button as PopoverTrigger instead of icon button:
-  - Full width, shows `currentValue` in mono text or placeholder "Søg produkt, kollektion..."
-  - Search icon on left
-- Keep existing icon-button mode as default (`inline={false}`)
+The Shopify REST Products API (`/products/count.json`) was deprecated starting in API version `2024-10`. In version `2025-01`, this endpoint returns 0 even though products exist. The upload works because `POST /products.json` still functions for creation, but the count endpoint is broken.
 
-### 6. Use inline search in redirect table
-- Replace the `<Input>` + `<ShopifyDestinationSearch>` combo (lines 1314-1340) with:
-  - Read-only text for `status === 'created'`
-  - `<ShopifyDestinationSearch inline={true}>` for editable rows
-  - Keep external link button
+### Plan
 
-### Files changed
-- `supabase/functions/parse-sitemap/index.ts` — page sitemap support
-- `supabase/functions/match-redirects/index.ts` — handle + fuzzy matching strategies
-- `src/components/wizard/steps/RedirectsStep.tsx` — page sitemap field, inline search, handle label
-- `src/components/wizard/steps/ShopifyDestinationSearch.tsx` — inline mode
+**1. Fix `shopify-products-count` Edge Function** -- use GraphQL for products count instead of the deprecated REST endpoint
 
-### Files NOT changed
-- `create-redirects/index.ts`, upload logic, other steps
+Replace the products case in `fetchCountForEntity` with a GraphQL query:
+```graphql
+{ productsCount { count } }
+```
+
+This hits `POST /admin/api/2025-01/graphql.json` which is the supported way to count products in newer API versions. All other entity types (customers, orders, categories, pages) keep their current REST endpoints since those still work.
+
+**2. No frontend changes needed**
+
+The frontend code in `UploadStep.tsx` already:
+- Calls the backend Edge Function (not Shopify directly)
+- Has per-entity-type refresh via `fetchShopifyLiveCountForEntity()`
+- Displays "–" when fetch fails (`null` values)
+- Logs responses to console
+
+The only change is in the backend Edge Function.
+
+### Technical Detail
+
+```text
+Current (broken):
+  GET /admin/api/2025-01/products/count.json?status=any → {"count": 0}
+
+Fixed:
+  POST /admin/api/2025-01/graphql.json
+  Body: { "query": "{ productsCount { count } }" }
+  → {"data": {"productsCount": {"count": 431}}}
+```
+
+### Files to change
+
+- `supabase/functions/shopify-products-count/index.ts` -- replace REST products count with GraphQL query
+- `supabase/functions/upload-worker/index.ts` -- also fix the products count at line 172 which has the same bug (used for sequencing gate)
+
+### Not changing
+- Upload logic, payload mapping, retry logic
+- "Afventer" count logic
+- Frontend UploadStep.tsx
+- Watchdog mechanism
 

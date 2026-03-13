@@ -77,7 +77,7 @@ type TabType = 'auto_approved' | 'needs_review' | 'no_match' | 'all';
 
 interface SitemapUrl {
   loc: string;
-  type: 'product' | 'category' | 'unknown';
+  type: 'product' | 'category' | 'page' | 'unknown';
 }
 
 interface ShopifyUrl {
@@ -254,6 +254,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // Sitemap inputs
   const [productSitemapUrl, setProductSitemapUrl] = useState('');
   const [categorySitemapUrl, setCategorySitemapUrl] = useState('');
+  const [pageSitemapUrl, setPageSitemapUrl] = useState('');
 
   // Suggest GoogleSitemapProducts based on the configured DanDomain domain (editable).
   useEffect(() => {
@@ -291,10 +292,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const parsed = JSON.parse(raw) as Partial<{
         productSitemapUrl: string;
         categorySitemapUrl: string;
+        pageSitemapUrl: string;
         dandomainUrls: SitemapUrl[];
       }>;
       if (typeof parsed.productSitemapUrl === 'string') setProductSitemapUrl(parsed.productSitemapUrl);
       if (typeof parsed.categorySitemapUrl === 'string') setCategorySitemapUrl(parsed.categorySitemapUrl);
+      if (typeof parsed.pageSitemapUrl === 'string') setPageSitemapUrl(parsed.pageSitemapUrl);
       if (Array.isArray(parsed.dandomainUrls)) setDandomainUrls(parsed.dandomainUrls);
     } catch (e) {
       console.warn('Could not restore Redirects step inputs from storage', e);
@@ -309,13 +312,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         JSON.stringify({
           productSitemapUrl,
           categorySitemapUrl,
+          pageSitemapUrl,
           dandomainUrls: dandomanUrls,
         })
       );
     } catch (e) {
       console.warn('Could not persist Redirects step inputs to storage', e);
     }
-  }, [persistKey, productSitemapUrl, categorySitemapUrl, dandomanUrls]);
+  }, [persistKey, productSitemapUrl, categorySitemapUrl, pageSitemapUrl, dandomanUrls]);
 
   // Auto-match after sitemap fetch (combined flow)
   useEffect(() => {
@@ -451,7 +455,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // ============================================
 
   const fetchSitemaps = async () => {
-    if (!productSitemapUrl && !categorySitemapUrl) {
+    if (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl) {
       toast({
         title: 'Mangler URL',
         description: 'Angiv mindst én sitemap URL',
@@ -467,6 +471,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           projectId: project.id,
           productSitemapUrl: productSitemapUrl || undefined,
           categorySitemapUrl: categorySitemapUrl || undefined,
+          pageSitemapUrl: pageSitemapUrl || undefined,
         },
       });
 
@@ -486,7 +491,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       
       toast({
         title: 'Sitemaps hentet',
-        description: `Fandt ${data.stats.products} produkter, ${data.stats.categories} kategorier, ${data.stats.unknown} ukendte`,
+        description: `Fandt ${data.stats.products} produkter, ${data.stats.categories} kategorier, ${data.stats.pages || 0} sider, ${data.stats.unknown} ukendte`,
       });
     } catch (err) {
       console.error('Error fetching sitemaps:', err);
@@ -850,6 +855,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       setRedirects([]);
       setProductSitemapUrl('');
       setCategorySitemapUrl('');
+      setPageSitemapUrl('');
       setDandomainUrls([]);
       
       // Clear localStorage
@@ -928,6 +934,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     dandomain: {
       products: dandomanUrls.filter(u => u.type === 'product').length,
       categories: dandomanUrls.filter(u => u.type === 'category').length,
+      pages: dandomanUrls.filter(u => u.type === 'page').length,
       unknown: dandomanUrls.filter(u => u.type === 'unknown').length,
     },
     shopify: {
@@ -1001,7 +1008,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         </CardHeader>
         <CardContent className="space-y-6">
           {/* Sitemap inputs */}
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="product-sitemap">Produkt-sitemap URL</Label>
               <Input
@@ -1020,12 +1027,21 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                 onChange={(e) => setCategorySitemapUrl(e.target.value)}
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="page-sitemap">Side-sitemap URL</Label>
+              <Input
+                id="page-sitemap"
+                placeholder="https://din-shop.dk/sitemap-pages.xml"
+                value={pageSitemapUrl}
+                onChange={(e) => setPageSitemapUrl(e.target.value)}
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={fetchSitemaps}
-              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl)}
+              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
               variant="outline"
             >
               {isFetchingSitemaps ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Globe className="w-4 h-4 mr-2" />}
@@ -1079,7 +1095,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           </div>
 
           {/* URL counts */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 pt-4 border-t">
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.dandomain.products}</div>
               <div className="text-xs text-muted-foreground">DanDomain produkter</div>
@@ -1089,8 +1105,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-xs text-muted-foreground">DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <div className="text-2xl font-semibold">{stats.dandomain.pages}</div>
+              <div className="text-xs text-muted-foreground">DanDomain sider</div>
+            </div>
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{pageRedirectCount}</div>
-              <div className="text-xs text-muted-foreground">Sider (redirects)</div>
+              <div className="text-xs text-muted-foreground">Side-redirects</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.total}</div>
@@ -1109,14 +1129,14 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={async () => {
-                if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl)) {
+                if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl || pageSitemapUrl)) {
                   autoMatchAfterFetchRef.current = true;
                   await fetchSitemaps();
                 } else {
                   await generateRedirects();
                 }
               }}
-              disabled={isGenerating || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl)}
+              disabled={isGenerating || isFetchingSitemaps || (dandomanUrls.length === 0 && !productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
             >
               {(isGenerating || isFetchingSitemaps) ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
               {dandomanUrls.length > 0 ? `Match ${dandomanUrls.length} URLs` : 'Hent og match URLs'}
@@ -1313,19 +1333,20 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               </TableCell>
                               <TableCell>
                                 <div className="flex items-center gap-1">
-                                  <Input
-                                    value={redirect.new_path}
-                                    onChange={(e) => updateNewPath(redirect.id, e.target.value)}
-                                    className="font-mono text-xs h-8 flex-1"
-                                    disabled={redirect.status === 'created'}
-                                  />
-                                  <ShopifyDestinationSearch
-                                    projectId={project.id}
-                                    currentValue={redirect.new_path}
-                                    onSelect={(path) => updateNewPath(redirect.id, path, true)}
-                                    disabled={redirect.status === 'created'}
-                                    shopifyDomain={project.shopify_store_domain || undefined}
-                                  />
+                                  {redirect.status === 'created' ? (
+                                    <span className="font-mono text-xs text-muted-foreground truncate">
+                                      {redirect.new_path}
+                                    </span>
+                                  ) : (
+                                    <ShopifyDestinationSearch
+                                      projectId={project.id}
+                                      currentValue={redirect.new_path}
+                                      onSelect={(path) => updateNewPath(redirect.id, path, true)}
+                                      disabled={false}
+                                      shopifyDomain={project.shopify_store_domain || undefined}
+                                      inline={true}
+                                    />
+                                  )}
                                   {project.shopify_store_domain && redirect.new_path && (
                                     <a
                                       href={`https://${project.shopify_store_domain.replace(/^https?:\/\//, '')}${redirect.new_path}`}
@@ -1334,7 +1355,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                       className="h-8 w-8 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
                                       title="Åbn i Shopify"
                                     >
-                                      <ExternalLink className="w-4 h-4" />
+                                      <ExternalLink className="w-3.5 h-3.5" />
                                     </a>
                                   )}
                                 </div>
@@ -1371,6 +1392,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                     {redirect.matched_by === 'external_id' && 'ID'}
                                     {redirect.matched_by === 'sku' && 'SKU'}
                                     {redirect.matched_by === 'title' && 'Titel'}
+                                    {redirect.matched_by === 'handle' && 'Handle'}
                                     {redirect.matched_by === 'ai' && '✨ AI'}
                                     {redirect.matched_by === 'manual' && 'Manuel'}
                                   </div>
@@ -1440,7 +1462,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </p>
             <Button
               onClick={fetchSitemaps}
-              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl)}
+              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
             >
               {isFetchingSitemaps ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Globe className="w-4 h-4 mr-2" />}
               Hent sitemaps

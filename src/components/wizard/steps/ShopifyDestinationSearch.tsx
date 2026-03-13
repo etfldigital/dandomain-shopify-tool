@@ -23,6 +23,7 @@ interface ShopifyDestinationSearchProps {
   onSelect: (path: string) => void;
   disabled?: boolean;
   shopifyDomain?: string;
+  inline?: boolean;
 }
 
 interface ShopifyEntity {
@@ -39,6 +40,7 @@ export function ShopifyDestinationSearch({
   onSelect,
   disabled = false,
   shopifyDomain,
+  inline = false,
 }: ShopifyDestinationSearchProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -236,18 +238,41 @@ export function ShopifyDestinationSearch({
     pages: entities.filter(e => e.type === 'page').length,
   }), [entities]);
 
+  const triggerElement = inline ? (
+    <PopoverTrigger asChild>
+      <button
+        className={cn(
+          "flex items-center gap-2 w-full h-8 px-3 rounded-md border border-input bg-background text-sm",
+          "hover:bg-accent hover:text-accent-foreground transition-colors",
+          disabled && "opacity-50 cursor-not-allowed",
+          !currentValue && "text-muted-foreground"
+        )}
+        disabled={disabled}
+      >
+        <Search className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+        {currentValue ? (
+          <span className="truncate font-mono text-xs">{currentValue}</span>
+        ) : (
+          <span className="truncate">Søg produkt, kollektion eller side...</span>
+        )}
+      </button>
+    </PopoverTrigger>
+  ) : (
+    <PopoverTrigger asChild>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 shrink-0"
+        disabled={disabled}
+      >
+        <Search className="h-4 w-4" />
+      </Button>
+    </PopoverTrigger>
+  );
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          disabled={disabled}
-        >
-          <Search className="h-4 w-4" />
-        </Button>
-      </PopoverTrigger>
+      {triggerElement}
       <PopoverContent 
         className="w-[400px] p-0" 
         align="start"
