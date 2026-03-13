@@ -934,6 +934,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     dandomain: {
       products: dandomanUrls.filter(u => u.type === 'product').length,
       categories: dandomanUrls.filter(u => u.type === 'category').length,
+      pages: dandomanUrls.filter(u => u.type === 'page').length,
       unknown: dandomanUrls.filter(u => u.type === 'unknown').length,
     },
     shopify: {
