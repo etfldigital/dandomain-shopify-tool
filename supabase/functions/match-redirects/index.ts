@@ -401,6 +401,26 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Strategy 1.3: Compare source_path name parts (ignore ID suffixes)
+      // DanDomain sitemap URLs and XML source_paths often have the same slug but different IDs
+      if (!matched && slug) {
+        const urlNamePart = normalizeForComparison(extractProductNameFromSlug(slug));
+        if (urlNamePart && urlNamePart.length > 3) {
+          for (const entity of entities) {
+            if (entity.source_path) {
+              const entitySlug = extractSlugFromPath(normalizePath(entity.source_path));
+              const entityNamePart = normalizeForComparison(extractProductNameFromSlug(entitySlug));
+              if (entityNamePart && entityNamePart === urlNamePart) {
+                matched = entity;
+                confidence = 96;
+                matchedBy = 'exact';
+                break;
+              }
+            }
+          }
+        }
+      }
+
       // Strategy 1.5: Extract numeric ID from DanDomain URL and match against external_id
       if (!matched) {
         const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
