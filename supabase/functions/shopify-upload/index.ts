@@ -1205,24 +1205,31 @@ async function processProductGroup(
   }
   console.log(`[PRODUCTS] "${transformedTitle}": mapped ${Object.keys(skuMap).length} variant SKUs to Shopify IDs`);
 
-  // Add images – parallelized with max 3 concurrent uploads per product.
-  // Images are independent of each other, so concurrency is safe here.
-  // A single image failure must NOT fail the product (preserved from original).
-  if (allImages.length > 0) {
+  // Add images — SEQUENTIAL upload to guarantee correct order.
+  // DanDomain main image = position 1 (first in array), additional images follow in order.
+  // Concurrent upload caused ordering issues and silent failures.
+  if (validatedImages.length > 0) {
     let added = 0;
     let failed = 0;
-    const IMAGE_CONCURRENCY = 3;
-    const imageLimit = createConcurrencyLimiter(IMAGE_CONCURRENCY);
+    const failedUrls: string[] = [];
 
-    const imagePromises = allImages.map((imageUrl, imgIndex) =>
-      imageLimit(async () => {
-        const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
-        // Explicitly set position to preserve DanDomain image order.
-        // position 1 = main image in Shopify. This guarantees correct order
-        // even when images are uploaded concurrently (max 3 at a time).
-        const imagePosition = imgIndex + 1;
+    for (let imgIndex = 0; imgIndex < validatedImages.length; imgIndex++) {
+      const imageUrl = validatedImages[imgIndex];
+      const normalizedUrl = normalizeImageUrl(imageUrl, dandomainBaseUrl);
+      const imagePosition = imgIndex + 1; // position 1 = main image
 
+      if (!normalizedUrl || normalizedUrl === imageUrl && !imageUrl.startsWith('http')) {
+        console.warn(`[PRODUCTS] "${transformedTitle}": Skipping invalid image URL at position ${imagePosition}: "${imageUrl}"`);
+        failed++;
+        failedUrls.push(imageUrl);
+        continue;
+      }
+
+      // Retry each image up to 3 times
+      let imageUploaded = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
+          // Method 1: Let Shopify fetch the image via src URL
           const srcUploadResult = await shopifyFetch(
             `${shopifyUrl}/products/${shopifyId}/images.json`,
             {
@@ -1233,18 +1240,20 @@ async function processProductGroup(
           );
 
           if ('rateLimited' in srcUploadResult) {
-            // Wait out the rate limit, then count as failed (will be retried on next run if needed)
+            console.log(`[PRODUCTS] "${transformedTitle}": Image ${imagePosition} rate limited, waiting ${srcUploadResult.retryAfterMs}ms (attempt ${attempt}/3)`);
             await sleep(srcUploadResult.retryAfterMs);
-            failed++;
-            return;
+            continue; // Retry after rate limit
           }
 
           if (srcUploadResult.response.ok) {
+            imageUploaded = true;
             added++;
-            return;
+            break; // Success, move to next image
           }
 
-          // Fallback: fetch image ourselves (with browser-like headers) and upload as attachment.
+          // Method 2: Fallback — download image ourselves and upload as base64 attachment
+          console.log(`[PRODUCTS] "${transformedTitle}": src upload failed (${srcUploadResult.response.status}), trying attachment fallback for position ${imagePosition}`);
+
           const attachmentFallback = await uploadProductImageAsAttachment(
             shopifyUrl,
             shopifyId,
@@ -1255,30 +1264,64 @@ async function processProductGroup(
           );
 
           if (attachmentFallback.rateLimited) {
+            console.log(`[PRODUCTS] "${transformedTitle}": Attachment fallback rate limited, waiting (attempt ${attempt}/3)`);
             await sleep(attachmentFallback.retryAfterMs ?? 2000);
-            failed++;
-            return;
+            continue; // Retry after rate limit
           }
 
           if (attachmentFallback.uploaded) {
+            imageUploaded = true;
             added++;
-            return;
+            break; // Success
           }
 
-          failed++;
-          console.warn(
-            `[PRODUCTS] "${transformedTitle}": image upload failed for ${normalizedUrl}. src_status=${srcUploadResult.response.status}, src_body=${truncateForLog(srcUploadResult.body)}, fallback_error=${attachmentFallback.error || 'unknown'}`
-          );
-        } catch (e) {
-          failed++;
-          const message = e instanceof Error ? e.message : String(e);
-          console.warn(`[PRODUCTS] "${transformedTitle}": image upload exception for ${normalizedUrl}: ${message}`);
-        }
-      })
-    );
+          // Both methods failed on this attempt
+          console.warn(`[PRODUCTS] "${transformedTitle}": Image ${imagePosition} failed attempt ${attempt}/3: src_status=${srcUploadResult.response.status}, fallback_error=${attachmentFallback.error || 'unknown'}`);
 
-    await Promise.all(imagePromises);
-    console.log(`[PRODUCTS] "${transformedTitle}": image upload done (concurrent=${IMAGE_CONCURRENCY}). Added=${added}, Failed=${failed}`);
+          if (attempt < 3) {
+            await sleep(1000 * attempt); // Backoff before retry
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[PRODUCTS] "${transformedTitle}": Image ${imagePosition} exception attempt ${attempt}/3: ${message}`);
+          if (attempt < 3) {
+            await sleep(1000 * attempt);
+          }
+        }
+      }
+
+      if (!imageUploaded) {
+        failed++;
+        failedUrls.push(normalizedUrl);
+        console.error(`[PRODUCTS] "${transformedTitle}": FAILED to upload image at position ${imagePosition} after 3 attempts: ${normalizedUrl}`);
+      }
+    }
+
+    console.log(`[PRODUCTS] "${transformedTitle}": image upload done (sequential). Added=${added}, Failed=${failed}, Total=${validatedImages.length}`);
+
+    // CRITICAL: If ALL images failed, mark the product as failed so it gets retried
+    if (added === 0 && validatedImages.length > 0) {
+      console.error(`[PRODUCTS] "${transformedTitle}": ALL ${validatedImages.length} images failed! Marking product as failed for retry.`);
+
+      await supabase
+        .from('canonical_products')
+        .update({
+          status: 'failed',
+          error_message: `Alle ${validatedImages.length} billeder fejlede upload. URLs: ${failedUrls.slice(0, 3).join(', ')}${failedUrls.length > 3 ? '...' : ''}`,
+          upload_lock_id: null,
+          upload_locked_at: null,
+          upload_locked_until: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', primaryItem.id);
+
+      return { error: `Alle billeder fejlede for "${transformedTitle}"` };
+    }
+
+    // If SOME images failed, log it as a warning on the product but still count as uploaded
+    if (failed > 0) {
+      console.warn(`[PRODUCTS] "${transformedTitle}": ${failed}/${validatedImages.length} images failed. Product will be marked uploaded with warning.`);
+    }
   }
 
   // ============================================================================
