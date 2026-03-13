@@ -1095,7 +1095,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           </div>
 
           {/* URL counts */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 pt-4 border-t">
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.dandomain.products}</div>
               <div className="text-xs text-muted-foreground">DanDomain produkter</div>
@@ -1105,8 +1105,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-xs text-muted-foreground">DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <div className="text-2xl font-semibold">{stats.dandomain.pages}</div>
+              <div className="text-xs text-muted-foreground">DanDomain sider</div>
+            </div>
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{pageRedirectCount}</div>
-              <div className="text-xs text-muted-foreground">Sider (redirects)</div>
+              <div className="text-xs text-muted-foreground">Side-redirects</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.total}</div>
