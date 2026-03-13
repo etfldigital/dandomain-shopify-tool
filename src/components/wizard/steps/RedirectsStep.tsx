@@ -1041,7 +1041,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={fetchSitemaps}
-              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl)}
+              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
               variant="outline"
             >
               {isFetchingSitemaps ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Globe className="w-4 h-4 mr-2" />}
