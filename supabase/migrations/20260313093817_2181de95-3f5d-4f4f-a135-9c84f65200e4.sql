@@ -1,0 +1,1 @@
+ALTER TABLE canonical_categories ADD COLUMN IF NOT EXISTS shopify_handle text;

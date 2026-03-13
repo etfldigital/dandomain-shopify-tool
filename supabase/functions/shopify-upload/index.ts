@@ -1817,7 +1817,7 @@ async function uploadCategories(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  const existingCollections: Map<string, string> = new Map();
+  const existingCollections: Map<string, { id: string; handle: string }> = new Map();
   console.log('[CATEGORIES] Fetching existing Shopify collections...');
   
   let pageInfo: string | null = null;
@@ -1840,7 +1840,7 @@ async function uploadCategories(
     try {
       const data = JSON.parse(result.body);
       for (const col of data.smart_collections || []) {
-        existingCollections.set(col.title.toLowerCase(), String(col.id));
+        existingCollections.set(col.title.toLowerCase(), { id: String(col.id), handle: String(col.handle || '') });
       }
       
       const linkHeader = result.response.headers.get('Link');
@@ -1865,14 +1865,15 @@ async function uploadCategories(
     if (Date.now() - startTime > timeBudget) break;
 
     const tagName = item.shopify_tag || item.name;
-    const existingId = existingCollections.get(tagName.toLowerCase());
+    const existing = existingCollections.get(tagName.toLowerCase());
     
-    if (existingId) {
+    if (existing) {
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_collection_id: existingId, error_message: null, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: existing.id, shopify_handle: existing.handle, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
+      console.log(`[CATEGORIES] Matched existing collection "${tagName}" → handle="${existing.handle}", id=${existing.id}`);
       continue;
     }
 
@@ -1912,11 +1913,13 @@ async function uploadCategories(
     try {
       const responseData = JSON.parse(result.body);
       const collectionId = String(responseData.smart_collection.id);
+      const shopifyHandle = String(responseData.smart_collection.handle || '');
       await supabase
         .from('canonical_categories')
-        .update({ status: 'uploaded', shopify_collection_id: collectionId, error_message: null, updated_at: new Date().toISOString() })
+        .update({ status: 'uploaded', shopify_collection_id: collectionId, shopify_handle: shopifyHandle, error_message: null, updated_at: new Date().toISOString() })
         .eq('id', item.id);
       processed++;
+      console.log(`[CATEGORIES] Created collection "${tagName}" → handle="${shopifyHandle}", id=${collectionId}`);
     } catch {
       errors++;
     }

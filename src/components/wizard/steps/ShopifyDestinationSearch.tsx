@@ -89,11 +89,12 @@ export function ShopifyDestinationSearch({
       // Collections (categories) — include all
       const { data: categories } = await supabase
         .from('canonical_categories')
-        .select('id, name, shopify_tag, shopify_collection_id')
+        .select('id, name, shopify_tag, shopify_collection_id, shopify_handle')
         .eq('project_id', projectId);
 
       for (const category of categories || []) {
-        const handle = category.shopify_tag || generateShopifyHandle(category.name);
+        const storedHandle = (category as Record<string, unknown>).shopify_handle as string | null;
+        const handle = storedHandle || generateShopifyHandle(category.shopify_tag || category.name);
         
         if (category.name) {
           allEntities.push({
