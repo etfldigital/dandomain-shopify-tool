@@ -485,7 +485,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           id,
           project_id: project.id,
           entity_type: entityType,
-          entity_id: result.matchedDestination?.id || 'unmatched',
+          entity_id: result.matchedDestination?.id || crypto.randomUUID(),
           old_path: result.oldUrl,
           new_path: result.matchedDestination?.path || '/',
           status: 'pending',
