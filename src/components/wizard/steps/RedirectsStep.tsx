@@ -1392,6 +1392,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                     {redirect.matched_by === 'external_id' && 'ID'}
                                     {redirect.matched_by === 'sku' && 'SKU'}
                                     {redirect.matched_by === 'title' && 'Titel'}
+                                    {redirect.matched_by === 'handle' && 'Handle'}
                                     {redirect.matched_by === 'ai' && '✨ AI'}
                                     {redirect.matched_by === 'manual' && 'Manuel'}
                                   </div>
