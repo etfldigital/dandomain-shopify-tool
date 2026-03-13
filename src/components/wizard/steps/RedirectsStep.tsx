@@ -254,6 +254,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // Sitemap inputs
   const [productSitemapUrl, setProductSitemapUrl] = useState('');
   const [categorySitemapUrl, setCategorySitemapUrl] = useState('');
+  const [pageSitemapUrl, setPageSitemapUrl] = useState('');
 
   // Suggest GoogleSitemapProducts based on the configured DanDomain domain (editable).
   useEffect(() => {
