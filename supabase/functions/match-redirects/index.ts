@@ -406,11 +406,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Categories — include all
+    // Categories — only uploaded with a shopify_collection_id
     const { data: categories } = await supabase
       .from('canonical_categories')
       .select('id, external_id, slug, shopify_collection_id, name, shopify_tag, shopify_handle')
-      .eq('project_id', projectId);
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_collection_id', 'is', null);
 
     for (const category of categories || []) {
       // Use the ACTUAL Shopify handle (stored during upload), not the tag name
