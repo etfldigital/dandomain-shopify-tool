@@ -1817,7 +1817,7 @@ async function uploadCategories(
     return { success: true, processed: 0, errors: 0, hasMore: false };
   }
 
-  const existingCollections: Map<string, string> = new Map();
+  const existingCollections: Map<string, { id: string; handle: string }> = new Map();
   console.log('[CATEGORIES] Fetching existing Shopify collections...');
   
   let pageInfo: string | null = null;
