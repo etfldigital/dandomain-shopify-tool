@@ -471,6 +471,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           projectId: project.id,
           productSitemapUrl: productSitemapUrl || undefined,
           categorySitemapUrl: categorySitemapUrl || undefined,
+          pageSitemapUrl: pageSitemapUrl || undefined,
         },
       });
 
