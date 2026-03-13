@@ -586,9 +586,20 @@ Deno.serve(async (req) => {
             const dandoId = catIdMatch[1];
             const entity = categoryEntities.find(e => e.external_id === dandoId);
             if (entity) {
-              matched = entity;
-              confidence = 98;
-              matchedBy = 'external_id';
+              // Validate: URL slug should roughly match category name to prevent wrong matches
+              const urlSlug = extractProductNameFromSlug(slug);
+              const normalizedUrlSlug = normalizeForComparison(urlSlug);
+              const normalizedCatName = normalizeForComparison(entity.title);
+              
+              // Use Dice coefficient to verify slug-to-name similarity (threshold 0.3 = loose match)
+              const similarity = diceCoefficient(normalizedUrlSlug, normalizedCatName);
+              if (similarity >= 0.3 || normalizedCatName.includes(normalizedUrlSlug) || normalizedUrlSlug.includes(normalizedCatName)) {
+                matched = entity;
+                confidence = 98;
+                matchedBy = 'external_id';
+              } else {
+                console.log(`[STRATEGY 1.5] Rejected category external_id match: URL slug "${urlSlug}" vs category "${entity.title}" (dice=${similarity.toFixed(2)})`);
+              }
             }
           }
         }
