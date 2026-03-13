@@ -653,7 +653,7 @@ async function processProductGroup(
 
   const primaryItem = items[0];
   const manufacId = String(data.vendor || '').trim();
-  const vendor = resolveVendorName(manufacId, originalTitle, groupedTitle);
+  const vendor = resolveVendorName(manufacId);
   console.log(`[PRODUCTS][VENDOR] SKU=${String(data.sku || primaryItem.external_id || '')} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendor}"`);
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
 
