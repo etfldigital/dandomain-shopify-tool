@@ -455,7 +455,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   // ============================================
 
   const fetchSitemaps = async () => {
-    if (!productSitemapUrl && !categorySitemapUrl) {
+    if (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl) {
       toast({
         title: 'Mangler URL',
         description: 'Angiv mindst én sitemap URL',
