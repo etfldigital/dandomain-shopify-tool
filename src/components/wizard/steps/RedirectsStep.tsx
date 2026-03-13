@@ -1359,6 +1359,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                 {redirect.matched_by && (
                                   <div className="text-[10px] text-muted-foreground mt-0.5">
                                     {redirect.matched_by === 'exact' && 'Eksakt'}
+                                    {redirect.matched_by === 'external_id' && 'ID'}
                                     {redirect.matched_by === 'sku' && 'SKU'}
                                     {redirect.matched_by === 'title' && 'Titel'}
                                     {redirect.matched_by === 'ai' && '✨ AI'}

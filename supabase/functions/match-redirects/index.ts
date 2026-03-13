@@ -390,13 +390,43 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Strategy 2: SKU-based match (check if URL contains SKU)
+      // Strategy 1.5: Extract numeric ID from DanDomain URL and match against external_id
+      if (!matched) {
+        // Product URL pattern: ends with -{digits}p.html
+        const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
+        if (productIdMatch) {
+          const dandoId = productIdMatch[1];
+          const entity = productEntities.find(e => e.external_id === dandoId);
+          if (entity) {
+            matched = entity;
+            confidence = 98;
+            matchedBy = 'external_id';
+          }
+        }
+
+        // Category URL pattern: ends with -{digits}c{digits}.html or -{digits}s{digits}.html
+        if (!matched) {
+          const catIdMatch = normalized.match(/-(\d+)[cs]\d*\.html$/i);
+          if (catIdMatch) {
+            const dandoId = catIdMatch[1];
+            const entity = categoryEntities.find(e => e.external_id === dandoId);
+            if (entity) {
+              matched = entity;
+              confidence = 98;
+              matchedBy = 'external_id';
+            }
+          }
+        }
+      }
+
+      // Strategy 2: SKU-based match (check if SKU appears as distinct segment in URL)
       if (!matched && slug) {
         for (const entity of productEntities) {
-          if (entity.sku) {
+          if (entity.sku && entity.sku.length >= 3) {
             const skuLower = entity.sku.toLowerCase();
-            // Check if SKU appears in the URL slug
-            if (slug.toLowerCase().includes(skuLower) || skuLower.includes(slug.toLowerCase())) {
+            // Only match SKU if it appears as a distinct segment (between hyphens or at start/end)
+            const skuPattern = new RegExp(`(?:^|-)${skuLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-|$)`);
+            if (skuPattern.test(slug.toLowerCase())) {
               matched = entity;
               confidence = 95;
               matchedBy = 'sku';
