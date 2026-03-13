@@ -69,14 +69,37 @@ export function ShopifyDestinationSearch({
     try {
       const allEntities: ShopifyEntity[] = [];
 
-      // Products
-      const { data: products } = await supabase
-        .from('canonical_products')
-        .select('id, data, shopify_id')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded');
+      // Helper to fetch all rows with pagination (default limit is 1000)
+      const fetchAll = async <T,>(
+        table: string,
+        select: string,
+        filters: Record<string, string>
+      ): Promise<T[]> => {
+        const PAGE_SIZE = 1000;
+        let offset = 0;
+        const allRows: T[] = [];
+        while (true) {
+          let query = supabase.from(table).select(select) as any;
+          for (const [key, value] of Object.entries(filters)) {
+            query = query.eq(key, value);
+          }
+          const { data, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          allRows.push(...(data as T[]));
+          if (data.length < PAGE_SIZE) break;
+          offset += PAGE_SIZE;
+        }
+        return allRows;
+      };
 
-      for (const product of products || []) {
+      // Products
+      const products = await fetchAll<{ id: string; data: unknown; shopify_id: string | null }>(
+        'canonical_products', 'id, data, shopify_id',
+        { project_id: projectId, status: 'uploaded' }
+      );
+
+      for (const product of products) {
         const data = product.data as Record<string, unknown>;
         const title = (data?.title as string) || 'Unavngivet produkt';
         const storedHandle = data?.shopify_handle as string | null;
@@ -97,15 +120,13 @@ export function ShopifyDestinationSearch({
       }
 
       // Collections
-      const { data: categories } = await supabase
-        .from('canonical_categories')
-        .select('id, name, shopify_tag, shopify_collection_id, shopify_handle')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded');
+      const categories = await fetchAll<{ id: string; name: string; shopify_tag: string | null; shopify_collection_id: string | null; shopify_handle: string | null }>(
+        'canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle',
+        { project_id: projectId, status: 'uploaded' }
+      );
 
-      for (const category of categories || []) {
-        const storedHandle = (category as Record<string, unknown>).shopify_handle as string | null;
-        const handle = storedHandle || generateShopifyHandle(category.shopify_tag || category.name);
+      for (const category of categories) {
+        const handle = category.shopify_handle || generateShopifyHandle(category.shopify_tag || category.name);
         
         if (category.name && category.shopify_collection_id) {
           allEntities.push({
@@ -120,13 +141,12 @@ export function ShopifyDestinationSearch({
       }
 
       // Pages
-      const { data: pages } = await supabase
-        .from('canonical_pages')
-        .select('id, data, shopify_id')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded');
+      const pages = await fetchAll<{ id: string; data: unknown; shopify_id: string | null }>(
+        'canonical_pages', 'id, data, shopify_id',
+        { project_id: projectId, status: 'uploaded' }
+      );
 
-      for (const pg of pages || []) {
+      for (const pg of pages) {
         const data = pg.data as Record<string, unknown>;
         const title = (data?.title as string) || 'Unavngivet side';
         const slug = data?.slug as string;
