@@ -292,10 +292,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const parsed = JSON.parse(raw) as Partial<{
         productSitemapUrl: string;
         categorySitemapUrl: string;
+        pageSitemapUrl: string;
         dandomainUrls: SitemapUrl[];
       }>;
       if (typeof parsed.productSitemapUrl === 'string') setProductSitemapUrl(parsed.productSitemapUrl);
       if (typeof parsed.categorySitemapUrl === 'string') setCategorySitemapUrl(parsed.categorySitemapUrl);
+      if (typeof parsed.pageSitemapUrl === 'string') setPageSitemapUrl(parsed.pageSitemapUrl);
       if (Array.isArray(parsed.dandomainUrls)) setDandomainUrls(parsed.dandomainUrls);
     } catch (e) {
       console.warn('Could not restore Redirects step inputs from storage', e);
