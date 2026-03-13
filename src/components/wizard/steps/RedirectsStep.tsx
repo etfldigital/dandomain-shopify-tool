@@ -77,7 +77,7 @@ type TabType = 'auto_approved' | 'needs_review' | 'no_match' | 'all';
 
 interface SitemapUrl {
   loc: string;
-  type: 'product' | 'category' | 'unknown';
+  type: 'product' | 'category' | 'page' | 'unknown';
 }
 
 interface ShopifyUrl {
