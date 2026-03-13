@@ -1342,7 +1342,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                       projectId={project.id}
                                       currentValue={redirect.new_path}
                                       onSelect={(path) => updateNewPath(redirect.id, path, true)}
-                                      disabled={redirect.status === 'created'}
+                                      disabled={false}
                                       shopifyDomain={project.shopify_store_domain || undefined}
                                       inline={true}
                                     />
