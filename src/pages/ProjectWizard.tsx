@@ -105,7 +105,7 @@ export default function ProjectWizard() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-10">
+      <main className={`mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-10 ${currentStep === 'redirects' ? 'max-w-7xl' : 'max-w-5xl'}`}>
         <div className="mb-10">
           <Button
             variant="ghost"
