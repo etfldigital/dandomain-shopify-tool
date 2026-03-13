@@ -317,7 +317,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     }
   }, [persistKey, productSitemapUrl, categorySitemapUrl, dandomanUrls]);
 
-  const loadRedirects = async () => {
+  // Auto-match after sitemap fetch (combined flow)
+  useEffect(() => {
+    if (autoMatchAfterFetchRef.current && dandomanUrls.length > 0 && !isFetchingSitemaps) {
+      autoMatchAfterFetchRef.current = false;
+      generateRedirects();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dandomanUrls, isFetchingSitemaps]);
+
+
     setIsLoading(true);
     try {
       const allRedirects: ProjectRedirect[] = [];
