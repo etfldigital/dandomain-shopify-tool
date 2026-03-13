@@ -62,13 +62,12 @@ export function ShopifyDestinationSearch({
     try {
       const allEntities: ShopifyEntity[] = [];
 
-      // Products
+      // Products — include all non-duplicate
       const { data: products } = await supabase
         .from('canonical_products')
         .select('id, data, shopify_id')
         .eq('project_id', projectId)
-        .eq('status', 'uploaded')
-        .not('shopify_id', 'is', null);
+        .neq('status', 'duplicate');
 
       for (const product of products || []) {
         const data = product.data as Record<string, unknown>;
@@ -76,42 +75,42 @@ export function ShopifyDestinationSearch({
         const storedHandle = data?.shopify_handle as string | null;
         const handle = storedHandle || generateShopifyHandle(title);
         
-        allEntities.push({
-          id: product.id,
-          type: 'product',
-          title,
-          handle,
-          path: `/products/${handle}`,
-        });
+        if (title) {
+          allEntities.push({
+            id: product.id,
+            type: 'product',
+            title,
+            handle,
+            path: `/products/${handle}`,
+          });
+        }
       }
 
-      // Collections (categories)
+      // Collections (categories) — include all
       const { data: categories } = await supabase
         .from('canonical_categories')
         .select('id, name, shopify_tag, shopify_collection_id')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded')
-        .not('shopify_collection_id', 'is', null);
+        .eq('project_id', projectId);
 
       for (const category of categories || []) {
         const handle = category.shopify_tag || generateShopifyHandle(category.name);
         
-        allEntities.push({
-          id: category.id,
-          type: 'collection',
-          title: category.name,
-          handle,
-          path: `/collections/${handle}`,
-        });
+        if (category.name) {
+          allEntities.push({
+            id: category.id,
+            type: 'collection',
+            title: category.name,
+            handle,
+            path: `/collections/${handle}`,
+          });
+        }
       }
 
-      // Pages
+      // Pages — include all
       const { data: pages } = await supabase
         .from('canonical_pages')
         .select('id, data, shopify_id')
-        .eq('project_id', projectId)
-        .eq('status', 'uploaded')
-        .not('shopify_id', 'is', null);
+        .eq('project_id', projectId);
 
       for (const page of pages || []) {
         const data = page.data as Record<string, unknown>;
@@ -120,13 +119,15 @@ export function ShopifyDestinationSearch({
         const storedHandle = data?.shopify_handle as string | null;
         const handle = storedHandle || slug || generateShopifyHandle(title);
         
-        allEntities.push({
-          id: page.id,
-          type: 'page',
-          title,
-          handle,
-          path: `/pages/${handle}`,
-        });
+        if (title) {
+          allEntities.push({
+            id: page.id,
+            type: 'page',
+            title,
+            handle,
+            path: `/pages/${handle}`,
+          });
+        }
       }
 
       setEntities(allEntities);

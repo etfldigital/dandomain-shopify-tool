@@ -82,10 +82,17 @@ function normalizeForComparison(text: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Extract potential product name from URL slug (removes ID suffix)
+// Extract potential name from URL slug (removes ID suffix for both products and categories)
 function extractProductNameFromSlug(slug: string): string {
   const withoutExtension = slug.replace(/\.html$/, '');
-  const withoutId = withoutExtension.replace(/-\d+[pc]?\d*$/, '').replace(/-[A-Z0-9]+p$/, '');
+  // Remove product ID suffix: -32129p, -0641p, -10001-0DA-39-40p
+  // Remove category ID suffix: -100c1, -42c1, -174s1
+  // Remove section suffix: -4s1, -6s1, -7s1
+  const withoutId = withoutExtension
+    .replace(/-\d+[pP]$/, '')           // product: -32129p
+    .replace(/-[\w-]+-[\w-]+[pP]$/, '') // product with complex SKU: -10001-0DA-39-40p  
+    .replace(/-\d+[cCsS]\d*$/, '')      // category/section: -100c1, -4s1
+    .replace(/-[A-Z0-9]+p$/, '');       // fallback
   return withoutId;
 }
 
@@ -244,15 +251,15 @@ Deno.serve(async (req) => {
 
     console.log(`Matching ${oldPaths.length} URLs for project ${projectId} (useAi=${shouldUseAi})`);
 
-    // Fetch all uploaded entities
+    // Fetch ALL entities (not just uploaded) — we need to match URLs against future Shopify paths too
     const entities: UploadedEntity[] = [];
 
-    // Products
+    // Products — include all statuses except 'duplicate'
     const { data: products } = await supabase
       .from('canonical_products')
       .select('id, external_id, data, shopify_id')
       .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .neq('status', 'duplicate');
 
     for (const product of products || []) {
       const data = product.data as Record<string, unknown>;
@@ -262,7 +269,7 @@ Deno.serve(async (req) => {
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || generateShopifyHandle(title);
 
-      if (product.shopify_id) {
+      if (title) {
         entities.push({
           id: product.id,
           source_path: sourcePath,
@@ -275,16 +282,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Categories
+    // Categories — include all
     const { data: categories } = await supabase
       .from('canonical_categories')
       .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .eq('project_id', projectId);
 
     for (const category of categories || []) {
-      if (category.shopify_collection_id) {
-        const handle = category.shopify_tag || generateShopifyHandle(category.name);
+      const handle = category.shopify_tag || generateShopifyHandle(category.name);
+      if (category.name) {
         entities.push({
           id: category.id,
           source_path: category.slug ? `/shop/${category.slug}/` : null,
@@ -296,12 +302,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Pages
+    // Pages — include all
     const { data: pages } = await supabase
       .from('canonical_pages')
       .select('id, external_id, data, shopify_id')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .eq('project_id', projectId);
 
     for (const page of pages || []) {
       const data = page.data as Record<string, unknown>;
@@ -310,7 +315,7 @@ Deno.serve(async (req) => {
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || slug || generateShopifyHandle(title);
 
-      if (page.shopify_id) {
+      if (title) {
         entities.push({
           id: page.id,
           source_path: slug ? `/${slug}` : null,
@@ -322,7 +327,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`Found ${entities.length} uploaded entities (${products?.length || 0} products, ${categories?.length || 0} categories, ${pages?.length || 0} pages)`);
+    console.log(`Found ${entities.length} entities for matching (${products?.length || 0} products, ${categories?.length || 0} categories, ${pages?.length || 0} pages)`);
 
     // Build lookup maps
     const pathToEntity = new Map<string, UploadedEntity>();
@@ -392,6 +397,26 @@ Deno.serve(async (req) => {
             confidence = 100;
             matchedBy = 'exact';
             break;
+          }
+        }
+      }
+
+      // Strategy 1.3: Compare source_path name parts (ignore ID suffixes)
+      // DanDomain sitemap URLs and XML source_paths often have the same slug but different IDs
+      if (!matched && slug) {
+        const urlNamePart = normalizeForComparison(extractProductNameFromSlug(slug));
+        if (urlNamePart && urlNamePart.length > 3) {
+          for (const entity of entities) {
+            if (entity.source_path) {
+              const entitySlug = extractSlugFromPath(normalizePath(entity.source_path));
+              const entityNamePart = normalizeForComparison(extractProductNameFromSlug(entitySlug));
+              if (entityNamePart && entityNamePart === urlNamePart) {
+                matched = entity;
+                confidence = 96;
+                matchedBy = 'exact';
+                break;
+              }
+            }
           }
         }
       }
