@@ -117,10 +117,7 @@ export function ShopifyDestinationSearch({
       }
 
       // Collections
-      const categories = await fetchAll<{ id: string; name: string; shopify_tag: string | null; shopify_collection_id: string | null; shopify_handle: string | null }>(
-        'canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle',
-        { project_id: projectId, status: 'uploaded' }
-      );
+      const categories = await fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle', projectId);
 
       for (const category of categories) {
         const handle = category.shopify_handle || generateShopifyHandle(category.shopify_tag || category.name);
