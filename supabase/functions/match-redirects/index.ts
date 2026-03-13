@@ -295,12 +295,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Pages
+    // Pages — include all
     const { data: pages } = await supabase
       .from('canonical_pages')
       .select('id, external_id, data, shopify_id')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .eq('project_id', projectId);
 
     for (const page of pages || []) {
       const data = page.data as Record<string, unknown>;
@@ -309,7 +308,7 @@ Deno.serve(async (req) => {
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || slug || generateShopifyHandle(title);
 
-      if (page.shopify_id) {
+      if (title) {
         entities.push({
           id: page.id,
           source_path: slug ? `/${slug}` : null,
@@ -321,7 +320,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`Found ${entities.length} uploaded entities (${products?.length || 0} products, ${categories?.length || 0} categories, ${pages?.length || 0} pages)`);
+    console.log(`Found ${entities.length} entities for matching (${products?.length || 0} products, ${categories?.length || 0} categories, ${pages?.length || 0} pages)`);
 
     // Build lookup maps
     const pathToEntity = new Map<string, UploadedEntity>();
