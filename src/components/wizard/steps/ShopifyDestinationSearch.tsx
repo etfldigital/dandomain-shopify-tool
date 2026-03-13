@@ -23,6 +23,7 @@ interface ShopifyDestinationSearchProps {
   onSelect: (path: string) => void;
   disabled?: boolean;
   shopifyDomain?: string;
+  inline?: boolean;
 }
 
 interface ShopifyEntity {
