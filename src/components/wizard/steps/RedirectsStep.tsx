@@ -1462,7 +1462,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </p>
             <Button
               onClick={fetchSitemaps}
-              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl)}
+              disabled={isFetchingSitemaps || (!productSitemapUrl && !categorySitemapUrl && !pageSitemapUrl)}
             >
               {isFetchingSitemaps ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Globe className="w-4 h-4 mr-2" />}
               Hent sitemaps
