@@ -275,16 +275,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Categories
+    // Categories — include all
     const { data: categories } = await supabase
       .from('canonical_categories')
       .select('id, external_id, slug, shopify_collection_id, name, shopify_tag')
-      .eq('project_id', projectId)
-      .eq('status', 'uploaded');
+      .eq('project_id', projectId);
 
     for (const category of categories || []) {
-      if (category.shopify_collection_id) {
-        const handle = category.shopify_tag || generateShopifyHandle(category.name);
+      const handle = category.shopify_tag || generateShopifyHandle(category.name);
+      if (category.name) {
         entities.push({
           id: category.id,
           source_path: category.slug ? `/shop/${category.slug}/` : null,
