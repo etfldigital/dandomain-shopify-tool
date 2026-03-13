@@ -381,6 +381,8 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
       }
     }
     console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
+    const sample = Array.from(cache.entries()).slice(0, 5);
+    console.log(`[PRODUCTS] Manufacturer cache sample:`, sample.map(([k, v]) => `${k} → ${v}`).join(', '));
   } catch (e) {
     console.warn('[PRODUCTS] Failed to load manufacturer names:', e);
   }
