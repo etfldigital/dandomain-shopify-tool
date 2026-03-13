@@ -280,6 +280,32 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
+      // Build entity lookup for enriching redirects with title/image data
+      const entityImageLookup = new Map<string, { title: string; imageUrl: string | null }>();
+      
+      // Fetch product images for enrichment
+      const { data: prodData } = await supabase
+        .from('canonical_products')
+        .select('id, data')
+        .eq('project_id', project.id)
+        .eq('status', 'uploaded');
+      for (const p of prodData || []) {
+        const d = p.data as Record<string, unknown>;
+        const title = (d?.title as string) || '';
+        const images = (d?.images as string[]) || [];
+        entityImageLookup.set(p.id, { title, imageUrl: images[0] || null });
+      }
+
+      // Fetch category names
+      const { data: catData } = await supabase
+        .from('canonical_categories')
+        .select('id, name')
+        .eq('project_id', project.id)
+        .eq('status', 'uploaded');
+      for (const c of catData || []) {
+        entityImageLookup.set(c.id, { title: c.name, imageUrl: null });
+      }
+
       setRedirects(allRedirects.map(r => {
         const confidence = (r as unknown as { confidence_score?: number }).confidence_score ?? 0;
         const dbStatus = r.status as string;
@@ -289,8 +315,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         else if (dbStatus === 'approved') uiStatus = 'approved';
         else uiStatus = getRedirectStatus(confidence);
 
-        // Extract suggestion info
         const suggestions = (r as unknown as { ai_suggestions?: Array<{ entity_id: string; new_path: string; title: string; score: number }> }).ai_suggestions || [];
+        const entityInfo = entityImageLookup.get(r.entity_id);
 
         return {
           id: r.id,
@@ -305,7 +331,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           confidence_score: confidence,
           matched_by: (r as unknown as { matched_by?: string }).matched_by,
           suggestions: [],
-          matchedTitle: suggestions[0]?.title || undefined,
+          matchedTitle: entityInfo?.title || suggestions[0]?.title || undefined,
+          matchedImageUrl: entityInfo?.imageUrl || null,
         };
       }));
     } catch (err) {
