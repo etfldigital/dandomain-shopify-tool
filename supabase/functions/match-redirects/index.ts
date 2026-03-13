@@ -17,7 +17,7 @@ interface MatchedRedirect {
   entity_id: string;
   new_path: string;
   confidence_score: number;
-  matched_by: 'exact' | 'external_id' | 'sku' | 'title' | 'ai';
+  matched_by: 'exact' | 'external_id' | 'sku' | 'handle' | 'title' | 'ai';
   ai_suggestions?: Array<{
     entity_id: string;
     new_path: string;
@@ -49,20 +49,13 @@ interface UploadedEntity {
 // Normalize path for comparison
 function normalizePath(path: string): string {
   let normalized = path.trim().toLowerCase();
-  
-  // Remove protocol and domain
   normalized = normalized.replace(/^https?:\/\/[^\/]+/, '');
-  
-  // Ensure leading slash
   if (!normalized.startsWith('/')) {
     normalized = '/' + normalized;
   }
-  
-  // Remove trailing slash (except for root)
   if (normalized.length > 1 && normalized.endsWith('/')) {
     normalized = normalized.slice(0, -1);
   }
-  
   return normalized;
 }
 
@@ -74,8 +67,7 @@ function extractSlugFromPath(path: string): string {
     .replace(/^\/collections\//, '')
     .replace(/^\/pages\//, '')
     .replace(/\/$/, '')
-    .replace(/\.html$/, ''); // Remove .html extension
-  
+    .replace(/\.html$/, '');
   const segments = cleanPath.split('/').filter(Boolean);
   return segments[segments.length - 1] || '';
 }
@@ -92,10 +84,8 @@ function normalizeForComparison(text: string): string {
 
 // Extract potential product name from URL slug (removes ID suffix)
 function extractProductNameFromSlug(slug: string): string {
-  // DanDomain URLs: product-name-32129p.html or category-name-123c.html
-  // Remove the numeric ID suffix with p/c marker
   const withoutExtension = slug.replace(/\.html$/, '');
-  const withoutId = withoutExtension.replace(/-\d+[pc]?$/, '').replace(/-[A-Z0-9]+p$/, '');
+  const withoutId = withoutExtension.replace(/-\d+[pc]?\d*$/, '').replace(/-[A-Z0-9]+p$/, '');
   return withoutId;
 }
 
@@ -114,6 +104,25 @@ function generateShopifyHandle(title: string): string {
     .substring(0, 255);
 }
 
+// Compute Dice coefficient between two strings
+function diceCoefficient(a: string, b: string): number {
+  if (a.length < 2 || b.length < 2) return 0;
+  const getBigrams = (s: string): Set<string> => {
+    const bigrams = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) {
+      bigrams.add(s.substring(i, i + 2));
+    }
+    return bigrams;
+  };
+  const bigramsA = getBigrams(a);
+  const bigramsB = getBigrams(b);
+  let common = 0;
+  for (const bg of bigramsA) {
+    if (bigramsB.has(bg)) common++;
+  }
+  return (2 * common) / (bigramsA.size + bigramsB.size);
+}
+
 // Call Lovable AI for semantic matching
 async function callAiForMatching(
   oldPath: string,
@@ -127,7 +136,6 @@ async function callAiForMatching(
     return [];
   }
 
-  // Limit candidates to top 50 for API efficiency
   const limitedCandidates = candidates.slice(0, 50);
 
   const systemPrompt = `Du er en ekspert i at matche gamle DanDomain URLs til Shopify produkter og kollektioner.
@@ -187,7 +195,6 @@ Returner KUN JSON array, ingen anden tekst.`;
       return [];
     }
 
-    // Parse AI response - extract JSON array
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
       console.warn('Could not parse AI response as JSON:', content);
@@ -196,7 +203,6 @@ Returner KUN JSON array, ingen anden tekst.`;
 
     const parsed = JSON.parse(jsonMatch[0]) as Array<{ index: number; score: number }>;
     
-    // Map back to candidates
     return parsed
       .filter(p => p.index >= 1 && p.index <= limitedCandidates.length && p.score >= 50)
       .map(p => {
@@ -355,7 +361,7 @@ Deno.serve(async (req) => {
       const normalizedName = normalizeForComparison(extractedName);
 
       let matched: UploadedEntity | null = null;
-      let matchedBy: 'exact' | 'sku' | 'title' | 'ai' = 'exact';
+      let matchedBy: MatchedRedirect['matched_by'] = 'exact';
       let confidence = 0;
 
       // Strategy 1: Exact source_path match (prioritize products)
@@ -392,7 +398,6 @@ Deno.serve(async (req) => {
 
       // Strategy 1.5: Extract numeric ID from DanDomain URL and match against external_id
       if (!matched) {
-        // Product URL pattern: ends with -{digits}p.html
         const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
         if (productIdMatch) {
           const dandoId = productIdMatch[1];
@@ -404,7 +409,6 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Category URL pattern: ends with -{digits}c{digits}.html or -{digits}s{digits}.html
         if (!matched) {
           const catIdMatch = normalized.match(/-(\d+)[cs]\d*\.html$/i);
           if (catIdMatch) {
@@ -424,7 +428,6 @@ Deno.serve(async (req) => {
         for (const entity of productEntities) {
           if (entity.sku && entity.sku.length >= 3) {
             const skuLower = entity.sku.toLowerCase();
-            // Only match SKU if it appears as a distinct segment (between hyphens or at start/end)
             const skuPattern = new RegExp(`(?:^|-)${skuLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-|$)`);
             if (skuPattern.test(slug.toLowerCase())) {
               matched = entity;
@@ -436,9 +439,48 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Strategy 2.5: Shopify handle matching
+      // Extract the slug from the old DanDomain URL, strip the numeric ID suffix,
+      // and compare against Shopify handles
+      if (!matched && slug) {
+        const cleanSlug = extractProductNameFromSlug(slug);
+        const normalizedSlug = normalizeForComparison(cleanSlug);
+
+        if (normalizedSlug && normalizedSlug.length > 3) {
+          // Try exact handle match first
+          for (const entity of entities) {
+            const entityHandle = entity.shopify_handle.split('/').pop() || '';
+            const normalizedHandle = normalizeForComparison(entityHandle);
+
+            if (normalizedHandle === normalizedSlug) {
+              matched = entity;
+              confidence = 92;
+              matchedBy = 'handle';
+              break;
+            }
+          }
+
+          // Try partial handle match (slug contains handle or vice versa)
+          if (!matched) {
+            for (const entity of entities) {
+              const entityHandle = entity.shopify_handle.split('/').pop() || '';
+              const normalizedHandle = normalizeForComparison(entityHandle);
+
+              if (normalizedHandle.length > 5 && normalizedSlug.length > 5) {
+                if (normalizedHandle.includes(normalizedSlug) || normalizedSlug.includes(normalizedHandle)) {
+                  matched = entity;
+                  confidence = 75;
+                  matchedBy = 'handle';
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
       // Strategy 3: Exact normalized title match
       if (!matched && normalizedName) {
-        // Products first
         for (const entity of productEntities) {
           if (normalizeForComparison(entity.title) === normalizedName) {
             matched = entity;
@@ -448,7 +490,6 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Then pages
         if (!matched) {
           for (const entity of pageEntities) {
             if (normalizeForComparison(entity.title) === normalizedName) {
@@ -460,7 +501,6 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Categories only on exact match
         if (!matched) {
           for (const entity of categoryEntities) {
             if (normalizeForComparison(entity.title) === normalizedName) {
@@ -492,6 +532,30 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Strategy 4.5: Fuzzy matching using Dice coefficient
+      if (!matched && normalizedName && normalizedName.length > 5) {
+        let bestScore = 0;
+        let bestEntity: UploadedEntity | null = null;
+
+        for (const entity of entities) {
+          const entityNormalized = normalizeForComparison(entity.title);
+          if (!entityNormalized || entityNormalized.length < 3) continue;
+
+          const score = diceCoefficient(normalizedName, entityNormalized);
+
+          if (score > bestScore && score >= 0.6) {
+            bestScore = score;
+            bestEntity = entity;
+          }
+        }
+
+        if (bestEntity && bestScore >= 0.6) {
+          matched = bestEntity;
+          confidence = Math.round(bestScore * 80); // 60% Dice = 48, 80% = 64, 100% = 80
+          matchedBy = 'title';
+        }
+      }
+
       if (matched) {
         matchedRedirects.push({
           old_path: normalized,
@@ -502,7 +566,6 @@ Deno.serve(async (req) => {
           matched_by: matchedBy,
         });
       } else {
-        // Queue for AI matching
         urlsForAiMatching.push({ path: normalized, extractedName });
       }
     }
@@ -510,7 +573,6 @@ Deno.serve(async (req) => {
     console.log(`Direct matching: ${matchedRedirects.length} matched, ${urlsForAiMatching.length} unmatched after deterministic strategies`);
 
     if (shouldUseAi) {
-      // AI matching for unmatched URLs (in batches to avoid rate limits)
       const AI_BATCH_SIZE = 10;
       const candidates = entities.map(e => ({
         id: e.id,
@@ -526,7 +588,6 @@ Deno.serve(async (req) => {
           const aiSuggestions = await callAiForMatching(path, extractedName, candidates);
 
           if (aiSuggestions.length > 0 && aiSuggestions[0].score >= 70) {
-            // Best AI match with high confidence
             const best = aiSuggestions[0];
             const entity = entities.find(e => e.id === best.entity_id);
 
@@ -538,7 +599,7 @@ Deno.serve(async (req) => {
                 new_path: entity.shopify_handle,
                 confidence_score: best.score,
                 matched_by: 'ai',
-                ai_suggestions: aiSuggestions.slice(1), // Store alternatives
+                ai_suggestions: aiSuggestions.slice(1),
               });
             } else {
               unmatchedUrls.push({
@@ -547,7 +608,6 @@ Deno.serve(async (req) => {
               });
             }
           } else {
-            // No confident match - store as unmatched with suggestions
             unmatchedUrls.push({
               old_path: path,
               ai_suggestions: aiSuggestions,
@@ -555,7 +615,6 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Small delay between batches to avoid rate limits
         if (i + AI_BATCH_SIZE < urlsForAiMatching.length) {
           await new Promise(resolve => setTimeout(resolve, 200));
         }
@@ -563,7 +622,6 @@ Deno.serve(async (req) => {
 
       console.log(`After AI: ${matchedRedirects.length} matched, ${unmatchedUrls.length} unmatched`);
     } else {
-      // No AI: store all remaining as unmatched without suggestions
       for (const u of urlsForAiMatching) {
         unmatchedUrls.push({ old_path: u.path, ai_suggestions: [] });
       }
@@ -608,8 +666,8 @@ Deno.serve(async (req) => {
           .upsert(
             batch.map(u => ({
               project_id: projectId,
-              entity_type: 'product' as const, // Default, user will correct
-              entity_id: '00000000-0000-0000-0000-000000000000', // Placeholder
+              entity_type: 'product' as const,
+              entity_id: '00000000-0000-0000-0000-000000000000',
               old_path: u.old_path,
               new_path: u.ai_suggestions[0]?.new_path || '/not-found',
               confidence_score: u.ai_suggestions[0]?.score || 0,
@@ -636,6 +694,7 @@ Deno.serve(async (req) => {
           exact: matchedRedirects.filter(r => r.matched_by === 'exact').length,
           external_id: matchedRedirects.filter(r => r.matched_by === 'external_id').length,
           sku: matchedRedirects.filter(r => r.matched_by === 'sku').length,
+          handle: matchedRedirects.filter(r => r.matched_by === 'handle').length,
           title: matchedRedirects.filter(r => r.matched_by === 'title').length,
           ai: matchedRedirects.filter(r => r.matched_by === 'ai').length,
         },
