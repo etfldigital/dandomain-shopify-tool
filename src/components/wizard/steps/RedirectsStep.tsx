@@ -272,6 +272,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoMatchAfterFetchRef = useRef(false);
 
   // ============================================
   // DATA LOADING
