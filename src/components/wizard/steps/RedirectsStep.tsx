@@ -1129,7 +1129,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={async () => {
-                if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl)) {
+                if (dandomanUrls.length === 0 && (productSitemapUrl || categorySitemapUrl || pageSitemapUrl)) {
                   autoMatchAfterFetchRef.current = true;
                   await fetchSitemaps();
                 } else {
