@@ -1016,6 +1016,34 @@ async function processProductGroup(
 
   console.log(`[PRODUCTS] "${transformedTitle}": Found ${allImages.length} images from merged data`);
 
+  // If no images found, log where we looked for debugging
+  if (allImages.length === 0) {
+    console.error(`[PRODUCTS] "${transformedTitle}": NO IMAGES FOUND!`);
+    console.error(`  _mergedImages: ${JSON.stringify(primaryData._mergedImages || 'undefined')}`);
+    console.error(`  images: ${JSON.stringify(primaryData.images || 'undefined')}`);
+    console.error(`  items[0].data.images: ${JSON.stringify(items[0]?.data?.images || 'undefined')}`);
+  }
+
+  // Validate and fix image URLs before upload
+  const validatedImages: string[] = [];
+  for (const img of allImages) {
+    const normalized = normalizeImageUrl(img, dandomainBaseUrl);
+    if (normalized && (normalized.startsWith('http://') || normalized.startsWith('https://'))) {
+      validatedImages.push(img);
+    } else {
+      console.warn(`[PRODUCTS] "${transformedTitle}": Dropping invalid image URL: "${img}" → normalized: "${normalized}"`);
+    }
+  }
+
+  if (validatedImages.length !== allImages.length) {
+    console.warn(`[PRODUCTS] "${transformedTitle}": Dropped ${allImages.length - validatedImages.length} invalid image URLs (${validatedImages.length} remaining)`);
+  }
+
+  if (allImages.length > 0 && validatedImages.length === 0) {
+    console.error(`[PRODUCTS] "${transformedTitle}": ALL image URLs are invalid! Original URLs: ${allImages.slice(0, 3).join(', ')}`);
+    console.error(`[PRODUCTS] "${transformedTitle}": dandomainBaseUrl="${dandomainBaseUrl}" — is this set correctly?`);
+  }
+
   // Get category tags
   const categoryExternalIds: string[] = primaryData.category_external_ids || [];
   const categoryTags = getCategoryTagsForProduct(categoryExternalIds, categoryTagCache);
