@@ -1333,19 +1333,20 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                               </TableCell>
                               <TableCell>
                                 <div className="flex items-center gap-1">
-                                  <Input
-                                    value={redirect.new_path}
-                                    onChange={(e) => updateNewPath(redirect.id, e.target.value)}
-                                    className="font-mono text-xs h-8 flex-1"
-                                    disabled={redirect.status === 'created'}
-                                  />
-                                  <ShopifyDestinationSearch
-                                    projectId={project.id}
-                                    currentValue={redirect.new_path}
-                                    onSelect={(path) => updateNewPath(redirect.id, path, true)}
-                                    disabled={redirect.status === 'created'}
-                                    shopifyDomain={project.shopify_store_domain || undefined}
-                                  />
+                                  {redirect.status === 'created' ? (
+                                    <span className="font-mono text-xs text-muted-foreground truncate">
+                                      {redirect.new_path}
+                                    </span>
+                                  ) : (
+                                    <ShopifyDestinationSearch
+                                      projectId={project.id}
+                                      currentValue={redirect.new_path}
+                                      onSelect={(path) => updateNewPath(redirect.id, path, true)}
+                                      disabled={redirect.status === 'created'}
+                                      shopifyDomain={project.shopify_store_domain || undefined}
+                                      inline={true}
+                                    />
+                                  )}
                                   {project.shopify_store_domain && redirect.new_path && (
                                     <a
                                       href={`https://${project.shopify_store_domain.replace(/^https?:\/\//, '')}${redirect.new_path}`}
@@ -1354,7 +1355,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                       className="h-8 w-8 flex items-center justify-center shrink-0 text-muted-foreground hover:text-primary"
                                       title="Åbn i Shopify"
                                     >
-                                      <ExternalLink className="w-4 h-4" />
+                                      <ExternalLink className="w-3.5 h-3.5" />
                                     </a>
                                   )}
                                 </div>
