@@ -381,160 +381,29 @@ async function loadManufacturerNames(supabase: any, projectId: string): Promise<
       }
     }
     console.log(`[PRODUCTS] Loaded ${cache.size} manufacturer name mappings`);
+    const sample = Array.from(cache.entries()).slice(0, 5);
+    console.log(`[PRODUCTS] Manufacturer cache sample:`, sample.map(([k, v]) => `${k} → ${v}`).join(', '));
   } catch (e) {
     console.warn('[PRODUCTS] Failed to load manufacturer names:', e);
   }
   return cache;
 }
 
-function formatInferredVendor(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => {
-      if (word === '&') return '&';
-      const clean = word.replace(/[^A-Za-z0-9ÆØÅæøå]/g, '');
-      if (!clean) return word;
-      if (clean.length === 1) return clean.toUpperCase();
-      if (clean.length <= 4 && clean === clean.toUpperCase()) return clean;
-      return `${clean.charAt(0).toUpperCase()}${clean.slice(1).toLowerCase()}`;
-    })
-    .join(' ');
-}
-
-function inferVendorFromTitle(manufacturerId: string, fallbackTitle?: string): string {
-  const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
-  const normalizedId = normalizeManufacturerKey(manufacturerId).replace(/[^a-z0-9]/g, '');
-  if (!normalizedId) return '';
-
-  const leadingTitlePart = String(fallbackTitle || '').split(',')[0]?.trim() || '';
-  if (!leadingTitlePart) return '';
-
-  const words = leadingTitlePart.split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '';
-
-  const stopWords = new Set([
-    'top', 'bluse', 'kjole', 'ring', 'ørering', 'oerering', 'sneakers', 'boots', 'cardigan',
-    'blazer', 'sandaler', 'sandal', 'jakke', 'taske', 'belt', 'bælte', 'pumps', 'strømper',
-    'stroemper', 'bukser', 'leggings', 'skjorte', 'tee', 't-shirt', 'tshirt', 'creme', 'cream',
-  ]);
-
-  const sanitizeWord = (word: string): string =>
-    normalizeManufacturerKey(word).replace(/[^a-z0-9]/g, '');
-
-  let initials = '';
-  for (let index = 0; index < Math.min(words.length, 5); index += 1) {
-    const currentWord = sanitizeWord(words[index]);
-    if (!currentWord) continue;
-    initials += currentWord.charAt(0);
-    if (initials === normalizedId) {
-      return formatInferredVendor(words.slice(0, index + 1).join(' '));
-    }
-  }
-
-  const firstWord = sanitizeWord(words[0]);
-  if (firstWord !== normalizedId) return '';
-
-  if (words.length >= 3) {
-    const connector = normalizeManufacturerKey(words[1]);
-    if (connector === '&' || connector === 'og') {
-      return formatInferredVendor(words.slice(0, 3).join(' '));
-    }
-  }
-
-  if (words.length >= 2) {
-    const secondWord = sanitizeWord(words[1]);
-    if (secondWord && !stopWords.has(secondWord)) {
-      return formatInferredVendor(words.slice(0, 2).join(' '));
-    }
-  }
-
-  return formatInferredVendor(words[0]);
-}
-
-function resolveVendorName(rawId: string, ...fallbackTitles: Array<string | undefined>): string {
+function resolveVendorName(rawId: string): string {
   const manufacId = String(rawId || '').trim();
-  const normalizeManufacturerKey = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
-  const normalizedId = normalizeManufacturerKey(manufacId);
-  const normalizedIdAlnum = normalizedId.replace(/[^a-z0-9]/g, '');
-
   if (!manufacId) return '';
 
-  const directVendor = manufacturerNameCache.get(manufacId) ?? manufacturerNameCache.get(normalizedId);
+  // Direct lookup in manufacturer cache (MANUFAC_ID → MANUFAC_NAME)
+  const directMatch = manufacturerNameCache.get(manufacId);
+  if (directMatch) return directMatch;
 
-  const candidateNames = Array.from(new Set(manufacturerNameCache.values()));
+  // Case-insensitive lookup
+  const normalizedId = manufacId.trim().replace(/\s+/g, ' ').toLowerCase();
+  const normalizedMatch = manufacturerNameCache.get(normalizedId);
+  if (normalizedMatch) return normalizedMatch;
 
-  const findExpandedFromCandidates = (): string | null => {
-    if (!normalizedIdAlnum) return null;
-
-    // Fallback 1: Prefix match (e.g. ARKK -> ARKK COPENHAGEN)
-    const prefixMatches = candidateNames.filter((name) => {
-      const normalizedName = normalizeManufacturerKey(name);
-      const normalizedNameAlnum = normalizedName.replace(/[^a-z0-9]/g, '');
-      return (
-        normalizedNameAlnum === normalizedIdAlnum ||
-        normalizedName.startsWith(`${normalizedId} `)
-      );
-    });
-
-    if (prefixMatches.length === 1) return prefixMatches[0];
-
-    // Fallback 2: Abbreviation -> initials (e.g. SA -> Stine A)
-    if (normalizedIdAlnum.length <= 5 && /^[a-z0-9]+$/i.test(normalizedIdAlnum)) {
-      const initialMatches = candidateNames.filter((name) => {
-        const initialsFromName = normalizeManufacturerKey(name)
-          .split(' ')
-          .filter(Boolean)
-          .map((part) => part[0])
-          .join('');
-        return initialsFromName === normalizedIdAlnum;
-      });
-
-      if (initialMatches.length === 1) return initialMatches[0];
-    }
-
-    return null;
-  };
-
-  const findInferredFromTitles = (): string | null => {
-    const seen = new Set<string>();
-    for (const title of fallbackTitles) {
-      const normalizedTitle = String(title || '').trim();
-      if (!normalizedTitle || seen.has(normalizedTitle)) continue;
-      seen.add(normalizedTitle);
-
-      const inferred = inferVendorFromTitle(manufacId, normalizedTitle);
-      if (inferred) return inferred;
-    }
-    return null;
-  };
-
-  if (directVendor) {
-    const trimmedDirect = String(directVendor).trim();
-    const directAlnum = normalizeManufacturerKey(trimmedDirect).replace(/[^a-z0-9]/g, '');
-    const looksLikeAbbreviation = normalizedIdAlnum.length > 0 && normalizedIdAlnum.length <= 5;
-
-    // If mapping already expands the ID, keep it.
-    if (directAlnum && directAlnum !== normalizedIdAlnum) return trimmedDirect;
-
-    // If mapping equals ID (e.g. SA -> SA), try stronger fallbacks before returning raw ID.
-    if (looksLikeAbbreviation) {
-      const expandedFromNames = findExpandedFromCandidates();
-      if (expandedFromNames) return expandedFromNames;
-
-      const inferredFromTitles = findInferredFromTitles();
-      if (inferredFromTitles) return inferredFromTitles;
-    }
-
-    return trimmedDirect;
-  }
-
-  const expandedFromNames = findExpandedFromCandidates();
-  if (expandedFromNames) return expandedFromNames;
-
-  const inferredFromTitles = findInferredFromTitles();
-  if (inferredFromTitles) return inferredFromTitles;
-
+  // No match found — return the raw ID as-is
+  console.warn(`[PRODUCTS][VENDOR] No manufacturer name found for MANUFAC_ID="${manufacId}" — using raw ID`);
   return manufacId;
 }
 
@@ -784,7 +653,7 @@ async function processProductGroup(
 
   const primaryItem = items[0];
   const manufacId = String(data.vendor || '').trim();
-  const vendor = resolveVendorName(manufacId, originalTitle, groupedTitle);
+  const vendor = resolveVendorName(manufacId);
   console.log(`[PRODUCTS][VENDOR] SKU=${String(data.sku || primaryItem.external_id || '')} MANUFAC_ID="${manufacId}" RESOLVED_VENDOR="${vendor}"`);
   const dbGroupKey = String(data._groupKey || '').trim().toLowerCase();
 
