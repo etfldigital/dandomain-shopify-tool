@@ -106,6 +106,86 @@ Deno.serve(async (req) => {
 
     for (const redirect of redirects) {
       try {
+        // VALIDATE destination exists before creating redirect
+        const destinationPath = redirect.new_path;
+        let destinationExists = true;
+
+        if (destinationPath && destinationPath !== '/') {
+          try {
+            if (destinationPath.startsWith('/products/')) {
+              const handle = destinationPath.replace('/products/', '').replace(/\/$/, '');
+              const checkResult = await fetch(
+                `https://${shopifyDomain}/admin/api/2025-01/products.json?handle=${encodeURIComponent(handle)}&fields=id`,
+                { headers: { 'X-Shopify-Access-Token': shopifyToken } }
+              );
+              if (checkResult.ok) {
+                const checkData = await checkResult.json();
+                if (!checkData.products || checkData.products.length === 0) {
+                  destinationExists = false;
+                }
+              }
+            } else if (destinationPath.startsWith('/collections/')) {
+              const handle = destinationPath.replace('/collections/', '').replace(/\/$/, '');
+              let found = false;
+              const smartCheck = await fetch(
+                `https://${shopifyDomain}/admin/api/2025-01/smart_collections.json?handle=${encodeURIComponent(handle)}&fields=id`,
+                { headers: { 'X-Shopify-Access-Token': shopifyToken } }
+              );
+              if (smartCheck.ok) {
+                const smartData = await smartCheck.json();
+                if (smartData.smart_collections && smartData.smart_collections.length > 0) {
+                  found = true;
+                }
+              }
+              if (!found) {
+                const customCheck = await fetch(
+                  `https://${shopifyDomain}/admin/api/2025-01/custom_collections.json?handle=${encodeURIComponent(handle)}&fields=id`,
+                  { headers: { 'X-Shopify-Access-Token': shopifyToken } }
+                );
+                if (customCheck.ok) {
+                  const customData = await customCheck.json();
+                  if (customData.custom_collections && customData.custom_collections.length > 0) {
+                    found = true;
+                  }
+                }
+              }
+              if (!found) {
+                destinationExists = false;
+              }
+            } else if (destinationPath.startsWith('/pages/')) {
+              const handle = destinationPath.replace('/pages/', '').replace(/\/$/, '');
+              const checkResult = await fetch(
+                `https://${shopifyDomain}/admin/api/2025-01/pages.json?handle=${encodeURIComponent(handle)}&fields=id`,
+                { headers: { 'X-Shopify-Access-Token': shopifyToken } }
+              );
+              if (checkResult.ok) {
+                const checkData = await checkResult.json();
+                if (!checkData.pages || checkData.pages.length === 0) {
+                  destinationExists = false;
+                }
+              }
+            }
+
+            await sleep(200);
+          } catch (err) {
+            console.warn(`[REDIRECTS] Could not validate destination ${destinationPath}: ${err}`);
+            destinationExists = true; // Fail open
+          }
+        }
+
+        if (!destinationExists) {
+          console.warn(`[REDIRECTS] SKIPPING: destination does not exist in Shopify: ${destinationPath}`);
+          await supabase
+            .from('project_redirects')
+            .update({
+              status: 'failed',
+              error_message: `Destination findes ikke i Shopify: ${destinationPath}`,
+            })
+            .eq('id', redirect.id);
+          failed++;
+          continue;
+        }
+
         // Create redirect in Shopify
         const response = await fetch(
           `https://${shopifyDomain}/admin/api/2025-01/redirects.json`,

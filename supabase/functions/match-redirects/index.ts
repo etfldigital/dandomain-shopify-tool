@@ -374,15 +374,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch ALL entities (not just uploaded) — we need to match URLs against future Shopify paths too
+    // Only include entities that actually exist in Shopify (uploaded with valid IDs)
     const entities: UploadedEntity[] = [];
 
-    // Products — include all statuses except 'duplicate'
+    // Products — only uploaded with a shopify_id
     const { data: products } = await supabase
       .from('canonical_products')
       .select('id, external_id, data, shopify_id')
       .eq('project_id', projectId)
-      .neq('status', 'duplicate');
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null);
 
     for (const product of products || []) {
       const data = product.data as Record<string, unknown>;
@@ -405,11 +406,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Categories — include all
+    // Categories — only uploaded with a shopify_collection_id
     const { data: categories } = await supabase
       .from('canonical_categories')
       .select('id, external_id, slug, shopify_collection_id, name, shopify_tag, shopify_handle')
-      .eq('project_id', projectId);
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_collection_id', 'is', null);
 
     for (const category of categories || []) {
       // Use the ACTUAL Shopify handle (stored during upload), not the tag name
@@ -448,11 +451,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Pages — include all
+    // Pages — only uploaded with a shopify_id
     const { data: pages } = await supabase
       .from('canonical_pages')
       .select('id, external_id, data, shopify_id')
-      .eq('project_id', projectId);
+      .eq('project_id', projectId)
+      .eq('status', 'uploaded')
+      .not('shopify_id', 'is', null);
 
     for (const page of pages || []) {
       const data = page.data as Record<string, unknown>;

@@ -1,37 +1,60 @@
 
 
-## Plan: Validate redirect destinations + filter to uploaded entities only
+## Investigation Results
 
-### 1. `supabase/functions/match-redirects/index.ts` — Filter entities to uploaded-only
+The "i Shopify" refresh button is **NOT broken by CORS**. The full flow works correctly:
 
-Change the three entity queries (lines 381-455) to only include entities that exist in Shopify:
+1. Browser calls backend Edge Function `shopify-products-count` via `supabase.functions.invoke()` -- confirmed in console logs and network requests
+2. Edge Function calls Shopify REST API at `https://alexandrasdk.myshopify.com/admin/api/2025-01/products/count.json?status=any`
+3. Shopify returns `{"count":0}` -- HTTP 200, not an error
 
-- **Products** (line 381-385): Change `.neq('status', 'duplicate')` to `.eq('status', 'uploaded').not('shopify_id', 'is', null)`
-- **Categories** (line 409-412): Add `.eq('status', 'uploaded').not('shopify_collection_id', 'is', null)`
-- **Pages** (line 452-455): Add `.eq('status', 'uploaded').not('shopify_id', 'is', null)`
+This is confirmed by edge function logs showing dozens of calls all returning `{"count":0}`. Meanwhile, the same function correctly returns customers (16,215), orders (4,539), categories (405), and pages (1).
 
-Update the comments accordingly (remove "include all" comments).
+### Root Cause
 
-### 2. `supabase/functions/create-redirects/index.ts` — Validate destinations before creating
+The Shopify REST Products API (`/products/count.json`) was deprecated starting in API version `2024-10`. In version `2025-01`, this endpoint returns 0 even though products exist. The upload works because `POST /products.json` still functions for creation, but the count endpoint is broken.
 
-Inside the `for (const redirect of redirects)` loop (line 107), before the existing Shopify redirect creation call (line 110), add a validation block:
+### Plan
 
-- Extract `redirect.new_path` and determine resource type (`/products/`, `/collections/`, `/pages/`)
-- For products: `GET /admin/api/2025-01/products.json?handle={handle}&fields=id`
-- For collections: Check both `smart_collections` and `custom_collections` by handle
-- For pages: `GET /admin/api/2025-01/pages.json?handle={handle}&fields=id`
-- If resource not found → mark redirect as `failed` with error message "Destination findes ikke i Shopify: {path}", increment `failed`, `continue`
-- If validation network error → fail open (allow redirect to proceed)
-- Add `await sleep(200)` between validation checks for rate limiting
+**1. Fix `shopify-products-count` Edge Function** -- use GraphQL for products count instead of the deprecated REST endpoint
 
-### Files changed
-| File | Change |
-|------|--------|
-| `match-redirects/index.ts` | Filter products, categories, pages to `status='uploaded'` with non-null Shopify IDs |
-| `create-redirects/index.ts` | Add destination existence validation via Shopify Admin API before creating each redirect |
+Replace the products case in `fetchCountForEntity` with a GraphQL query:
+```graphql
+{ productsCount { count } }
+```
 
-### Files NOT changed
-- Frontend/UI components
-- Upload logic
-- Matching strategies/confidence scores
+This hits `POST /admin/api/2025-01/graphql.json` which is the supported way to count products in newer API versions. All other entity types (customers, orders, categories, pages) keep their current REST endpoints since those still work.
+
+**2. No frontend changes needed**
+
+The frontend code in `UploadStep.tsx` already:
+- Calls the backend Edge Function (not Shopify directly)
+- Has per-entity-type refresh via `fetchShopifyLiveCountForEntity()`
+- Displays "–" when fetch fails (`null` values)
+- Logs responses to console
+
+The only change is in the backend Edge Function.
+
+### Technical Detail
+
+```text
+Current (broken):
+  GET /admin/api/2025-01/products/count.json?status=any → {"count": 0}
+
+Fixed:
+  POST /admin/api/2025-01/graphql.json
+  Body: { "query": "{ productsCount { count } }" }
+  → {"data": {"productsCount": {"count": 431}}}
+```
+
+### Files to change
+
+- `supabase/functions/shopify-products-count/index.ts` -- replace REST products count with GraphQL query
+- `supabase/functions/upload-worker/index.ts` -- also fix the products count at line 172 which has the same bug (used for sequencing gate)
+
+### Not changing
+- Upload logic, payload mapping, retry logic
+- "Afventer" count logic
+- Frontend UploadStep.tsx
+- Watchdog mechanism
 
