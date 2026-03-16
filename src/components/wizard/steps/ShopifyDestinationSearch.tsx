@@ -234,6 +234,11 @@ export function ShopifyDestinationSearch({
           .filter((e) => !compatibleType || e.type === compatibleType)
           .filter((e) => matchesEntityQuery(e, query));
 
+        const indexed = response.meta?.indexedProducts;
+        const reported = response.meta?.shopifyProducts;
+
+        setLiveIndexedProducts(typeof indexed === 'number' ? indexed : null);
+        setLiveShopifyProducts(typeof reported === 'number' ? reported : null);
         setLiveEntities(safeEntities);
       } catch (err) {
         console.error('Live Shopify search failed:', err);
