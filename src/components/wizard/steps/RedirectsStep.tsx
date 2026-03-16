@@ -346,8 +346,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           confidence_score: confidence,
           matched_by: (r as unknown as { matched_by?: string }).matched_by,
           suggestions: [],
-          matchedTitle: entityInfo?.title || suggestions[0]?.title || undefined,
-          matchedImageUrl: entityInfo?.imageUrl || null,
+          // Only use suggestion title if it matches the current new_path to prevent data mismatch
+          matchedTitle: entityInfo?.title || (suggestions[0]?.new_path === r.new_path ? suggestions[0]?.title : undefined) || undefined,
+          matchedImageUrl: entityInfo?.imageUrl ?? null,
         };
       }));
     } catch (err) {
