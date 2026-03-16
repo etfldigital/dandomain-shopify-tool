@@ -1265,10 +1265,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     },
     shopify: {
       products: shopifyEntities.filter(u => u.type === 'product').length,
+      indexedProducts: shopifyProductIndexCount,
+      reportedProducts: shopifyProductTotalCount,
       collections: shopifyEntities.filter(u => u.type === 'collection').length,
       pages: shopifyEntities.filter(u => u.type === 'page').length,
     },
-  }), [redirects, dandomanUrls, shopifyEntities, filteredRedirects]);
+  }), [redirects, dandomanUrls, shopifyEntities, filteredRedirects, shopifyProductIndexCount, shopifyProductTotalCount]);
 
   // ============================================
   // RENDER
