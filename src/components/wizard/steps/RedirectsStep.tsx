@@ -1592,6 +1592,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                     {redirect.matched_by === 'semantic' && 'Semantisk'}
                                     {redirect.matched_by === 'brand_stripped' && 'Brand-fjernet'}
                                     {redirect.matched_by?.startsWith('query_') && 'Søgelogik'}
+                                    {redirect.matched_by === 'manual_search_auto' && 'Søgelogik (auto)'}
+                                    {redirect.matched_by === 'manual_search_auto_brand_stripped' && 'Søgelogik (auto, brand fjernet)'}
                                     {redirect.matched_by === 'manual' && 'Manuel'}
                                     {redirect.matched_by === 'none' && '—'}
                                   </div>
