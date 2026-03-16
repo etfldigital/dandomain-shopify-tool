@@ -172,6 +172,68 @@ export function extractWordsFromShopifyEntity(title: string, handle: string): st
   return Array.from(allWords);
 }
 
+function extractVendorWords(vendor: string | null | undefined): string[] {
+  if (!vendor) return [];
+
+  return Array.from(new Set(
+    normalizeDanish(vendor)
+      .split(/[\s\-_,./]+/)
+      .filter(w => w.length >= 2 && !STOP_WORDS.has(w) && !/^\d+$/.test(w))
+  ));
+}
+
+function getProductTitleContext(
+  productTitle: string | null | undefined,
+  productVendorWords: string[] | undefined,
+  knownBrands?: Set<string>
+): {
+  tokens: string[];
+  searchQuery: string;
+  brandStripped: boolean;
+  strippedBrand: string | null;
+} | null {
+  if (!productTitle || !productTitle.trim()) return null;
+
+  const titleTokens = normalizeDanish(productTitle)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 2 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
+
+  if (titleTokens.length === 0) return null;
+
+  const vendorWords = Array.from(new Set((productVendorWords || []).map(normalizeDanish)));
+
+  let stripCount = 0;
+  let strippedBrand: string | null = null;
+
+  if (vendorWords.length > 0 && titleTokens.length >= vendorWords.length) {
+    const startsWithVendor = vendorWords.every((word, idx) => titleTokens[idx] === word);
+    if (startsWithVendor) {
+      stripCount = vendorWords.length;
+      strippedBrand = vendorWords.join(' ');
+    }
+  }
+
+  if (stripCount === 0 && knownBrands && knownBrands.size > 0) {
+    while (stripCount < titleTokens.length && knownBrands.has(titleTokens[stripCount])) {
+      stripCount += 1;
+    }
+    if (stripCount > 0) {
+      strippedBrand = titleTokens.slice(0, stripCount).join(' ');
+    }
+  }
+
+  const remaining = titleTokens.slice(stripCount);
+  const tokens = remaining.length > 0 ? remaining : titleTokens;
+
+  return {
+    tokens,
+    searchQuery: tokens.join(' '),
+    brandStripped: stripCount > 0,
+    strippedBrand,
+  };
+}
+
 // ============================================
 // SCORING
 // ============================================
