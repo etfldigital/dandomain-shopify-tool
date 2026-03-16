@@ -85,6 +85,26 @@ interface MatcherShopifyEntity {
   vendor?: string | null;
 }
 
+interface ShopifySearchMeta {
+  indexedProducts?: number | null;
+  shopifyProducts?: number | null;
+  indexComplete?: boolean | null;
+}
+
+interface ShopifySearchResponse {
+  success?: boolean;
+  entities?: Array<{
+    id: string;
+    type: ShopifyUrlType;
+    title: string;
+    handle: string;
+    path: string;
+    imageUrl?: string | null;
+  }>;
+  meta?: ShopifySearchMeta;
+  error?: string;
+}
+
 // ============================================
 // CONSTANTS
 // ============================================
