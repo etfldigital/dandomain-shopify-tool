@@ -69,6 +69,8 @@ export function ShopifyDestinationSearch({
   const [liveEntities, setLiveEntities] = useState<ShopifyEntity[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLiveSearching, setIsLiveSearching] = useState(false);
+  const [liveIndexedProducts, setLiveIndexedProducts] = useState<number | null>(null);
+  const [liveShopifyProducts, setLiveShopifyProducts] = useState<number | null>(null);
 
   useEffect(() => {
     if (open && entities.length === 0) {
