@@ -778,8 +778,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       confidence_score: 100,
       status: (r.status === 'no_match' || r.status === 'pending_approval') ? 'pending_approval' as RedirectStatus : r.status,
       matched_by: 'manual',
-      matchedTitle: entity?.title || r.matchedTitle,
-      matchedImageUrl: entity?.imageUrl || r.matchedImageUrl,
+      matchedTitle: entity?.title || undefined,
+      matchedImageUrl: entity?.imageUrl ?? null,
     } : r));
 
     try {
