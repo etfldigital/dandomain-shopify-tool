@@ -39,6 +39,11 @@ export interface ShopifyEntity {
 interface LiveSearchResponse {
   success?: boolean;
   entities?: ShopifyEntity[];
+  meta?: {
+    indexedProducts?: number | null;
+    shopifyProducts?: number | null;
+    indexComplete?: boolean | null;
+  };
   error?: string;
 }
 
