@@ -359,6 +359,9 @@ export function ShopifyDestinationSearch({
           {searchQuery.trim().length >= 2 && (
             <div className="mt-1 text-[11px] text-muted-foreground">
               Søger både i uploadede data og live i Shopify
+              {compatibleType === 'product' && liveIndexedProducts !== null && (
+                <span className="ml-1">· Indeks: {liveIndexedProducts}{liveShopifyProducts !== null ? `/${liveShopifyProducts}` : ''}</span>
+              )}
             </div>
           )}
         </div>
