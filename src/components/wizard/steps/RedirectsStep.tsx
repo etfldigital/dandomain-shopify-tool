@@ -505,52 +505,115 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         entityLookup.set(e.id, e);
       }
 
-      // === Build brand/vendor map from canonical_products ===
-      // Maps old URL path → array of normalized brand words to strip
+      // === Build XML-backed product context (title + vendor words) ===
+      const normalizeVendorWords = (input: string): string[] => {
+        return Array.from(new Set(
+          input.toLowerCase().trim()
+            .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
+            .replace(/ü/g, 'ue').replace(/ö/g, 'oe').replace(/ä/g, 'ae').replace(/ß/g, 'ss')
+            .split(/[\s\-_,./]+/)
+            .filter(w => w.length >= 2)
+        ));
+      };
+
+      const extractLegacyProductId = (path: string): string | null => {
+        const match = path.toLowerCase().match(/-(\d+)p\d*\.html$/i);
+        return match ? match[1] : null;
+      };
+
+      const manufacturerNameById = new Map<string, string>();
+      const manufacturerPageSize = 1000;
+      let manufacturerOffset = 0;
+      while (true) {
+        const { data: manufacturers } = await supabase
+          .from('canonical_manufacturers')
+          .select('external_id, name')
+          .eq('project_id', project.id)
+          .range(manufacturerOffset, manufacturerOffset + manufacturerPageSize - 1);
+
+        if (!manufacturers || manufacturers.length === 0) break;
+
+        for (const m of manufacturers) {
+          if (m.external_id && m.name) {
+            manufacturerNameById.set(String(m.external_id).trim(), String(m.name).trim());
+          }
+        }
+
+        if (manufacturers.length < manufacturerPageSize) break;
+        manufacturerOffset += manufacturerPageSize;
+      }
+
       const brandWordsMap = new Map<string, string[]>();
       const knownBrands = new Set<string>();
-      
+      const productContextByPath = new Map<string, { title: string; vendorWords: string[] }>();
+      const productContextByExternalId = new Map<string, { title: string; vendorWords: string[] }>();
+
       const PAGE_SIZE = 1000;
       let offset = 0;
       while (true) {
         const { data: prodData } = await supabase
           .from('canonical_products')
-          .select('data')
+          .select('external_id, data')
           .eq('project_id', project.id)
           .range(offset, offset + PAGE_SIZE - 1);
+
         if (!prodData || prodData.length === 0) break;
+
         for (const p of prodData) {
           const d = p.data as Record<string, unknown>;
-          const vendor = (d?.vendor as string) || '';
-          const sourcePath = (d?.source_path as string) || '';
-          if (vendor && vendor.trim()) {
-            // Normalize vendor name into words
-            const vendorWords = vendor.toLowerCase().trim()
-              .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
-              .replace(/ü/g, 'ue').replace(/ö/g, 'oe').replace(/ä/g, 'ae').replace(/ß/g, 'ss')
-              .split(/[\s\-_,./]+/)
-              .filter(w => w.length >= 2);
-            for (const vw of vendorWords) knownBrands.add(vw);
-            if (sourcePath) {
-              brandWordsMap.set(sourcePath.toLowerCase(), vendorWords);
-            }
+          const sourcePath = ((d?.source_path as string) || '').toLowerCase();
+          const title = (d?.title as string) || '';
+          const vendorRaw = ((d?.vendor as string) || '').trim();
+          const resolvedVendor = manufacturerNameById.get(vendorRaw) || vendorRaw;
+          const vendorWords = normalizeVendorWords(resolvedVendor || vendorRaw);
+
+          for (const vw of vendorWords) knownBrands.add(vw);
+
+          const context = { title, vendorWords };
+
+          if (sourcePath) {
+            brandWordsMap.set(sourcePath, vendorWords);
+            productContextByPath.set(sourcePath, context);
+          }
+
+          const externalId = String((p as { external_id?: string }).external_id || '').trim();
+          if (externalId) {
+            productContextByExternalId.set(externalId, context);
           }
         }
+
         if (prodData.length < PAGE_SIZE) break;
         offset += PAGE_SIZE;
       }
 
       const matcherOptions = { brandWordsMap, knownBrands };
-      
+
+      const oldUrlsForMatching = dandomanUrls.map((url) => {
+        if (url.type !== 'product') return url;
+
+        const normalizedPath = url.loc.toLowerCase();
+        const numericId = extractLegacyProductId(normalizedPath);
+        const context = productContextByPath.get(normalizedPath) ||
+          (numericId ? productContextByExternalId.get(numericId) : undefined);
+
+        if (!context) return url;
+
+        return {
+          ...url,
+          productTitle: context.title,
+          productVendorWords: context.vendorWords,
+        };
+      });
+
       const CHUNK_SIZE = 200;
       const allResults: MatchResult[] = [];
 
-      for (let i = 0; i < dandomanUrls.length; i += CHUNK_SIZE) {
-        const chunk = dandomanUrls.slice(i, i + CHUNK_SIZE);
+      for (let i = 0; i < oldUrlsForMatching.length; i += CHUNK_SIZE) {
+        const chunk = oldUrlsForMatching.slice(i, i + CHUNK_SIZE);
         await new Promise(resolve => setTimeout(resolve, 0));
         const chunkResults = matchUrls(chunk, destinations, matcherOptions);
         allResults.push(...chunkResults);
-        setProgress({ current: Math.min(i + CHUNK_SIZE, dandomanUrls.length), total: dandomanUrls.length });
+        setProgress({ current: Math.min(i + CHUNK_SIZE, oldUrlsForMatching.length), total: oldUrlsForMatching.length });
       }
 
       const newRedirects: RedirectRow[] = [];
