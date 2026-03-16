@@ -211,6 +211,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
   const [shopifyEntities, setShopifyEntities] = useState<MatcherShopifyEntity[]>([]);
   const [dandomanUrls, setDandomainUrls] = useState<SitemapUrl[]>([]);
+  const [shopifyProductIndexCount, setShopifyProductIndexCount] = useState<number | null>(null);
+  const [shopifyProductTotalCount, setShopifyProductTotalCount] = useState<number | null>(null);
 
   // Loading states
   const [isLoading, setIsLoading] = useState(true);
