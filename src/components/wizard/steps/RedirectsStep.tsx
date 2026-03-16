@@ -1419,7 +1419,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   <div className="text-[10px] text-muted-foreground mt-0.5">
                                     {redirect.matched_by === 'exact_handle' && 'Eksakt'}
                                     {redirect.matched_by === 'handle_overlap' && 'Handle'}
+                                    {redirect.matched_by === 'handle_brand_stripped' && 'Handle (brand fjernet)'}
                                     {redirect.matched_by === 'semantic' && 'Semantisk'}
+                                    {redirect.matched_by === 'brand_stripped' && 'Brand-fjernet'}
+                                    {redirect.matched_by?.startsWith('query_') && 'Søgelogik'}
                                     {redirect.matched_by === 'manual' && 'Manuel'}
                                     {redirect.matched_by === 'none' && '—'}
                                   </div>
