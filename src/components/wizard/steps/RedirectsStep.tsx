@@ -86,7 +86,7 @@ interface MatcherShopifyEntity {
 // CONSTANTS
 // ============================================
 
-const REVIEW_THRESHOLD = 50;
+const REVIEW_THRESHOLD = 30;
 const ITEMS_PER_PAGE = 100;
 
 // ============================================
@@ -283,27 +283,42 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       // Build entity lookup for enriching redirects with title/image data
       const entityImageLookup = new Map<string, { title: string; imageUrl: string | null }>();
       
-      // Fetch product images for enrichment
-      const { data: prodData } = await supabase
-        .from('canonical_products')
-        .select('id, data')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
-      for (const p of prodData || []) {
-        const d = p.data as Record<string, unknown>;
-        const title = (d?.title as string) || '';
-        const images = (d?.images as string[]) || [];
-        entityImageLookup.set(p.id, { title, imageUrl: images[0] || null });
+      // Fetch product images for enrichment (paginated to handle >1000 products)
+      const PAGE_SIZE = 1000;
+      let prodOffset = 0;
+      while (true) {
+        const { data: prodData } = await supabase
+          .from('canonical_products')
+          .select('id, data')
+          .eq('project_id', project.id)
+          .eq('status', 'uploaded')
+          .range(prodOffset, prodOffset + PAGE_SIZE - 1);
+        if (!prodData || prodData.length === 0) break;
+        for (const p of prodData) {
+          const d = p.data as Record<string, unknown>;
+          const title = (d?.title as string) || '';
+          const images = (d?.images as string[]) || [];
+          entityImageLookup.set(p.id, { title, imageUrl: images[0] || null });
+        }
+        if (prodData.length < PAGE_SIZE) break;
+        prodOffset += PAGE_SIZE;
       }
 
-      // Fetch category names
-      const { data: catData } = await supabase
-        .from('canonical_categories')
-        .select('id, name')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
-      for (const c of catData || []) {
-        entityImageLookup.set(c.id, { title: c.name, imageUrl: null });
+      // Fetch category names (paginated)
+      let catOffset = 0;
+      while (true) {
+        const { data: catData } = await supabase
+          .from('canonical_categories')
+          .select('id, name')
+          .eq('project_id', project.id)
+          .eq('status', 'uploaded')
+          .range(catOffset, catOffset + PAGE_SIZE - 1);
+        if (!catData || catData.length === 0) break;
+        for (const c of catData) {
+          entityImageLookup.set(c.id, { title: c.name, imageUrl: null });
+        }
+        if (catData.length < PAGE_SIZE) break;
+        catOffset += PAGE_SIZE;
       }
 
       setRedirects(allRedirects.map(r => {
@@ -331,8 +346,9 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           confidence_score: confidence,
           matched_by: (r as unknown as { matched_by?: string }).matched_by,
           suggestions: [],
-          matchedTitle: entityInfo?.title || suggestions[0]?.title || undefined,
-          matchedImageUrl: entityInfo?.imageUrl || null,
+          // Only use suggestion title if it matches the current new_path to prevent data mismatch
+          matchedTitle: entityInfo?.title || (suggestions[0]?.new_path === r.new_path ? suggestions[0]?.title : undefined) || undefined,
+          matchedImageUrl: entityInfo?.imageUrl ?? null,
         };
       }));
     } catch (err) {
@@ -763,8 +779,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       confidence_score: 100,
       status: (r.status === 'no_match' || r.status === 'pending_approval') ? 'pending_approval' as RedirectStatus : r.status,
       matched_by: 'manual',
-      matchedTitle: entity?.title || r.matchedTitle,
-      matchedImageUrl: entity?.imageUrl || r.matchedImageUrl,
+      matchedTitle: entity?.title || undefined,
+      matchedImageUrl: entity?.imageUrl ?? null,
     } : r));
 
     try {

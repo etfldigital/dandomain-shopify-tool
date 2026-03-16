@@ -7,7 +7,7 @@
  * 3. Pages ONLY match to /pages/
  * 4. Matching is semantic (word-based), not string similarity
  * 5. Brand-only matches are capped at 30%
- * 6. Minimum 50% for auto-matching
+ * 6. Minimum 30% for showing suggestions (low-confidence marked visually)
  */
 
 // ============================================
@@ -81,11 +81,11 @@ function getCompatibleShopifyType(oldType: OldUrlType): ShopifyUrlType | null {
 }
 
 // ============================================
-// WORD EXTRACTION
+// WORD EXTRACTION & NORMALIZATION
 // ============================================
 
-/** Normalize Danish characters for comparison */
-function normalizeDanish(text: string): string {
+/** Normalize Danish/German characters for comparison */
+export function normalizeDanish(text: string): string {
   return text
     .toLowerCase()
     .replace(/[æ]/g, 'ae')
@@ -95,6 +95,22 @@ function normalizeDanish(text: string): string {
     .replace(/ö/g, 'oe')
     .replace(/ä/g, 'ae')
     .replace(/ß/g, 'ss');
+}
+
+/**
+ * Get a stemmed version of a Danish/English word for fuzzy matching.
+ * Strips common suffixes to match plurals, verb forms, etc.
+ */
+function stemWord(word: string): string {
+  if (word.length < 4) return word;
+  // Danish plural/inflection suffixes
+  return word
+    .replace(/erne$/i, '')
+    .replace(/erne$/i, '')
+    .replace(/inger$/i, 'ing')
+    .replace(/elser$/i, 'else')
+    .replace(/(er|en|et|ne|re|se|te|de)$/i, '')
+    .replace(/s$/i, '');
 }
 
 /** Extract meaningful words from a DanDomain URL slug */
@@ -154,63 +170,103 @@ export function extractWordsFromShopifyEntity(title: string, handle: string): st
  * Calculate semantic match score between old URL words and Shopify entity words.
  * Returns 0-100.
  * 
- * Rules:
+ * Improved rules:
  * - Exact word matches count fully
- * - Partial word matches (substring) count 50%
- * - Brand-only match (first word) capped at 30%
- * - Full match = 100%
+ * - Stemmed matches count 80%
+ * - Partial word matches (substring ≥4 chars) count 60%
+ * - Score denominator uses old word count (not max) so long Shopify titles don't penalize
+ * - Brand-only match capped at 30%
  */
 function calculateScore(oldWords: string[], shopifyWords: string[]): number {
   if (oldWords.length === 0 || shopifyWords.length === 0) return 0;
 
-  let matchedOldWords = 0;
-  let partialMatches = 0;
-  const matchedIndices = new Set<number>();
+  const shopifyStemmed = shopifyWords.map(w => stemWord(w));
+  let totalMatchValue = 0;
+  let exactMatches = 0;
+  const matchedShopifyIndices = new Set<number>();
 
   for (const oldWord of oldWords) {
     let bestMatch = 0;
-    for (let i = 0; i < shopifyWords.length; i++) {
-      if (matchedIndices.has(i)) continue;
-      const shopWord = shopifyWords[i];
+    let bestIdx = -1;
+    const oldStem = stemWord(oldWord);
 
+    for (let i = 0; i < shopifyWords.length; i++) {
+      if (matchedShopifyIndices.has(i)) continue;
+      const shopWord = shopifyWords[i];
+      const shopStem = shopifyStemmed[i];
+
+      // Exact match
       if (oldWord === shopWord) {
         bestMatch = 1;
-        matchedIndices.add(i);
+        bestIdx = i;
         break;
       }
 
-      // Partial match: one contains the other
-      if (oldWord.length >= 3 && shopWord.length >= 3) {
+      // Stemmed match (e.g., "stroempebuker" ≈ "strompebukser")
+      if (oldStem.length >= 3 && shopStem.length >= 3 && oldStem === shopStem) {
+        if (bestMatch < 0.8) {
+          bestMatch = 0.8;
+          bestIdx = i;
+        }
+        continue;
+      }
+
+      // Partial match: one contains the other (minimum 4 chars)
+      if (oldWord.length >= 4 && shopWord.length >= 4) {
         if (oldWord.includes(shopWord) || shopWord.includes(oldWord)) {
-          if (bestMatch < 0.5) {
-            bestMatch = 0.5;
-            // Don't mark as used for partial — allow reuse
+          const overlapLen = Math.min(oldWord.length, shopWord.length);
+          const maxLen = Math.max(oldWord.length, shopWord.length);
+          const partialScore = 0.4 + 0.4 * (overlapLen / maxLen); // 0.4-0.8 range
+          if (bestMatch < partialScore) {
+            bestMatch = partialScore;
+            bestIdx = i;
+          }
+        }
+      }
+
+      // Stem-substring match
+      if (oldStem.length >= 3 && shopStem.length >= 3) {
+        if (oldStem.includes(shopStem) || shopStem.includes(oldStem)) {
+          const partialScore = 0.5;
+          if (bestMatch < partialScore) {
+            bestMatch = partialScore;
+            bestIdx = i;
           }
         }
       }
     }
 
-    if (bestMatch >= 1) {
-      matchedOldWords++;
-    } else if (bestMatch > 0) {
-      partialMatches += bestMatch;
-    }
+    if (bestMatch >= 1) exactMatches++;
+    if (bestIdx >= 0 && bestMatch >= 0.6) matchedShopifyIndices.add(bestIdx);
+    totalMatchValue += bestMatch;
   }
 
-  const totalMatchValue = matchedOldWords + partialMatches;
-  const maxPossible = Math.max(oldWords.length, shopifyWords.length);
-  let rawScore = (totalMatchValue / maxPossible) * 100;
+  // Use old word count as denominator — if 2/3 old words match, that's 66% regardless of 
+  // how many words the Shopify title has
+  const denominator = oldWords.length;
+  let rawScore = (totalMatchValue / denominator) * 100;
 
-  // Brand-only cap: if only the first word (likely brand) matched and nothing else,
-  // cap at 30%
-  if (oldWords.length >= 2 && matchedOldWords === 1 && partialMatches === 0) {
-    // Check if the match was only the first word (brand)
-    const firstWordMatches = shopifyWords.some(sw => sw === oldWords[0] || sw.includes(oldWords[0]) || oldWords[0].includes(sw));
-    const otherWordsMatch = oldWords.slice(1).some(ow => 
-      shopifyWords.some(sw => sw === ow || (ow.length >= 3 && sw.length >= 3 && (sw.includes(ow) || ow.includes(sw))))
+  // Slight penalty if Shopify entity has many more words (less specific match)
+  if (shopifyWords.length > oldWords.length * 2) {
+    rawScore *= 0.9;
+  }
+
+  // Brand-only cap: if only the first word matched and nothing else meaningful
+  if (oldWords.length >= 2 && exactMatches <= 1 && totalMatchValue < 1.5) {
+    const firstWordMatches = shopifyWords.some(sw => 
+      sw === oldWords[0] || stemWord(sw) === stemWord(oldWords[0]) ||
+      (oldWords[0].length >= 4 && sw.length >= 4 && (sw.includes(oldWords[0]) || oldWords[0].includes(sw)))
+    );
+    const anyOtherMatch = oldWords.slice(1).some(ow => 
+      shopifyWords.some(sw => {
+        if (sw === ow) return true;
+        if (stemWord(sw) === stemWord(ow) && stemWord(ow).length >= 3) return true;
+        if (ow.length >= 4 && sw.length >= 4 && (sw.includes(ow) || ow.includes(sw))) return true;
+        return false;
+      })
     );
     
-    if (firstWordMatches && !otherWordsMatch) {
+    if (firstWordMatches && !anyOtherMatch) {
       rawScore = Math.min(rawScore, 30);
     }
   }
@@ -224,13 +280,17 @@ function calculateScore(oldWords: string[], shopifyWords: string[]): number {
 
 export interface MatcherOptions {
   autoApproveThreshold?: number; // Default 80
-  reviewThreshold?: number;      // Default 50
+  reviewThreshold?: number;      // Default 30 (lowered from 50)
   maxSuggestions?: number;       // Default 3
 }
 
 /**
  * Match a list of old DanDomain URLs to Shopify destinations.
  * Enforces strict type safety: products→products, categories→collections.
+ * 
+ * Uses a two-pass strategy:
+ * 1. First pass: direct semantic matching
+ * 2. Second pass: brand-first matching for unmatched URLs
  */
 export function matchUrls(
   oldUrls: Array<{ loc: string; type: OldUrlType }>,
@@ -247,6 +307,17 @@ export function matchUrls(
     collection: shopifyDestinations.filter(d => d.type === 'collection'),
     page: shopifyDestinations.filter(d => d.type === 'page'),
   };
+
+  // Build brand index: first word → list of destinations containing that word
+  const brandIndex: Record<string, Map<ShopifyUrlType, ShopifyDestination[]>> = {};
+  for (const dest of shopifyDestinations) {
+    for (const word of dest.words) {
+      if (!brandIndex[word]) brandIndex[word] = new Map();
+      const typeList = brandIndex[word].get(dest.type) || [];
+      typeList.push(dest);
+      brandIndex[word].set(dest.type, typeList);
+    }
+  }
 
   const results: MatchResult[] = [];
 
@@ -284,7 +355,16 @@ export function matchUrls(
     // Score all candidates
     const scored: Array<{ destination: ShopifyDestination; score: number; method: string }> = [];
 
-    for (const dest of candidates) {
+    // Optimization: if we have a brand word, prioritize candidates that share it
+    const brandWord = words[0]; // First token is typically the brand
+    const brandCandidates = brandIndex[brandWord]?.get(targetType) || [];
+    
+    // Create a set of candidates to score — prioritize brand matches but include all
+    const candidateSet = new Set<ShopifyDestination>();
+    for (const c of brandCandidates) candidateSet.add(c);
+    for (const c of candidates) candidateSet.add(c);
+
+    for (const dest of candidateSet) {
       let score = calculateScore(words, dest.words);
       let method = 'semantic';
 
@@ -298,9 +378,12 @@ export function matchUrls(
         // Partial handle match bonus
         const overlapRatio = Math.min(normalizedSlug.length, normalizedHandle.length) / 
                             Math.max(normalizedSlug.length, normalizedHandle.length);
-        if (overlapRatio > 0.7) {
-          score = Math.max(score, Math.round(overlapRatio * 95));
-          method = 'handle_overlap';
+        if (overlapRatio > 0.6) {
+          const handleScore = Math.round(overlapRatio * 95);
+          if (handleScore > score) {
+            score = handleScore;
+            method = 'handle_overlap';
+          }
         }
       }
 
