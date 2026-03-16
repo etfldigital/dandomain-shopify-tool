@@ -630,9 +630,11 @@ export function buildShopifyDestinations(entities: Array<{
   title: string;
   handle: string;
   path: string;
+  vendor?: string | null;
 }>): ShopifyDestination[] {
   return entities.map(e => ({
     ...e,
     words: extractWordsFromShopifyEntity(e.title, e.handle),
+    vendorWords: e.type === 'product' ? extractVendorWords(e.vendor) : [],
   }));
 }
