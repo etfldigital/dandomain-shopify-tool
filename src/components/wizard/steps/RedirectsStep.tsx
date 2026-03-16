@@ -18,6 +18,7 @@ import {
   buildShopifyDestinations,
   classifyOldUrl,
   type OldUrlType,
+  type OldUrlInput,
   type ShopifyUrlType,
   type ShopifyDestination,
   type MatchResult,
