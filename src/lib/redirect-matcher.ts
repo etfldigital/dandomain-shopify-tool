@@ -282,6 +282,18 @@ export interface MatcherOptions {
   autoApproveThreshold?: number; // Default 80
   reviewThreshold?: number;      // Default 30 (lowered from 50)
   maxSuggestions?: number;       // Default 3
+  /**
+   * Map of normalized brand/vendor words to strip from old product URLs before matching.
+   * Key: old URL path (lowercase), Value: array of normalized brand words.
+   * Only applies to product URLs — categories are matched as-is.
+   */
+  brandWordsMap?: Map<string, string[]>;
+  /**
+   * Set of all known brand names (normalized words) across the project.
+   * Used as fallback when a specific URL isn't in brandWordsMap — 
+   * the first word(s) of the old URL are checked against this set.
+   */
+  knownBrands?: Set<string>;
 }
 
 /**
