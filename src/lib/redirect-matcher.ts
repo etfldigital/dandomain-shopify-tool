@@ -1,3 +1,5 @@
+import { getEntityQueryMatchStats, matchesEntityQuery } from '@/lib/shopify-search';
+
 /**
  * Client-side semantic URL redirect matcher.
  * 
@@ -25,6 +27,13 @@ export interface OldUrl {
   numericId: string | null;
 }
 
+export interface OldUrlInput {
+  loc: string;
+  type: OldUrlType;
+  productTitle?: string | null;
+  productVendorWords?: string[];
+}
+
 export interface ShopifyDestination {
   id: string;
   type: ShopifyUrlType;
@@ -32,6 +41,7 @@ export interface ShopifyDestination {
   handle: string;
   path: string;
   words: string[];
+  vendorWords?: string[];
 }
 
 export interface MatchResult {
@@ -160,6 +170,68 @@ export function extractWordsFromShopifyEntity(title: string, handle: string): st
   // Deduplicate
   const allWords = new Set([...titleWords, ...handleWords]);
   return Array.from(allWords);
+}
+
+function extractVendorWords(vendor: string | null | undefined): string[] {
+  if (!vendor) return [];
+
+  return Array.from(new Set(
+    normalizeDanish(vendor)
+      .split(/[\s\-_,./]+/)
+      .filter(w => w.length >= 2 && !STOP_WORDS.has(w) && !/^\d+$/.test(w))
+  ));
+}
+
+function getProductTitleContext(
+  productTitle: string | null | undefined,
+  productVendorWords: string[] | undefined,
+  knownBrands?: Set<string>
+): {
+  tokens: string[];
+  searchQuery: string;
+  brandStripped: boolean;
+  strippedBrand: string | null;
+} | null {
+  if (!productTitle || !productTitle.trim()) return null;
+
+  const titleTokens = normalizeDanish(productTitle)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 2 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
+
+  if (titleTokens.length === 0) return null;
+
+  const vendorWords = Array.from(new Set((productVendorWords || []).map(normalizeDanish)));
+
+  let stripCount = 0;
+  let strippedBrand: string | null = null;
+
+  if (vendorWords.length > 0 && titleTokens.length >= vendorWords.length) {
+    const startsWithVendor = vendorWords.every((word, idx) => titleTokens[idx] === word);
+    if (startsWithVendor) {
+      stripCount = vendorWords.length;
+      strippedBrand = vendorWords.join(' ');
+    }
+  }
+
+  if (stripCount === 0 && knownBrands && knownBrands.size > 0) {
+    while (stripCount < titleTokens.length && knownBrands.has(titleTokens[stripCount])) {
+      stripCount += 1;
+    }
+    if (stripCount > 0) {
+      strippedBrand = titleTokens.slice(0, stripCount).join(' ');
+    }
+  }
+
+  const remaining = titleTokens.slice(stripCount);
+  const tokens = remaining.length > 0 ? remaining : titleTokens;
+
+  return {
+    tokens,
+    searchQuery: tokens.join(' '),
+    brandStripped: stripCount > 0,
+    strippedBrand,
+  };
 }
 
 // ============================================
@@ -305,7 +377,7 @@ export interface MatcherOptions {
  * 2. Second pass: brand-first matching for unmatched URLs
  */
 export function matchUrls(
-  oldUrls: Array<{ loc: string; type: OldUrlType }>,
+  oldUrls: OldUrlInput[],
   shopifyDestinations: ShopifyDestination[],
   options: MatcherOptions = {}
 ): MatchResult[] {
@@ -336,12 +408,51 @@ export function matchUrls(
   const results: MatchResult[] = [];
 
   for (const oldUrl of oldUrls) {
-    const { words, slug, numericId } = extractWordsFromOldUrl(oldUrl.loc);
+    const { words, slug } = extractWordsFromOldUrl(oldUrl.loc);
 
     // Determine which Shopify type to match against
     const targetType = getCompatibleShopifyType(oldUrl.type);
 
-    if (!targetType || words.length === 0) {
+    const productTitleContext = oldUrl.type === 'product'
+      ? getProductTitleContext(oldUrl.productTitle, oldUrl.productVendorWords, knownBrands)
+      : null;
+
+    // === Primary matching words and query ===
+    let wordsToMatch = productTitleContext?.tokens?.length ? productTitleContext.tokens : words;
+    let searchQuery = productTitleContext?.searchQuery || wordsToMatch.join(' ');
+    let brandStripped = Boolean(productTitleContext?.brandStripped);
+    let strippedBrand: string | null = productTitleContext?.strippedBrand || null;
+
+    // Fallback brand stripping from URL slug when XML title context is unavailable
+    if (oldUrl.type === 'product' && !productTitleContext) {
+      const normalizedPath = oldUrl.loc.toLowerCase();
+
+      if (brandWordsMap) {
+        const brandWords = brandWordsMap.get(normalizedPath);
+        if (brandWords && brandWords.length > 0) {
+          const brandSet = new Set(brandWords);
+          const filtered = words.filter(w => !brandSet.has(w));
+          if (filtered.length > 0) {
+            wordsToMatch = filtered;
+            searchQuery = filtered.join(' ');
+            brandStripped = true;
+            strippedBrand = brandWords.join(' ');
+          }
+        }
+      }
+
+      if (!brandStripped && knownBrands && words.length >= 2) {
+        const firstWord = words[0];
+        if (knownBrands.has(firstWord)) {
+          wordsToMatch = words.slice(1);
+          searchQuery = wordsToMatch.join(' ');
+          brandStripped = true;
+          strippedBrand = firstWord;
+        }
+      }
+    }
+
+    if (!targetType || wordsToMatch.length === 0) {
       results.push({
         oldUrl: oldUrl.loc,
         oldType: oldUrl.type,
@@ -366,62 +477,76 @@ export function matchUrls(
       continue;
     }
 
-    // === Brand stripping for products only ===
-    let wordsToMatch = words;
-    let brandStripped = false;
-    let strippedBrand: string | null = null;
-
-    if (oldUrl.type === 'product') {
-      const normalizedPath = oldUrl.loc.toLowerCase();
-      
-      // Strategy 1: Use exact brand from XML vendor data
-      if (brandWordsMap) {
-        const brandWords = brandWordsMap.get(normalizedPath);
-        if (brandWords && brandWords.length > 0) {
-          const brandSet = new Set(brandWords);
-          const filtered = words.filter(w => !brandSet.has(w));
-          if (filtered.length > 0) {
-            wordsToMatch = filtered;
-            brandStripped = true;
-            strippedBrand = brandWords.join(' ');
-          }
-        }
-      }
-      
-      // Strategy 2: Fallback — check if first word is a known brand
-      if (!brandStripped && knownBrands && words.length >= 2) {
-        const firstWord = words[0];
-        if (knownBrands.has(firstWord)) {
-          wordsToMatch = words.slice(1);
-          brandStripped = true;
-          strippedBrand = firstWord;
-        }
-      }
-    }
-
-    // Score all candidates — try both with and without brand for products
     const scored: Array<{ destination: ShopifyDestination; score: number; method: string }> = [];
 
-    // Optimization: if we have a brand word, prioritize candidates that share it
-    const brandWord = wordsToMatch[0]; // First remaining token
-    const brandCandidates = brandIndex[brandWord]?.get(targetType) || [];
-    
-    // Create a set of candidates to score
+    const brandWord = wordsToMatch[0];
+    const brandCandidates = brandWord ? (brandIndex[brandWord]?.get(targetType) || []) : [];
+
     const candidateSet = new Set<ShopifyDestination>();
     for (const c of brandCandidates) candidateSet.add(c);
     for (const c of candidates) candidateSet.add(c);
 
-    for (const dest of candidateSet) {
+    let candidatePool = Array.from(candidateSet);
+
+    // Brand-first narrowing for products when vendor info exists
+    if (oldUrl.type === 'product' && oldUrl.productVendorWords && oldUrl.productVendorWords.length > 0) {
+      const vendorSet = new Set(oldUrl.productVendorWords.map(normalizeDanish));
+      const vendorMatches = candidatePool.filter(dest =>
+        (dest.vendorWords || []).some(vw => vendorSet.has(vw))
+      );
+      if (vendorMatches.length > 0) {
+        candidatePool = vendorMatches;
+      }
+    }
+
+    for (const dest of candidatePool) {
       let score = calculateScore(wordsToMatch, dest.words);
       let method = brandStripped ? 'semantic_brand_stripped' : 'semantic';
 
-      // If brand was stripped and score is decent, boost it — brand stripping is expected
-      if (brandStripped && score >= 40) {
-        score = Math.max(score, Math.min(score + 15, 95));
-        method = 'brand_stripped';
+      // Apply the same token logic as manual search for auto-match scoring
+      if (searchQuery) {
+        const queryStats = getEntityQueryMatchStats({ title: dest.title, handle: dest.handle }, searchQuery);
+
+        if (queryStats.totalTokens > 0) {
+          const overlapScore = Math.round(queryStats.matchRatio * 100);
+          if (overlapScore > score) {
+            score = overlapScore;
+            method = 'query_overlap';
+          }
+
+          if (queryStats.fullMatch && queryStats.totalTokens >= 2) {
+            const fullQueryScore = brandStripped ? 92 : 86;
+            if (fullQueryScore > score) {
+              score = fullQueryScore;
+              method = brandStripped ? 'query_full_brand_stripped' : 'query_full';
+            }
+          } else if (brandStripped && queryStats.matchedTokens >= 2 && queryStats.matchRatio >= 0.5) {
+            const boostedScore = Math.max(overlapScore, 80);
+            if (boostedScore > score) {
+              score = boostedScore;
+              method = 'query_brand_stripped_overlap';
+            }
+          }
+        }
+
+        if (matchesEntityQuery({ title: dest.title, handle: dest.handle }, searchQuery)) {
+          const strictQueryScore = brandStripped ? 93 : 88;
+          if (strictQueryScore > score) {
+            score = strictQueryScore;
+            method = brandStripped ? 'query_manual_equivalent_brand_stripped' : 'query_manual_equivalent';
+          }
+        }
       }
 
-      // Also try with original words (full slug) in case the Shopify title kept the brand
+      // If brand was stripped and score is decent, boost it — this is expected in migrated data
+      if (brandStripped && score >= 40) {
+        score = Math.max(score, Math.min(score + 15, 95));
+        if (method === 'semantic' || method === 'semantic_brand_stripped') {
+          method = 'brand_stripped';
+        }
+      }
+
+      // Also try with original URL words in case Shopify title retained some brand context
       if (brandStripped) {
         const fullScore = calculateScore(words, dest.words);
         if (fullScore > score) {
@@ -433,17 +558,19 @@ export function matchUrls(
       // Bonus: if the normalized slug exactly matches the handle
       const normalizedSlug = normalizeDanish(slug);
       const normalizedHandle = normalizeDanish(dest.handle);
-      if (normalizedSlug === normalizedHandle) {
-        score = Math.max(score, 98);
-        method = 'exact_handle';
-      } else if (normalizedHandle.includes(normalizedSlug) || normalizedSlug.includes(normalizedHandle)) {
-        const overlapRatio = Math.min(normalizedSlug.length, normalizedHandle.length) / 
-                            Math.max(normalizedSlug.length, normalizedHandle.length);
-        if (overlapRatio > 0.6) {
-          const handleScore = Math.round(overlapRatio * 95);
-          if (handleScore > score) {
-            score = handleScore;
-            method = 'handle_overlap';
+      if (normalizedSlug.length >= 3) {
+        if (normalizedSlug === normalizedHandle) {
+          score = Math.max(score, 98);
+          method = 'exact_handle';
+        } else if (normalizedHandle.includes(normalizedSlug) || normalizedSlug.includes(normalizedHandle)) {
+          const overlapRatio = Math.min(normalizedSlug.length, normalizedHandle.length) /
+            Math.max(normalizedSlug.length, normalizedHandle.length);
+          if (overlapRatio > 0.6) {
+            const handleScore = Math.round(overlapRatio * 95);
+            if (handleScore > score) {
+              score = handleScore;
+              method = 'handle_overlap';
+            }
           }
         }
       }
@@ -456,8 +583,8 @@ export function matchUrls(
             score = Math.max(score, 96);
             method = 'handle_brand_stripped';
           } else if (normalizedHandle.includes(strippedSlug) || strippedSlug.includes(normalizedHandle)) {
-            const overlapRatio = Math.min(strippedSlug.length, normalizedHandle.length) / 
-                                Math.max(strippedSlug.length, normalizedHandle.length);
+            const overlapRatio = Math.min(strippedSlug.length, normalizedHandle.length) /
+              Math.max(strippedSlug.length, normalizedHandle.length);
             if (overlapRatio > 0.5) {
               const handleScore = Math.round(overlapRatio * 95);
               if (handleScore > score) {
@@ -474,7 +601,6 @@ export function matchUrls(
       }
     }
 
-    // Sort by score descending
     scored.sort((a, b) => b.score - a.score);
 
     const bestMatch = scored[0] || null;
@@ -504,9 +630,11 @@ export function buildShopifyDestinations(entities: Array<{
   title: string;
   handle: string;
   path: string;
+  vendor?: string | null;
 }>): ShopifyDestination[] {
   return entities.map(e => ({
     ...e,
     words: extractWordsFromShopifyEntity(e.title, e.handle),
+    vendorWords: e.type === 'product' ? extractVendorWords(e.vendor) : [],
   }));
 }

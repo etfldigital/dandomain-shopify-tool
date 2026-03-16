@@ -80,6 +80,7 @@ interface MatcherShopifyEntity {
   handle: string;
   path: string;
   imageUrl?: string | null;
+  vendor?: string | null;
 }
 
 // ============================================
@@ -363,29 +364,56 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     try {
       const entities: MatcherShopifyEntity[] = [];
 
-      const { data: products } = await supabase
-        .from('canonical_products')
-        .select('id, data, shopify_id')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
+      const fetchAllRows = async (
+        table: 'canonical_products' | 'canonical_categories' | 'canonical_pages',
+        select: string,
+      ) => {
+        const PAGE_SIZE = 1000;
+        let offset = 0;
+        const allRows: any[] = [];
 
-      for (const p of products || []) {
+        while (true) {
+          const { data, error } = await supabase
+            .from(table)
+            .select(select)
+            .eq('project_id', project.id)
+            .eq('status', 'uploaded')
+            .range(offset, offset + PAGE_SIZE - 1);
+
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+
+          allRows.push(...data);
+          if (data.length < PAGE_SIZE) break;
+          offset += PAGE_SIZE;
+        }
+
+        return allRows;
+      };
+
+      const products = await fetchAllRows('canonical_products', 'id, data, shopify_id');
+      for (const p of products) {
         const data = p.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
         const handle = (data?.shopify_handle as string) || generateShopifyHandle(title);
         const images = (data?.images as string[]) || [];
+        const vendor = (data?.vendor as string) || null;
+
         if (p.shopify_id && title) {
-          entities.push({ id: p.id, type: 'product', title, handle, path: `/products/${handle}`, imageUrl: images[0] || null });
+          entities.push({
+            id: p.id,
+            type: 'product',
+            title,
+            handle,
+            path: `/products/${handle}`,
+            imageUrl: images[0] || null,
+            vendor,
+          });
         }
       }
 
-      const { data: categories } = await supabase
-        .from('canonical_categories')
-        .select('id, name, shopify_tag, shopify_collection_id, shopify_handle')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
-
-      for (const c of categories || []) {
+      const categories = await fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle');
+      for (const c of categories) {
         const storedHandle = (c as Record<string, unknown>).shopify_handle as string | null;
         const handle = storedHandle || generateShopifyHandle(c.shopify_tag || c.name);
         if (c.shopify_collection_id && c.name) {
@@ -393,13 +421,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
-      const { data: pages } = await supabase
-        .from('canonical_pages')
-        .select('id, data, shopify_id')
-        .eq('project_id', project.id)
-        .eq('status', 'uploaded');
-
-      for (const pg of pages || []) {
+      const pages = await fetchAllRows('canonical_pages', 'id, data, shopify_id');
+      for (const pg of pages) {
         const data = pg.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
         const slug = (data?.slug as string) || '';
@@ -482,52 +505,115 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         entityLookup.set(e.id, e);
       }
 
-      // === Build brand/vendor map from canonical_products ===
-      // Maps old URL path → array of normalized brand words to strip
+      // === Build XML-backed product context (title + vendor words) ===
+      const normalizeVendorWords = (input: string): string[] => {
+        return Array.from(new Set(
+          input.toLowerCase().trim()
+            .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
+            .replace(/ü/g, 'ue').replace(/ö/g, 'oe').replace(/ä/g, 'ae').replace(/ß/g, 'ss')
+            .split(/[\s\-_,./]+/)
+            .filter(w => w.length >= 2)
+        ));
+      };
+
+      const extractLegacyProductId = (path: string): string | null => {
+        const match = path.toLowerCase().match(/-(\d+)p\d*\.html$/i);
+        return match ? match[1] : null;
+      };
+
+      const manufacturerNameById = new Map<string, string>();
+      const manufacturerPageSize = 1000;
+      let manufacturerOffset = 0;
+      while (true) {
+        const { data: manufacturers } = await supabase
+          .from('canonical_manufacturers')
+          .select('external_id, name')
+          .eq('project_id', project.id)
+          .range(manufacturerOffset, manufacturerOffset + manufacturerPageSize - 1);
+
+        if (!manufacturers || manufacturers.length === 0) break;
+
+        for (const m of manufacturers) {
+          if (m.external_id && m.name) {
+            manufacturerNameById.set(String(m.external_id).trim(), String(m.name).trim());
+          }
+        }
+
+        if (manufacturers.length < manufacturerPageSize) break;
+        manufacturerOffset += manufacturerPageSize;
+      }
+
       const brandWordsMap = new Map<string, string[]>();
       const knownBrands = new Set<string>();
-      
+      const productContextByPath = new Map<string, { title: string; vendorWords: string[] }>();
+      const productContextByExternalId = new Map<string, { title: string; vendorWords: string[] }>();
+
       const PAGE_SIZE = 1000;
       let offset = 0;
       while (true) {
         const { data: prodData } = await supabase
           .from('canonical_products')
-          .select('data')
+          .select('external_id, data')
           .eq('project_id', project.id)
           .range(offset, offset + PAGE_SIZE - 1);
+
         if (!prodData || prodData.length === 0) break;
+
         for (const p of prodData) {
           const d = p.data as Record<string, unknown>;
-          const vendor = (d?.vendor as string) || '';
-          const sourcePath = (d?.source_path as string) || '';
-          if (vendor && vendor.trim()) {
-            // Normalize vendor name into words
-            const vendorWords = vendor.toLowerCase().trim()
-              .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
-              .replace(/ü/g, 'ue').replace(/ö/g, 'oe').replace(/ä/g, 'ae').replace(/ß/g, 'ss')
-              .split(/[\s\-_,./]+/)
-              .filter(w => w.length >= 2);
-            for (const vw of vendorWords) knownBrands.add(vw);
-            if (sourcePath) {
-              brandWordsMap.set(sourcePath.toLowerCase(), vendorWords);
-            }
+          const sourcePath = ((d?.source_path as string) || '').toLowerCase();
+          const title = (d?.title as string) || '';
+          const vendorRaw = ((d?.vendor as string) || '').trim();
+          const resolvedVendor = manufacturerNameById.get(vendorRaw) || vendorRaw;
+          const vendorWords = normalizeVendorWords(resolvedVendor || vendorRaw);
+
+          for (const vw of vendorWords) knownBrands.add(vw);
+
+          const context = { title, vendorWords };
+
+          if (sourcePath) {
+            brandWordsMap.set(sourcePath, vendorWords);
+            productContextByPath.set(sourcePath, context);
+          }
+
+          const externalId = String((p as { external_id?: string }).external_id || '').trim();
+          if (externalId) {
+            productContextByExternalId.set(externalId, context);
           }
         }
+
         if (prodData.length < PAGE_SIZE) break;
         offset += PAGE_SIZE;
       }
 
       const matcherOptions = { brandWordsMap, knownBrands };
-      
+
+      const oldUrlsForMatching = dandomanUrls.map((url) => {
+        if (url.type !== 'product') return url;
+
+        const normalizedPath = url.loc.toLowerCase();
+        const numericId = extractLegacyProductId(normalizedPath);
+        const context = productContextByPath.get(normalizedPath) ||
+          (numericId ? productContextByExternalId.get(numericId) : undefined);
+
+        if (!context) return url;
+
+        return {
+          ...url,
+          productTitle: context.title,
+          productVendorWords: context.vendorWords,
+        };
+      });
+
       const CHUNK_SIZE = 200;
       const allResults: MatchResult[] = [];
 
-      for (let i = 0; i < dandomanUrls.length; i += CHUNK_SIZE) {
-        const chunk = dandomanUrls.slice(i, i + CHUNK_SIZE);
+      for (let i = 0; i < oldUrlsForMatching.length; i += CHUNK_SIZE) {
+        const chunk = oldUrlsForMatching.slice(i, i + CHUNK_SIZE);
         await new Promise(resolve => setTimeout(resolve, 0));
         const chunkResults = matchUrls(chunk, destinations, matcherOptions);
         allResults.push(...chunkResults);
-        setProgress({ current: Math.min(i + CHUNK_SIZE, dandomanUrls.length), total: dandomanUrls.length });
+        setProgress({ current: Math.min(i + CHUNK_SIZE, oldUrlsForMatching.length), total: oldUrlsForMatching.length });
       }
 
       const newRedirects: RedirectRow[] = [];
@@ -1333,7 +1419,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
                                   <div className="text-[10px] text-muted-foreground mt-0.5">
                                     {redirect.matched_by === 'exact_handle' && 'Eksakt'}
                                     {redirect.matched_by === 'handle_overlap' && 'Handle'}
+                                    {redirect.matched_by === 'handle_brand_stripped' && 'Handle (brand fjernet)'}
                                     {redirect.matched_by === 'semantic' && 'Semantisk'}
+                                    {redirect.matched_by === 'brand_stripped' && 'Brand-fjernet'}
+                                    {redirect.matched_by?.startsWith('query_') && 'Søgelogik'}
                                     {redirect.matched_by === 'manual' && 'Manuel'}
                                     {redirect.matched_by === 'none' && '—'}
                                   </div>

@@ -13,6 +13,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { matchesEntityQuery } from '@/lib/shopify-search';
 import type { OldUrlType } from '@/lib/redirect-matcher';
 
 interface ShopifyDestinationSearchProps {
@@ -46,31 +47,6 @@ function generateShopifyHandle(title: string): string {
     .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
     .replace(/\s+/g, '-').replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-')
     .replace(/^-|-$/g, '').substring(0, 255);
-}
-
-function normalizeForSearch(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/æ/g, 'ae')
-    .replace(/ø/g, 'oe')
-    .replace(/å/g, 'aa')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-function matchesEntityQuery(entity: ShopifyEntity, query: string): boolean {
-  const normalizedQuery = normalizeForSearch(query);
-  if (!normalizedQuery) return true;
-
-  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
-
-  const title = normalizeForSearch(entity.title);
-  const handle = normalizeForSearch(entity.handle.replace(/-/g, ' '));
-
-  return tokens.every((token) => title.includes(token) || handle.includes(token));
 }
 
 export function ShopifyDestinationSearch({
