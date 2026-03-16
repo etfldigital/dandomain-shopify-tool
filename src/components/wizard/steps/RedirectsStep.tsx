@@ -672,7 +672,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
       const matcherOptions = { brandWordsMap, knownBrands };
 
-      const oldUrlsForMatching = dandomanUrls.map((url) => {
+      const oldUrlsForMatching: OldUrlInput[] = dandomanUrls.map((url): OldUrlInput => {
         if (url.type !== 'product') return url;
 
         const normalizedPath = url.loc.toLowerCase();
