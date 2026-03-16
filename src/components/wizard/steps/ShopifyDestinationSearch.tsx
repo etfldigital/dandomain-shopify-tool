@@ -13,6 +13,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { matchesEntityQuery } from '@/lib/shopify-search';
 import type { OldUrlType } from '@/lib/redirect-matcher';
 
 interface ShopifyDestinationSearchProps {
