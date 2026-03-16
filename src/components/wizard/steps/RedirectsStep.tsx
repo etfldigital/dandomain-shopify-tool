@@ -690,6 +690,77 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       });
 
       const productDestinations = destinations.filter((destination) => destination.type === 'product');
+      const manualSearchCache = new Map<string, ShopifyDestination[]>();
+
+      const searchProductsWithManualLogic = async (query: string): Promise<ShopifyDestination[]> => {
+        const trimmedQuery = query.trim();
+        if (!trimmedQuery) return [];
+
+        const cacheKey = trimmedQuery.toLowerCase();
+        const cached = manualSearchCache.get(cacheKey);
+        if (cached) return cached;
+
+        const localMatches = productDestinations.filter((destination) =>
+          matchesEntityQuery({ title: destination.title, handle: destination.handle }, trimmedQuery)
+        );
+
+        let liveMatches: ShopifyDestination[] = [];
+        if (trimmedQuery.length >= 2) {
+          try {
+            const { data, error } = await supabase.functions.invoke('search-shopify-entities', {
+              body: {
+                projectId: project.id,
+                query: trimmedQuery,
+                type: 'product',
+                limit: 30,
+              },
+            });
+
+            if (error) throw error;
+
+            const response = (data || {}) as {
+              entities?: Array<{
+                id: string;
+                type: ShopifyUrlType;
+                title: string;
+                handle: string;
+                path: string;
+              }>;
+            };
+
+            const liveEntities = (response.entities || [])
+              .filter((entity) => entity.type === 'product' && !!entity.handle)
+              .filter((entity) =>
+                matchesEntityQuery({ title: entity.title, handle: entity.handle }, trimmedQuery)
+              );
+
+            liveMatches = buildShopifyDestinations(liveEntities.map((entity) => ({
+              id: entity.id,
+              type: 'product' as ShopifyUrlType,
+              title: entity.title,
+              handle: entity.handle,
+              path: entity.path,
+              vendor: null,
+            })));
+          } catch (searchError) {
+            console.error('Live product search failed during auto-match:', searchError);
+          }
+        }
+
+        const merged: ShopifyDestination[] = [];
+        const seenPaths = new Set<string>();
+
+        for (const destination of [...localMatches, ...liveMatches]) {
+          if (!seenPaths.has(destination.path)) {
+            merged.push(destination);
+            seenPaths.add(destination.path);
+          }
+        }
+
+        manualSearchCache.set(cacheKey, merged);
+        return merged;
+      };
+
       const indexedResults = new Map<number, MatchResult>();
       const nonProductQueue: Array<{ index: number; input: (typeof oldUrlsForMatching)[number] }> = [];
       const maxSuggestions = 3;
@@ -710,28 +781,20 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         );
 
         let usedQuery = query;
-        let matches = usedQuery
-          ? productDestinations.filter((destination) =>
-              matchesEntityQuery({ title: destination.title, handle: destination.handle }, usedQuery)
-            )
-          : [];
+        let matches = usedQuery ? await searchProductsWithManualLogic(usedQuery) : [];
 
         if (matches.length === 0 && url.productTitle) {
           const unstrippedQuery = toSearchTokens(url.productTitle).join(' ');
           if (unstrippedQuery && unstrippedQuery !== usedQuery) {
             usedQuery = unstrippedQuery;
-            matches = productDestinations.filter((destination) =>
-              matchesEntityQuery({ title: destination.title, handle: destination.handle }, usedQuery)
-            );
+            matches = await searchProductsWithManualLogic(usedQuery);
           }
         }
 
-        const scoredMatches = matches
-          .map((destination) => ({
-            destination,
-            score: scoreSearchResult(destination, usedQuery, brandStripped),
-          }))
-          .sort((a, b) => b.score - a.score);
+        const scoredMatches = matches.map((destination) => ({
+          destination,
+          score: scoreSearchResult(destination, usedQuery, brandStripped),
+        }));
 
         const topMatch = scoredMatches[0] || null;
 
