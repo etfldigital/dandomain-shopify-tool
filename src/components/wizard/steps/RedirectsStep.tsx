@@ -1421,8 +1421,13 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><FolderOpen className="w-3 h-3" /> DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{stats.shopify.products}</div>
-              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Package className="w-3 h-3" /> Shopify produkter</div>
+              <div className="text-2xl font-semibold">{stats.shopify.indexedProducts ?? stats.shopify.products}</div>
+              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Package className="w-3 h-3" /> Shopify produkter i indeks</div>
+              {stats.shopify.reportedProducts !== null && stats.shopify.reportedProducts !== undefined && (
+                <div className="text-[11px] text-muted-foreground mt-1">
+                  {stats.shopify.indexedProducts ?? stats.shopify.products}/{stats.shopify.reportedProducts} importeret
+                </div>
+              )}
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.shopify.collections}</div>
