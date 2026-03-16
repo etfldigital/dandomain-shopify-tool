@@ -39,6 +39,11 @@ export interface ShopifyEntity {
 interface LiveSearchResponse {
   success?: boolean;
   entities?: ShopifyEntity[];
+  meta?: {
+    indexedProducts?: number | null;
+    shopifyProducts?: number | null;
+    indexComplete?: boolean | null;
+  };
   error?: string;
 }
 
@@ -64,6 +69,8 @@ export function ShopifyDestinationSearch({
   const [liveEntities, setLiveEntities] = useState<ShopifyEntity[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLiveSearching, setIsLiveSearching] = useState(false);
+  const [liveIndexedProducts, setLiveIndexedProducts] = useState<number | null>(null);
+  const [liveShopifyProducts, setLiveShopifyProducts] = useState<number | null>(null);
 
   useEffect(() => {
     if (open && entities.length === 0) {
@@ -227,10 +234,17 @@ export function ShopifyDestinationSearch({
           .filter((e) => !compatibleType || e.type === compatibleType)
           .filter((e) => matchesEntityQuery(e, query));
 
+        const indexed = response.meta?.indexedProducts;
+        const reported = response.meta?.shopifyProducts;
+
+        setLiveIndexedProducts(typeof indexed === 'number' ? indexed : null);
+        setLiveShopifyProducts(typeof reported === 'number' ? reported : null);
         setLiveEntities(safeEntities);
       } catch (err) {
         console.error('Live Shopify search failed:', err);
         setLiveEntities([]);
+        setLiveIndexedProducts(null);
+        setLiveShopifyProducts(null);
       } finally {
         setIsLiveSearching(false);
       }
@@ -345,6 +359,9 @@ export function ShopifyDestinationSearch({
           {searchQuery.trim().length >= 2 && (
             <div className="mt-1 text-[11px] text-muted-foreground">
               Søger både i uploadede data og live i Shopify
+              {compatibleType === 'product' && liveIndexedProducts !== null && (
+                <span className="ml-1">· Indeks: {liveIndexedProducts}{liveShopifyProducts !== null ? `/${liveShopifyProducts}` : ''}</span>
+              )}
             </div>
           )}
         </div>

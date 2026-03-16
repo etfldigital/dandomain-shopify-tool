@@ -85,6 +85,26 @@ interface MatcherShopifyEntity {
   vendor?: string | null;
 }
 
+interface ShopifySearchMeta {
+  indexedProducts?: number | null;
+  shopifyProducts?: number | null;
+  indexComplete?: boolean | null;
+}
+
+interface ShopifySearchResponse {
+  success?: boolean;
+  entities?: Array<{
+    id: string;
+    type: ShopifyUrlType;
+    title: string;
+    handle: string;
+    path: string;
+    imageUrl?: string | null;
+  }>;
+  meta?: ShopifySearchMeta;
+  error?: string;
+}
+
 // ============================================
 // CONSTANTS
 // ============================================
@@ -191,6 +211,8 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
   const [redirects, setRedirects] = useState<RedirectRow[]>([]);
   const [shopifyEntities, setShopifyEntities] = useState<MatcherShopifyEntity[]>([]);
   const [dandomanUrls, setDandomainUrls] = useState<SitemapUrl[]>([]);
+  const [shopifyProductIndexCount, setShopifyProductIndexCount] = useState<number | null>(null);
+  const [shopifyProductTotalCount, setShopifyProductTotalCount] = useState<number | null>(null);
 
   // Loading states
   const [isLoading, setIsLoading] = useState(true);
@@ -393,28 +415,70 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         return allRows;
       };
 
-      const products = await fetchAllRows('canonical_products', 'id, data, shopify_id');
-      for (const p of products) {
+      const [
+        localProducts,
+        categories,
+        pages,
+        liveProductsResponse,
+      ] = await Promise.all([
+        fetchAllRows('canonical_products', 'id, data, shopify_id'),
+        fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle'),
+        fetchAllRows('canonical_pages', 'id, data, shopify_id'),
+        supabase.functions.invoke('search-shopify-entities', {
+          body: {
+            projectId: project.id,
+            type: 'product',
+            mode: 'index',
+            includeCounts: true,
+            limit: 5000,
+          },
+        }),
+      ]);
+
+      const productByPath = new Map<string, MatcherShopifyEntity>();
+
+      if (liveProductsResponse.error) {
+        throw liveProductsResponse.error;
+      }
+
+      const livePayload = (liveProductsResponse.data || {}) as ShopifySearchResponse;
+      const liveProducts = (livePayload.entities || []).filter((entity) => entity.type === 'product' && !!entity.handle);
+
+      for (const product of liveProducts) {
+        productByPath.set(product.path, {
+          id: product.id,
+          type: 'product',
+          title: product.title,
+          handle: product.handle,
+          path: product.path,
+          imageUrl: product.imageUrl || null,
+          vendor: null,
+        });
+      }
+
+      for (const p of localProducts) {
         const data = p.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
         const handle = (data?.shopify_handle as string) || generateShopifyHandle(title);
         const images = (data?.images as string[]) || [];
         const vendor = (data?.vendor as string) || null;
+        const path = `/products/${handle}`;
 
-        if (p.shopify_id && title) {
-          entities.push({
+        if (p.shopify_id && title && !productByPath.has(path)) {
+          productByPath.set(path, {
             id: p.id,
             type: 'product',
             title,
             handle,
-            path: `/products/${handle}`,
+            path,
             imageUrl: images[0] || null,
             vendor,
           });
         }
       }
 
-      const categories = await fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle');
+      entities.push(...productByPath.values());
+
       for (const c of categories) {
         const storedHandle = (c as Record<string, unknown>).shopify_handle as string | null;
         const handle = storedHandle || generateShopifyHandle(c.shopify_tag || c.name);
@@ -423,7 +487,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
-      const pages = await fetchAllRows('canonical_pages', 'id, data, shopify_id');
       for (const pg of pages) {
         const data = pg.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
@@ -434,9 +497,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
+      const indexedProducts = livePayload.meta?.indexedProducts;
+      const shopifyProducts = livePayload.meta?.shopifyProducts;
+
+      setShopifyProductIndexCount(typeof indexedProducts === 'number' ? indexedProducts : liveProducts.length);
+      setShopifyProductTotalCount(typeof shopifyProducts === 'number' ? shopifyProducts : null);
       setShopifyEntities(entities);
     } catch (err) {
       console.error('Error loading Shopify entities:', err);
+      setShopifyProductIndexCount(null);
+      setShopifyProductTotalCount(null);
     }
   };
 
@@ -705,7 +775,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         );
 
         let liveMatches: ShopifyDestination[] = [];
-        if (trimmedQuery.length >= 2) {
+        if (trimmedQuery.length >= 2 && localMatches.length === 0) {
           try {
             const { data, error } = await supabase.functions.invoke('search-shopify-entities', {
               body: {
@@ -1195,10 +1265,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
     },
     shopify: {
       products: shopifyEntities.filter(u => u.type === 'product').length,
+      indexedProducts: shopifyProductIndexCount,
+      reportedProducts: shopifyProductTotalCount,
       collections: shopifyEntities.filter(u => u.type === 'collection').length,
       pages: shopifyEntities.filter(u => u.type === 'page').length,
     },
-  }), [redirects, dandomanUrls, shopifyEntities, filteredRedirects]);
+  }), [redirects, dandomanUrls, shopifyEntities, filteredRedirects, shopifyProductIndexCount, shopifyProductTotalCount]);
 
   // ============================================
   // RENDER
@@ -1349,8 +1421,13 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><FolderOpen className="w-3 h-3" /> DanDomain kategorier</div>
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <div className="text-2xl font-semibold">{stats.shopify.products}</div>
-              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Package className="w-3 h-3" /> Shopify produkter</div>
+              <div className="text-2xl font-semibold">{stats.shopify.indexedProducts ?? stats.shopify.products}</div>
+              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Package className="w-3 h-3" /> Shopify produkter i indeks</div>
+              {stats.shopify.reportedProducts !== null && stats.shopify.reportedProducts !== undefined && (
+                <div className="text-[11px] text-muted-foreground mt-1">
+                  {stats.shopify.indexedProducts ?? stats.shopify.products}/{stats.shopify.reportedProducts} importeret
+                </div>
+              )}
             </div>
             <div className="text-center p-3 bg-muted/30 rounded-lg">
               <div className="text-2xl font-semibold">{stats.shopify.collections}</div>

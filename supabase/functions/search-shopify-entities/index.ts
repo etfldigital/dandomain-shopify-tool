@@ -1,39 +1,28 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.90.1';
+import {
+  fetchGraphql,
+  fetchProductsCount,
+  getProductIndex,
+  matchesSearch,
+  normalizeSearchValue,
+  rankSearchResult,
+  type EntityType,
+  type SearchEntity,
+} from './shopify-product-index.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-type EntityType = 'product' | 'collection' | 'page';
-
 interface SearchRequest {
   projectId: string;
-  query: string;
+  query?: string;
   type?: EntityType;
   limit?: number;
-}
-
-interface SearchEntity {
-  id: string;
-  type: EntityType;
-  title: string;
-  handle: string;
-  path: string;
-  imageUrl: string | null;
-}
-
-function normalizeSearchValue(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/æ/g, 'ae')
-    .replace(/ø/g, 'oe')
-    .replace(/å/g, 'aa')
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  mode?: 'search' | 'index';
+  includeCounts?: boolean;
+  forceRefresh?: boolean;
 }
 
 function buildShopifySearchQuery(rawQuery: string): string {
@@ -50,57 +39,76 @@ function buildShopifySearchQuery(rawQuery: string): string {
     .join(' AND ');
 }
 
-function matchesSearch(entity: SearchEntity, query: string): boolean {
-  const q = normalizeSearchValue(query);
-  if (!q) return true;
-  const tokens = q.split(' ').filter(Boolean);
-  if (tokens.length === 0) return true;
-
-  const text = `${normalizeSearchValue(entity.title)} ${normalizeSearchValue(entity.handle.replace(/-/g, ' '))}`;
-  return tokens.every((token) => text.includes(token));
+function parseDomain(rawDomain: string | null | undefined): string {
+  return String(rawDomain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 10000): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutId);
-  }
+function dedupeEntities(entities: SearchEntity[], limit: number): SearchEntity[] {
+  return Array.from(new Map(entities.map((entity) => [entity.path, entity])).values()).slice(0, limit);
 }
 
-async function fetchGraphql(
+async function searchCollectionsOrPages(
   baseUrl: string,
   token: string,
-  query: string,
-  variables: Record<string, unknown>,
-): Promise<any> {
-  const response = await fetchWithTimeout(`${baseUrl}/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ query, variables }),
-  }, 10000);
+  queryExpr: string,
+  entityType: Extract<EntityType, 'collection' | 'page'>,
+  maxItems: number,
+  rawQuery: string,
+): Promise<SearchEntity[]> {
+  if (entityType === 'collection') {
+    const gql = `query SearchCollections($first: Int!, $query: String!) {
+      collections(first: $first, query: $query) {
+        nodes {
+          id
+          title
+          handle
+          image {
+            url
+          }
+        }
+      }
+    }`;
 
-  if (response.status === 429) {
-    throw new Error('Shopify rate limit');
+    const result = await fetchGraphql(baseUrl, token, gql, { first: maxItems, query: queryExpr });
+    const nodes = result?.data?.collections?.nodes || [];
+
+    return nodes
+      .map((node: any): SearchEntity => ({
+        id: String(node?.id || node?.handle || crypto.randomUUID()),
+        type: 'collection',
+        title: String(node?.title || node?.handle || 'Unavngivet kollektion'),
+        handle: String(node?.handle || ''),
+        path: `/collections/${String(node?.handle || '')}`,
+        imageUrl: node?.image?.url || null,
+      }))
+      .filter((entity) => entity.handle)
+      .filter((entity) => matchesSearch(entity, rawQuery));
   }
 
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Shopify API error (${response.status}): ${text}`);
-  }
+  const gql = `query SearchPages($first: Int!, $query: String!) {
+    pages(first: $first, query: $query) {
+      nodes {
+        id
+        title
+        handle
+      }
+    }
+  }`;
 
-  const data = JSON.parse(text);
-  if (data.errors?.length) {
-    throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-  }
+  const result = await fetchGraphql(baseUrl, token, gql, { first: maxItems, query: queryExpr });
+  const nodes = result?.data?.pages?.nodes || [];
 
-  return data;
+  return nodes
+    .map((node: any): SearchEntity => ({
+      id: String(node?.id || node?.handle || crypto.randomUUID()),
+      type: 'page',
+      title: String(node?.title || node?.handle || 'Unavngivet side'),
+      handle: String(node?.handle || ''),
+      path: `/pages/${String(node?.handle || '')}`,
+      imageUrl: null,
+    }))
+    .filter((entity) => entity.handle)
+    .filter((entity) => matchesSearch(entity, rawQuery));
 }
 
 Deno.serve(async (req) => {
@@ -117,9 +125,27 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { projectId, query, type, limit }: SearchRequest = await req.json();
-    if (!projectId || !query?.trim()) {
-      return new Response(JSON.stringify({ success: false, error: 'projectId and query required' }), {
+    const {
+      projectId,
+      query = '',
+      type,
+      limit,
+      mode = 'search',
+      includeCounts = false,
+      forceRefresh = false,
+    }: SearchRequest = await req.json();
+
+    const trimmedQuery = query.trim();
+
+    if (!projectId) {
+      return new Response(JSON.stringify({ success: false, error: 'projectId required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (mode !== 'index' && !trimmedQuery) {
+      return new Response(JSON.stringify({ success: false, error: 'query required in search mode' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -138,7 +164,11 @@ Deno.serve(async (req) => {
     });
     const serviceClient = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
+    const {
+      data: { user },
+      error: userError,
+    } = await userClient.auth.getUser();
+
     if (userError || !user) {
       return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
         status: 401,
@@ -166,7 +196,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const domain = String(project.shopify_store_domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    const domain = parseDomain(project.shopify_store_domain);
     const token = String(project.shopify_access_token_encrypted || '').trim();
 
     if (!domain || !token) {
@@ -176,109 +206,84 @@ Deno.serve(async (req) => {
       });
     }
 
-    const targetTypes: EntityType[] = type ? [type] : ['product', 'collection', 'page'];
-    const maxItems = Math.min(Math.max(limit ?? 25, 1), 40);
-    const searchExpr = buildShopifySearchQuery(query);
-    if (!searchExpr) {
-      return new Response(JSON.stringify({ success: true, entities: [] }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
     const baseUrl = `https://${domain}/admin/api/2025-01`;
+    const targetTypes: EntityType[] = type ? [type] : ['product', 'collection', 'page'];
+    const maxItems = mode === 'index'
+      ? Math.min(Math.max(limit ?? 3000, 1), 5000)
+      : Math.min(Math.max(limit ?? 25, 1), 100);
+
+    let indexedProductCount: number | null = null;
+    let shopifyProductsCount: number | null = null;
     const entities: SearchEntity[] = [];
 
-    for (const entityType of targetTypes) {
-      if (entityType === 'product') {
-        const gql = `query SearchProducts($first: Int!, $query: String!) {
-          products(first: $first, query: $query) {
-            nodes {
-              id
-              title
-              handle
-              featuredImage {
-                url
-              }
-            }
-          }
-        }`;
-        const result = await fetchGraphql(baseUrl, token, gql, { first: maxItems, query: searchExpr });
-        const nodes = result?.data?.products?.nodes || [];
-        for (const node of nodes) {
-          const entity: SearchEntity = {
-            id: String(node.id || node.handle || crypto.randomUUID()),
-            type: 'product',
-            title: String(node.title || node.handle || 'Unavngivet produkt'),
-            handle: String(node.handle || ''),
-            path: `/products/${String(node.handle || '')}`,
-            imageUrl: node?.featuredImage?.url || null,
-          };
-          if (entity.handle && matchesSearch(entity, query)) entities.push(entity);
-        }
+    if (targetTypes.includes('product')) {
+      const productIndex = await getProductIndex(baseUrl, token, forceRefresh);
+      indexedProductCount = productIndex.length;
+
+      if (mode === 'index') {
+        entities.push(...productIndex.slice(0, maxItems));
+      } else {
+        const productMatches = productIndex
+          .filter((entity) => matchesSearch(entity, trimmedQuery))
+          .map((entity) => ({ entity, score: rankSearchResult(entity, trimmedQuery) }))
+          .sort((a, b) => b.score - a.score || a.entity.title.localeCompare(b.entity.title))
+          .slice(0, maxItems)
+          .map((item) => item.entity);
+
+        entities.push(...productMatches);
       }
 
-      if (entityType === 'collection') {
-        const gql = `query SearchCollections($first: Int!, $query: String!) {
-          collections(first: $first, query: $query) {
-            nodes {
-              id
-              title
-              handle
-              image {
-                url
-              }
-            }
-          }
-        }`;
-        const result = await fetchGraphql(baseUrl, token, gql, { first: maxItems, query: searchExpr });
-        const nodes = result?.data?.collections?.nodes || [];
-        for (const node of nodes) {
-          const entity: SearchEntity = {
-            id: String(node.id || node.handle || crypto.randomUUID()),
-            type: 'collection',
-            title: String(node.title || node.handle || 'Unavngivet kollektion'),
-            handle: String(node.handle || ''),
-            path: `/collections/${String(node.handle || '')}`,
-            imageUrl: node?.image?.url || null,
-          };
-          if (entity.handle && matchesSearch(entity, query)) entities.push(entity);
-        }
-      }
-
-      if (entityType === 'page') {
-        const gql = `query SearchPages($first: Int!, $query: String!) {
-          pages(first: $first, query: $query) {
-            nodes {
-              id
-              title
-              handle
-            }
-          }
-        }`;
-        const result = await fetchGraphql(baseUrl, token, gql, { first: maxItems, query: searchExpr });
-        const nodes = result?.data?.pages?.nodes || [];
-        for (const node of nodes) {
-          const entity: SearchEntity = {
-            id: String(node.id || node.handle || crypto.randomUUID()),
-            type: 'page',
-            title: String(node.title || node.handle || 'Unavngivet side'),
-            handle: String(node.handle || ''),
-            path: `/pages/${String(node.handle || '')}`,
-            imageUrl: null,
-          };
-          if (entity.handle && matchesSearch(entity, query)) entities.push(entity);
+      if (includeCounts || mode === 'index') {
+        try {
+          shopifyProductsCount = await fetchProductsCount(baseUrl, token);
+        } catch (countError) {
+          console.warn('Failed to fetch Shopify product count:', countError);
         }
       }
     }
 
-    const deduped = Array.from(new Map(entities.map((e) => [e.path, e])).values()).slice(0, maxItems);
+    if (mode !== 'index') {
+      const searchExpr = buildShopifySearchQuery(trimmedQuery);
 
-    return new Response(JSON.stringify({ success: true, entities: deduped }), {
+      if (searchExpr) {
+        for (const entityType of targetTypes) {
+          if (entityType === 'collection' || entityType === 'page') {
+            const extra = await searchCollectionsOrPages(
+              baseUrl,
+              token,
+              searchExpr,
+              entityType,
+              maxItems,
+              trimmedQuery,
+            );
+            entities.push(...extra);
+          }
+        }
+      }
+    }
+
+    const deduped = dedupeEntities(entities, maxItems);
+
+    return new Response(JSON.stringify({
+      success: true,
+      entities: deduped,
+      meta: {
+        indexedProducts: indexedProductCount,
+        shopifyProducts: shopifyProductsCount,
+        indexComplete:
+          indexedProductCount !== null && shopifyProductsCount !== null
+            ? indexedProductCount === shopifyProductsCount
+            : null,
+      },
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
     console.error('search-shopify-entities error:', error);
-    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
