@@ -1,3 +1,5 @@
+import { getEntityQueryMatchStats, matchesEntityQuery } from '@/lib/shopify-search';
+
 /**
  * Client-side semantic URL redirect matcher.
  * 
@@ -25,6 +27,13 @@ export interface OldUrl {
   numericId: string | null;
 }
 
+export interface OldUrlInput {
+  loc: string;
+  type: OldUrlType;
+  productTitle?: string | null;
+  productVendorWords?: string[];
+}
+
 export interface ShopifyDestination {
   id: string;
   type: ShopifyUrlType;
@@ -32,6 +41,7 @@ export interface ShopifyDestination {
   handle: string;
   path: string;
   words: string[];
+  vendorWords?: string[];
 }
 
 export interface MatchResult {
