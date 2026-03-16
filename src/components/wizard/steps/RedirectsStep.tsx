@@ -415,28 +415,70 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         return allRows;
       };
 
-      const products = await fetchAllRows('canonical_products', 'id, data, shopify_id');
-      for (const p of products) {
+      const [
+        localProducts,
+        categories,
+        pages,
+        liveProductsResponse,
+      ] = await Promise.all([
+        fetchAllRows('canonical_products', 'id, data, shopify_id'),
+        fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle'),
+        fetchAllRows('canonical_pages', 'id, data, shopify_id'),
+        supabase.functions.invoke('search-shopify-entities', {
+          body: {
+            projectId: project.id,
+            type: 'product',
+            mode: 'index',
+            includeCounts: true,
+            limit: 5000,
+          },
+        }),
+      ]);
+
+      const productByPath = new Map<string, MatcherShopifyEntity>();
+
+      if (liveProductsResponse.error) {
+        throw liveProductsResponse.error;
+      }
+
+      const livePayload = (liveProductsResponse.data || {}) as ShopifySearchResponse;
+      const liveProducts = (livePayload.entities || []).filter((entity) => entity.type === 'product' && !!entity.handle);
+
+      for (const product of liveProducts) {
+        productByPath.set(product.path, {
+          id: product.id,
+          type: 'product',
+          title: product.title,
+          handle: product.handle,
+          path: product.path,
+          imageUrl: product.imageUrl || null,
+          vendor: null,
+        });
+      }
+
+      for (const p of localProducts) {
         const data = p.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
         const handle = (data?.shopify_handle as string) || generateShopifyHandle(title);
         const images = (data?.images as string[]) || [];
         const vendor = (data?.vendor as string) || null;
+        const path = `/products/${handle}`;
 
-        if (p.shopify_id && title) {
-          entities.push({
+        if (p.shopify_id && title && !productByPath.has(path)) {
+          productByPath.set(path, {
             id: p.id,
             type: 'product',
             title,
             handle,
-            path: `/products/${handle}`,
+            path,
             imageUrl: images[0] || null,
             vendor,
           });
         }
       }
 
-      const categories = await fetchAllRows('canonical_categories', 'id, name, shopify_tag, shopify_collection_id, shopify_handle');
+      entities.push(...productByPath.values());
+
       for (const c of categories) {
         const storedHandle = (c as Record<string, unknown>).shopify_handle as string | null;
         const handle = storedHandle || generateShopifyHandle(c.shopify_tag || c.name);
@@ -445,7 +487,6 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
-      const pages = await fetchAllRows('canonical_pages', 'id, data, shopify_id');
       for (const pg of pages) {
         const data = pg.data as Record<string, unknown>;
         const title = (data?.title as string) || '';
@@ -456,9 +497,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         }
       }
 
+      const indexedProducts = livePayload.meta?.indexedProducts;
+      const shopifyProducts = livePayload.meta?.shopifyProducts;
+
+      setShopifyProductIndexCount(typeof indexedProducts === 'number' ? indexedProducts : liveProducts.length);
+      setShopifyProductTotalCount(typeof shopifyProducts === 'number' ? shopifyProducts : null);
       setShopifyEntities(entities);
     } catch (err) {
       console.error('Error loading Shopify entities:', err);
+      setShopifyProductIndexCount(null);
+      setShopifyProductTotalCount(null);
     }
   };
 
