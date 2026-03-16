@@ -282,6 +282,18 @@ export interface MatcherOptions {
   autoApproveThreshold?: number; // Default 80
   reviewThreshold?: number;      // Default 30 (lowered from 50)
   maxSuggestions?: number;       // Default 3
+  /**
+   * Map of normalized brand/vendor words to strip from old product URLs before matching.
+   * Key: old URL path (lowercase), Value: array of normalized brand words.
+   * Only applies to product URLs — categories are matched as-is.
+   */
+  brandWordsMap?: Map<string, string[]>;
+  /**
+   * Set of all known brand names (normalized words) across the project.
+   * Used as fallback when a specific URL isn't in brandWordsMap — 
+   * the first word(s) of the old URL are checked against this set.
+   */
+  knownBrands?: Set<string>;
 }
 
 /**
@@ -299,6 +311,8 @@ export function matchUrls(
 ): MatchResult[] {
   const {
     maxSuggestions = 3,
+    brandWordsMap,
+    knownBrands,
   } = options;
 
   // Index destinations by type for fast lookup
@@ -352,21 +366,69 @@ export function matchUrls(
       continue;
     }
 
-    // Score all candidates
+    // === Brand stripping for products only ===
+    let wordsToMatch = words;
+    let brandStripped = false;
+    let strippedBrand: string | null = null;
+
+    if (oldUrl.type === 'product') {
+      const normalizedPath = oldUrl.loc.toLowerCase();
+      
+      // Strategy 1: Use exact brand from XML vendor data
+      if (brandWordsMap) {
+        const brandWords = brandWordsMap.get(normalizedPath);
+        if (brandWords && brandWords.length > 0) {
+          const brandSet = new Set(brandWords);
+          const filtered = words.filter(w => !brandSet.has(w));
+          if (filtered.length > 0) {
+            wordsToMatch = filtered;
+            brandStripped = true;
+            strippedBrand = brandWords.join(' ');
+          }
+        }
+      }
+      
+      // Strategy 2: Fallback — check if first word is a known brand
+      if (!brandStripped && knownBrands && words.length >= 2) {
+        const firstWord = words[0];
+        if (knownBrands.has(firstWord)) {
+          wordsToMatch = words.slice(1);
+          brandStripped = true;
+          strippedBrand = firstWord;
+        }
+      }
+    }
+
+    // Score all candidates — try both with and without brand for products
     const scored: Array<{ destination: ShopifyDestination; score: number; method: string }> = [];
 
     // Optimization: if we have a brand word, prioritize candidates that share it
-    const brandWord = words[0]; // First token is typically the brand
+    const brandWord = wordsToMatch[0]; // First remaining token
     const brandCandidates = brandIndex[brandWord]?.get(targetType) || [];
     
-    // Create a set of candidates to score — prioritize brand matches but include all
+    // Create a set of candidates to score
     const candidateSet = new Set<ShopifyDestination>();
     for (const c of brandCandidates) candidateSet.add(c);
     for (const c of candidates) candidateSet.add(c);
 
     for (const dest of candidateSet) {
-      let score = calculateScore(words, dest.words);
-      let method = 'semantic';
+      let score = calculateScore(wordsToMatch, dest.words);
+      let method = brandStripped ? 'semantic_brand_stripped' : 'semantic';
+
+      // If brand was stripped and score is decent, boost it — brand stripping is expected
+      if (brandStripped && score >= 40) {
+        score = Math.max(score, Math.min(score + 15, 95));
+        method = 'brand_stripped';
+      }
+
+      // Also try with original words (full slug) in case the Shopify title kept the brand
+      if (brandStripped) {
+        const fullScore = calculateScore(words, dest.words);
+        if (fullScore > score) {
+          score = fullScore;
+          method = 'semantic';
+        }
+      }
 
       // Bonus: if the normalized slug exactly matches the handle
       const normalizedSlug = normalizeDanish(slug);
@@ -375,7 +437,6 @@ export function matchUrls(
         score = Math.max(score, 98);
         method = 'exact_handle';
       } else if (normalizedHandle.includes(normalizedSlug) || normalizedSlug.includes(normalizedHandle)) {
-        // Partial handle match bonus
         const overlapRatio = Math.min(normalizedSlug.length, normalizedHandle.length) / 
                             Math.max(normalizedSlug.length, normalizedHandle.length);
         if (overlapRatio > 0.6) {
@@ -383,6 +444,27 @@ export function matchUrls(
           if (handleScore > score) {
             score = handleScore;
             method = 'handle_overlap';
+          }
+        }
+      }
+
+      // Also try brand-stripped slug against handle
+      if (brandStripped && strippedBrand) {
+        const strippedSlug = normalizeDanish(slug).replace(new RegExp(`^${normalizeDanish(strippedBrand).replace(/[^a-z0-9]/g, '[-]?')}[-]?`), '');
+        if (strippedSlug.length >= 3) {
+          if (normalizedHandle === strippedSlug) {
+            score = Math.max(score, 96);
+            method = 'handle_brand_stripped';
+          } else if (normalizedHandle.includes(strippedSlug) || strippedSlug.includes(normalizedHandle)) {
+            const overlapRatio = Math.min(strippedSlug.length, normalizedHandle.length) / 
+                                Math.max(strippedSlug.length, normalizedHandle.length);
+            if (overlapRatio > 0.5) {
+              const handleScore = Math.round(overlapRatio * 95);
+              if (handleScore > score) {
+                score = handleScore;
+                method = 'handle_brand_stripped';
+              }
+            }
           }
         }
       }
