@@ -86,7 +86,7 @@ interface MatcherShopifyEntity {
 // CONSTANTS
 // ============================================
 
-const REVIEW_THRESHOLD = 50;
+const REVIEW_THRESHOLD = 30;
 const ITEMS_PER_PAGE = 100;
 
 // ============================================
