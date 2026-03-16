@@ -482,13 +482,50 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         entityLookup.set(e.id, e);
       }
 
+      // === Build brand/vendor map from canonical_products ===
+      // Maps old URL path → array of normalized brand words to strip
+      const brandWordsMap = new Map<string, string[]>();
+      const knownBrands = new Set<string>();
+      
+      const PAGE_SIZE = 1000;
+      let offset = 0;
+      while (true) {
+        const { data: prodData } = await supabase
+          .from('canonical_products')
+          .select('data')
+          .eq('project_id', project.id)
+          .range(offset, offset + PAGE_SIZE - 1);
+        if (!prodData || prodData.length === 0) break;
+        for (const p of prodData) {
+          const d = p.data as Record<string, unknown>;
+          const vendor = (d?.vendor as string) || '';
+          const sourcePath = (d?.source_path as string) || '';
+          if (vendor && vendor.trim()) {
+            // Normalize vendor name into words
+            const vendorWords = vendor.toLowerCase().trim()
+              .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'oe').replace(/[å]/g, 'aa')
+              .replace(/ü/g, 'ue').replace(/ö/g, 'oe').replace(/ä/g, 'ae').replace(/ß/g, 'ss')
+              .split(/[\s\-_,./]+/)
+              .filter(w => w.length >= 2);
+            for (const vw of vendorWords) knownBrands.add(vw);
+            if (sourcePath) {
+              brandWordsMap.set(sourcePath.toLowerCase(), vendorWords);
+            }
+          }
+        }
+        if (prodData.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+      }
+
+      const matcherOptions = { brandWordsMap, knownBrands };
+      
       const CHUNK_SIZE = 200;
       const allResults: MatchResult[] = [];
 
       for (let i = 0; i < dandomanUrls.length; i += CHUNK_SIZE) {
         const chunk = dandomanUrls.slice(i, i + CHUNK_SIZE);
         await new Promise(resolve => setTimeout(resolve, 0));
-        const chunkResults = matchUrls(chunk, destinations);
+        const chunkResults = matchUrls(chunk, destinations, matcherOptions);
         allResults.push(...chunkResults);
         setProgress({ current: Math.min(i + CHUNK_SIZE, dandomanUrls.length), total: dandomanUrls.length });
       }
