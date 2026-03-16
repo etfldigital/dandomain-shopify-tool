@@ -22,12 +22,13 @@ import {
   type ShopifyDestination,
   type MatchResult,
 } from '@/lib/redirect-matcher';
-import { 
+import {
   ArrowRight, Check, X, Download, Upload, RefreshCw, ExternalLink,
   AlertCircle, Loader2, Search, FileSpreadsheet, AlertTriangle,
   Package, FolderOpen, FileText, Globe, Info, CheckCircle, HelpCircle, XCircle,
   Clock, ImageOff, ThumbsUp
 } from 'lucide-react';
+import { getEntityQueryMatchStats, matchesEntityQuery, normalizeForSearch } from '@/lib/shopify-search';
 
 // ============================================
 // TYPES
