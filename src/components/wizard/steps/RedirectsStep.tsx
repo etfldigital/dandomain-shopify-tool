@@ -775,7 +775,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         );
 
         let liveMatches: ShopifyDestination[] = [];
-        if (trimmedQuery.length >= 2) {
+        if (trimmedQuery.length >= 2 && localMatches.length === 0) {
           try {
             const { data, error } = await supabase.functions.invoke('search-shopify-entities', {
               body: {
