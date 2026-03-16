@@ -80,6 +80,7 @@ interface MatcherShopifyEntity {
   handle: string;
   path: string;
   imageUrl?: string | null;
+  vendor?: string | null;
 }
 
 // ============================================
