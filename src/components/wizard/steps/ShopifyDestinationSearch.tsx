@@ -243,6 +243,8 @@ export function ShopifyDestinationSearch({
       } catch (err) {
         console.error('Live Shopify search failed:', err);
         setLiveEntities([]);
+        setLiveIndexedProducts(null);
+        setLiveShopifyProducts(null);
       } finally {
         setIsLiveSearching(false);
       }
