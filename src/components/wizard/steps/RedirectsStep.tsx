@@ -517,9 +517,86 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         ));
       };
 
+      const toSearchTokens = (value: string): string[] => {
+        return normalizeForSearch(value)
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter((token) => token.length >= 2);
+      };
+
       const extractLegacyProductId = (path: string): string | null => {
         const match = path.toLowerCase().match(/-(\d+)p\d*\.html$/i);
         return match ? match[1] : null;
+      };
+
+      const buildFallbackQueryFromPath = (path: string, knownBrandSet: Set<string>): string => {
+        const normalizedPath = path.toLowerCase().replace(/^https?:\/\/[^/]+/, '');
+        const slug = normalizedPath
+          .replace(/^\/shop\//, '')
+          .replace(/^\//, '')
+          .replace(/\.html$/i, '')
+          .replace(/\.asp$/i, '')
+          .replace(/\.php$/i, '')
+          .replace(/-\d+[pcs]\d*$/i, '')
+          .replace(/[-_]+/g, ' ');
+
+        const tokens = toSearchTokens(slug);
+        if (tokens.length > 1 && knownBrandSet.has(tokens[0])) {
+          return tokens.slice(1).join(' ');
+        }
+        return tokens.join(' ');
+      };
+
+      const buildBrandStrippedQuery = (
+        productTitle: string | undefined,
+        vendorWords: string[] | undefined,
+        fallbackPath: string,
+        knownBrandSet: Set<string>,
+      ): { query: string; brandStripped: boolean } => {
+        const titleTokens = toSearchTokens(productTitle || '');
+        if (titleTokens.length === 0) {
+          return { query: buildFallbackQueryFromPath(fallbackPath, knownBrandSet), brandStripped: false };
+        }
+
+        const vendorTokens = Array.from(new Set((vendorWords || []).flatMap((word) => toSearchTokens(word))));
+
+        let stripCount = 0;
+        if (vendorTokens.length > 0 && titleTokens.length >= vendorTokens.length) {
+          const startsWithVendor = vendorTokens.every((word, idx) => titleTokens[idx] === word);
+          if (startsWithVendor) {
+            stripCount = vendorTokens.length;
+          }
+        }
+
+        if (stripCount === 0) {
+          while (stripCount < titleTokens.length && knownBrandSet.has(titleTokens[stripCount])) {
+            stripCount += 1;
+          }
+        }
+
+        const strippedTokens = titleTokens.slice(stripCount);
+        const queryTokens = strippedTokens.length > 0 ? strippedTokens : titleTokens;
+
+        return {
+          query: queryTokens.join(' '),
+          brandStripped: stripCount > 0,
+        };
+      };
+
+      const scoreSearchResult = (
+        destination: ShopifyDestination,
+        query: string,
+        brandStripped: boolean,
+      ): number => {
+        const stats = getEntityQueryMatchStats({ title: destination.title, handle: destination.handle }, query);
+        if (stats.totalTokens === 0) return 0;
+
+        const baseScore = Math.round(stats.matchRatio * 100);
+        if (stats.fullMatch && stats.totalTokens >= 2) {
+          return Math.max(baseScore, brandStripped ? 90 : 85);
+        }
+
+        return baseScore;
       };
 
       const manufacturerNameById = new Map<string, string>();
@@ -547,7 +624,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const brandWordsMap = new Map<string, string[]>();
       const knownBrands = new Set<string>();
       const productContextByPath = new Map<string, { title: string; vendorWords: string[] }>();
-      const productContextByExternalId = new Map<string, { title: string; vendorWords: string[] }>();
+      const productContextByLegacyId = new Map<string, { title: string; vendorWords: string[] }>();
 
       const PAGE_SIZE = 1000;
       let offset = 0;
@@ -579,7 +656,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
 
           const externalId = String((p as { external_id?: string }).external_id || '').trim();
           if (externalId) {
-            productContextByExternalId.set(externalId, context);
+            productContextByLegacyId.set(externalId, context);
+          }
+
+          const internalId = String((d?.internal_id as string) || '').trim();
+          if (internalId) {
+            productContextByLegacyId.set(internalId, context);
           }
         }
 
@@ -595,7 +677,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         const normalizedPath = url.loc.toLowerCase();
         const numericId = extractLegacyProductId(normalizedPath);
         const context = productContextByPath.get(normalizedPath) ||
-          (numericId ? productContextByExternalId.get(numericId) : undefined);
+          (numericId ? productContextByLegacyId.get(numericId) : undefined);
 
         if (!context) return url;
 
@@ -606,16 +688,101 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
         };
       });
 
-      const CHUNK_SIZE = 200;
-      const allResults: MatchResult[] = [];
+      const productDestinations = destinations.filter((destination) => destination.type === 'product');
+      const indexedResults = new Map<number, MatchResult>();
+      const nonProductQueue: Array<{ index: number; input: (typeof oldUrlsForMatching)[number] }> = [];
+      const maxSuggestions = 3;
 
-      for (let i = 0; i < oldUrlsForMatching.length; i += CHUNK_SIZE) {
-        const chunk = oldUrlsForMatching.slice(i, i + CHUNK_SIZE);
-        await new Promise(resolve => setTimeout(resolve, 0));
-        const chunkResults = matchUrls(chunk, destinations, matcherOptions);
-        allResults.push(...chunkResults);
-        setProgress({ current: Math.min(i + CHUNK_SIZE, oldUrlsForMatching.length), total: oldUrlsForMatching.length });
+      for (let index = 0; index < oldUrlsForMatching.length; index += 1) {
+        const url = oldUrlsForMatching[index];
+
+        if (url.type !== 'product') {
+          nonProductQueue.push({ index, input: url });
+          continue;
+        }
+
+        const { query, brandStripped } = buildBrandStrippedQuery(
+          url.productTitle,
+          url.productVendorWords,
+          url.loc,
+          knownBrands,
+        );
+
+        let usedQuery = query;
+        let matches = usedQuery
+          ? productDestinations.filter((destination) =>
+              matchesEntityQuery({ title: destination.title, handle: destination.handle }, usedQuery)
+            )
+          : [];
+
+        if (matches.length === 0 && url.productTitle) {
+          const unstrippedQuery = toSearchTokens(url.productTitle).join(' ');
+          if (unstrippedQuery && unstrippedQuery !== usedQuery) {
+            usedQuery = unstrippedQuery;
+            matches = productDestinations.filter((destination) =>
+              matchesEntityQuery({ title: destination.title, handle: destination.handle }, usedQuery)
+            );
+          }
+        }
+
+        const scoredMatches = matches
+          .map((destination) => ({
+            destination,
+            score: scoreSearchResult(destination, usedQuery, brandStripped),
+          }))
+          .sort((a, b) => b.score - a.score);
+
+        const topMatch = scoredMatches[0] || null;
+
+        indexedResults.set(index, {
+          oldUrl: url.loc,
+          oldType: url.type,
+          matchedDestination: topMatch ? topMatch.destination : null,
+          score: topMatch ? topMatch.score : 0,
+          matchMethod: topMatch
+            ? (brandStripped ? 'manual_search_auto_brand_stripped' : 'manual_search_auto')
+            : 'none',
+          suggestions: scoredMatches.slice(0, maxSuggestions).map((item) => ({
+            destination: item.destination,
+            score: item.score,
+          })),
+        });
       }
+
+      if (nonProductQueue.length > 0) {
+        const CHUNK_SIZE = 200;
+        const queuedResults: MatchResult[] = [];
+
+        for (let i = 0; i < nonProductQueue.length; i += CHUNK_SIZE) {
+          const chunkInputs = nonProductQueue.slice(i, i + CHUNK_SIZE).map((item) => item.input);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const chunkResults = matchUrls(chunkInputs, destinations, matcherOptions);
+          queuedResults.push(...chunkResults);
+        }
+
+        queuedResults.forEach((result, queueIndex) => {
+          const queuedInput = nonProductQueue[queueIndex];
+          if (queuedInput) {
+            indexedResults.set(queuedInput.index, result);
+          }
+        });
+      }
+
+      const allResults: MatchResult[] = oldUrlsForMatching.map((url, index) => {
+        const result = indexedResults.get(index);
+        if (result) return result;
+
+        return {
+          oldUrl: url.loc,
+          oldType: url.type,
+          matchedDestination: null,
+          score: 0,
+          matchMethod: 'none',
+          suggestions: [],
+        };
+      });
+
+      setProgress({ current: oldUrlsForMatching.length, total: oldUrlsForMatching.length });
 
       const newRedirects: RedirectRow[] = [];
       const dbInserts: Array<Record<string, unknown>> = [];
