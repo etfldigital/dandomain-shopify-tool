@@ -97,7 +97,7 @@ function rankSearchResult(entity: SearchEntity, query: string): number {
 
 // ── Shopify GraphQL ────────────────────────────────────────────────────
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 10000): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 15000): Promise<Response> {
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -112,23 +112,72 @@ async function fetchGraphql(
   token: string,
   query: string,
   variables: Record<string, unknown>,
+  retries = 3,
 ): Promise<any> {
-  const response = await fetchWithTimeout(`${baseUrl}/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ query, variables }),
-  }, 12000);
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(`${baseUrl}/graphql.json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': token,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ query, variables }),
+      }, 20000);
 
-  if (response.status === 429) throw new Error('Shopify rate limit');
-  const text = await response.text();
-  if (!response.ok) throw new Error(`Shopify API error (${response.status}): ${text}`);
-  const data = JSON.parse(text);
-  if (data.errors?.length) throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-  return data;
+      if (response.status === 429) {
+        // Rate limited — wait and retry
+        const retryAfter = Math.min(Number(response.headers.get('Retry-After') || '2'), 10);
+        await response.text(); // consume body
+        if (attempt < retries) {
+          console.warn(`Shopify rate limit, retrying in ${retryAfter}s (attempt ${attempt + 1}/${retries})`);
+          await new Promise(r => setTimeout(r, retryAfter * 1000));
+          continue;
+        }
+        throw new Error('Shopify rate limit exceeded after retries');
+      }
+
+      if (response.status === 503 || response.status === 502 || response.status === 504) {
+        const text = await response.text();
+        if (attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.warn(`Shopify ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`Shopify API error (${response.status}): ${text}`);
+      }
+
+      const text = await response.text();
+      if (!response.ok) throw new Error(`Shopify API error (${response.status}): ${text}`);
+      const data = JSON.parse(text);
+      if (data.errors?.length) {
+        // Check if it's a SERVICE_UNAVAILABLE error that we can retry
+        const isServiceUnavailable = data.errors.some((e: any) => e.extensions?.code === 'SERVICE_UNAVAILABLE');
+        if (isServiceUnavailable && attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.warn(`Shopify SERVICE_UNAVAILABLE, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
+      }
+      return data;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const isAbort = lastError.name === 'AbortError' || lastError.message.includes('signal has been aborted');
+      if ((isAbort || lastError.message.includes('fetch')) && attempt < retries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.warn(`Fetch error (${lastError.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError || new Error('fetchGraphql failed');
 }
 
 // ── Product index (paginated) ──────────────────────────────────────────
