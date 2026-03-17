@@ -459,7 +459,7 @@ Deno.serve(async (req) => {
     const baseUrl = `https://${domain}/admin/api/2025-01`;
     const targetTypes: EntityType[] = type ? [type] : ['product', 'collection', 'page'];
     const maxItems = mode === 'index'
-      ? Math.min(Math.max(limit ?? 3000, 1), 5000)
+      ? Math.min(Math.max(limit ?? 20000, 1), 20000)
       : Math.min(Math.max(limit ?? 25, 1), 100);
 
     let indexedProductCount: number | null = null;
