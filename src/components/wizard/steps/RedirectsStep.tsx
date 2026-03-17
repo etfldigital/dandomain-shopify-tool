@@ -430,7 +430,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             type: 'product',
             mode: 'index',
             includeCounts: true,
-            limit: 5000,
+            limit: 20000,
           },
         }),
       ]);
