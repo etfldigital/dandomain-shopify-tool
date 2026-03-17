@@ -125,7 +125,7 @@ async function fetchGraphql(
           Accept: 'application/json',
         },
         body: JSON.stringify({ query, variables }),
-      }, 20000);
+      }, 30000);
 
       if (response.status === 429) {
         // Rate limited — wait and retry
