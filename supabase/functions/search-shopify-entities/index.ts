@@ -467,19 +467,38 @@ Deno.serve(async (req) => {
     const entities: SearchEntity[] = [];
 
     if (targetTypes.includes('product')) {
-      const productIndex = await getProductIndex(baseUrl, token, forceRefresh);
-      indexedProductCount = productIndex.length;
-
       if (mode === 'index') {
+        const productIndex = await getProductIndex(baseUrl, token, forceRefresh);
+        indexedProductCount = productIndex.length;
         entities.push(...productIndex.slice(0, maxItems));
       } else {
-        const productMatches = productIndex
-          .filter((e) => matchesSearch(e, trimmedQuery))
-          .map((e) => ({ entity: e, score: rankSearchResult(e, trimmedQuery) }))
-          .sort((a, b) => b.score - a.score || a.entity.title.localeCompare(b.entity.title))
-          .slice(0, maxItems)
-          .map((item) => item.entity);
-        entities.push(...productMatches);
+        let mergedMatches: SearchEntity[] = [];
+
+        try {
+          const liveMatches = await searchProductsLive(baseUrl, token, trimmedQuery, maxItems);
+          mergedMatches.push(...liveMatches);
+        } catch (liveError) {
+          console.warn('Live Shopify product search failed:', liveError);
+        }
+
+        try {
+          const productIndex = await getProductIndex(baseUrl, token, forceRefresh);
+          indexedProductCount = productIndex.length;
+
+          const indexedMatches = productIndex
+            .filter((e) => matchesSearch(e, trimmedQuery))
+            .map((e) => ({ entity: e, score: rankSearchResult(e, trimmedQuery) }))
+            .sort((a, b) => b.score - a.score || a.entity.title.localeCompare(b.entity.title))
+            .slice(0, maxItems)
+            .map((item) => item.entity);
+
+          mergedMatches = dedupeEntities([...mergedMatches, ...indexedMatches], maxItems);
+        } catch (indexError) {
+          console.warn('Indexed product search fallback failed:', indexError);
+          mergedMatches = dedupeEntities(mergedMatches, maxItems);
+        }
+
+        entities.push(...mergedMatches);
       }
 
       if (includeCounts || mode === 'index') {
