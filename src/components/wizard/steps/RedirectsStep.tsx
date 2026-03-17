@@ -861,10 +861,12 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           }
         }
 
-        const scoredMatches = matches.map((destination) => ({
-          destination,
-          score: scoreSearchResult(destination, usedQuery, brandStripped),
-        }));
+        const scoredMatches = matches
+          .map((destination) => ({
+            destination,
+            score: scoreSearchResult(destination, usedQuery, brandStripped),
+          }))
+          .sort((a, b) => b.score - a.score || a.destination.title.localeCompare(b.destination.title));
 
         const topMatch = scoredMatches[0] || null;
 
