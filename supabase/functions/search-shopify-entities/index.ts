@@ -235,9 +235,91 @@ async function fetchProductsCount(baseUrl: string, token: string): Promise<numbe
 // ── Search helpers ─────────────────────────────────────────────────────
 
 function buildShopifySearchQuery(rawQuery: string): string {
-  const tokens = normalizeSearchValue(rawQuery).split(' ').filter(Boolean).slice(0, 6).map((t) => t.replace(/\*/g, ''));
+  const tokens = normalizeSearchValue(rawQuery)
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((t) => t.replace(/\*/g, ''));
   if (tokens.length === 0) return '';
   return tokens.map((t) => `(title:*${t}* OR handle:*${t}*)`).join(' AND ');
+}
+
+function escapeShopifyQueryValue(value: string): string {
+  return value.replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function buildProductLiveQueries(rawQuery: string): string[] {
+  const normalized = normalizeSearchValue(rawQuery);
+  const tokens = normalized.split(' ').filter(Boolean).slice(0, 6);
+  const plain = escapeShopifyQueryValue(rawQuery);
+  const normalizedPlain = escapeShopifyQueryValue(normalized);
+  const queryExpr = buildShopifySearchQuery(rawQuery);
+
+  return Array.from(new Set([
+    queryExpr,
+    plain,
+    normalizedPlain,
+    tokens.join(' AND '),
+    tokens.map((t) => `${t}*`).join(' '),
+  ].filter((q) => q && q.length >= 2)));
+}
+
+function mapProductNodeToEntity(node: any): SearchEntity | null {
+  const handle = String(node?.handle || '');
+  if (!handle) return null;
+
+  return {
+    id: String(node?.id || handle || crypto.randomUUID()),
+    type: 'product',
+    title: String(node?.title || handle || 'Unavngivet produkt'),
+    handle,
+    path: `/products/${handle}`,
+    imageUrl: node?.featuredImage?.url || null,
+  };
+}
+
+async function searchProductsLive(
+  baseUrl: string,
+  token: string,
+  rawQuery: string,
+  maxItems: number,
+): Promise<SearchEntity[]> {
+  const gql = `query SearchProducts($first: Int!, $query: String!) {
+    products(first: $first, query: $query, sortKey: RELEVANCE) {
+      nodes { id title handle featuredImage { url } }
+    }
+  }`;
+
+  const queries = buildProductLiveQueries(rawQuery);
+  const byPath = new Map<string, SearchEntity>();
+
+  for (const queryExpr of queries) {
+    try {
+      const result = await fetchGraphql(baseUrl, token, gql, {
+        first: Math.min(Math.max(maxItems, 10), 100),
+        query: queryExpr,
+      });
+
+      for (const node of result?.data?.products?.nodes || []) {
+        const entity = mapProductNodeToEntity(node);
+        if (entity) byPath.set(entity.path, entity);
+      }
+
+      if (byPath.size >= maxItems) break;
+    } catch (error) {
+      console.warn(`Live product query failed for "${queryExpr}":`, error);
+    }
+  }
+
+  const candidates = Array.from(byPath.values());
+  const strictMatches = candidates.filter((e) => matchesSearch(e, rawQuery));
+  const matchesToRank = strictMatches.length > 0 ? strictMatches : candidates;
+
+  return matchesToRank
+    .map((e) => ({ entity: e, score: rankSearchResult(e, rawQuery) }))
+    .sort((a, b) => b.score - a.score || a.entity.title.localeCompare(b.entity.title))
+    .slice(0, maxItems)
+    .map((item) => item.entity);
 }
 
 function parseDomain(rawDomain: string | null | undefined): string {
