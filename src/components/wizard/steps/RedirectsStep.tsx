@@ -31,6 +31,11 @@ import {
 } from 'lucide-react';
 import { getEntityQueryMatchStats, matchesEntityQuery, normalizeForSearch } from '@/lib/shopify-search';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUuid(v: string | undefined | null): v is string {
+  return !!v && UUID_RE.test(v);
+}
+
 // ============================================
 // TYPES
 // ============================================
@@ -978,7 +983,7 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           id,
           project_id: project.id,
           entity_type: entityType,
-          entity_id: result.matchedDestination?.id || crypto.randomUUID(),
+          entity_id: isValidUuid(result.matchedDestination?.id) ? result.matchedDestination!.id : crypto.randomUUID(),
           old_path: result.oldUrl,
           new_path: result.matchedDestination?.path || '/',
           status: 'pending',
