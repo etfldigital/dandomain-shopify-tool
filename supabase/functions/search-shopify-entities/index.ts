@@ -435,7 +435,14 @@ Deno.serve(async (req) => {
       .eq('id', projectId)
       .maybeSingle();
 
-    if (projectError || !project) {
+    if (projectError) {
+      console.error('Project query error:', projectError.message, 'projectId:', projectId);
+      return new Response(JSON.stringify({ success: false, error: `Project query failed: ${projectError.message}` }), {
+        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!project) {
       return new Response(JSON.stringify({ success: false, error: 'Project not found' }), {
         status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
