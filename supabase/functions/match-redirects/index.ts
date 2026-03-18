@@ -44,6 +44,7 @@ interface UploadedEntity {
   title: string;
   sku?: string;
   external_id?: string;
+  internal_id?: string;
 }
 
 // Normalize path for comparison
@@ -392,6 +393,7 @@ Deno.serve(async (req) => {
       const sourcePath = data?.source_path as string | null;
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || generateShopifyHandle(title);
+      const internalId = (data?.internal_id as string) || '';
 
       if (title) {
         entities.push({
@@ -402,6 +404,7 @@ Deno.serve(async (req) => {
           title,
           sku,
           external_id: product.external_id,
+          internal_id: internalId,
         });
       }
     }
@@ -500,6 +503,14 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Build internal_id lookup map (DanDomain INTERNAL_ID used in URLs)
+    const internalIdToEntity = new Map<string, UploadedEntity>();
+    for (const entity of entities) {
+      if (entity.internal_id) {
+        internalIdToEntity.set(entity.internal_id, entity);
+      }
+    }
+
     // Process each old path
     const matchedRedirects: MatchedRedirect[] = [];
     const unmatchedUrls: UnmatchedUrl[] = [];
@@ -555,9 +566,14 @@ Deno.serve(async (req) => {
       // Strategy 1.3: Compare source_path name parts (ignore ID suffixes)
       // DanDomain sitemap URLs and XML source_paths often have the same slug but different IDs
       if (!matched && slug) {
+        // Determine URL type to search only relevant entities
+        const isProductUrl = !!normalized.match(/-\d+p\.html$/i);
+        const isCategoryUrl = !!normalized.match(/-\d+[cs]\d*\.html$/i);
+        const allowedEntities = isProductUrl ? productEntities
+          : isCategoryUrl ? categoryEntities : entities;
         const urlNamePart = normalizeForComparison(extractProductNameFromSlug(slug));
         if (urlNamePart && urlNamePart.length > 3) {
-          for (const entity of entities) {
+          for (const entity of allowedEntities) {
             if (entity.source_path) {
               const entitySlug = extractSlugFromPath(normalizePath(entity.source_path));
               const entityNamePart = normalizeForComparison(extractProductNameFromSlug(entitySlug));
@@ -572,16 +588,26 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Strategy 1.5: Extract numeric ID from DanDomain URL and match against external_id
+      // Strategy 1.5: Extract numeric ID from DanDomain URL and match against internal_id then external_id
       if (!matched) {
         const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
         if (productIdMatch) {
           const dandoId = productIdMatch[1];
-          const entity = productEntities.find(e => e.external_id === dandoId);
-          if (entity) {
-            matched = entity;
-            confidence = 98;
+          // Try internal_id first (this is what DanDomain actually uses in URLs)
+          const entityByInternalId = internalIdToEntity.get(dandoId);
+          if (entityByInternalId && entityByInternalId.entity_type === 'product') {
+            matched = entityByInternalId;
+            confidence = 99;
             matchedBy = 'external_id';
+          }
+          // Fall back to external_id (SKU)
+          if (!matched) {
+            const entity = productEntities.find(e => e.external_id === dandoId);
+            if (entity) {
+              matched = entity;
+              confidence = 98;
+              matchedBy = 'external_id';
+            }
           }
         }
 

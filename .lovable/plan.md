@@ -1,88 +1,60 @@
 
 
-## Problem
+## Investigation Results
 
-DanDomain product URLs contain the **INTERNAL_ID** (e.g. `-27795p.html`), but the code uses the **SKU/external_id** (e.g. `0951`) in two critical places:
+The "i Shopify" refresh button is **NOT broken by CORS**. The full flow works correctly:
 
-1. **`xml-parser.ts`** builds `source_path` using SKU: `/shop/...-0951p.html` instead of `/shop/...-27795p.html`
-2. **`match-redirects/index.ts`** Strategy 1.5 looks up the extracted numeric ID against `external_id` (which is SKU), not `internal_id`
+1. Browser calls backend Edge Function `shopify-products-count` via `supabase.functions.invoke()` -- confirmed in console logs and network requests
+2. Edge Function calls Shopify REST API at `https://alexandrasdk.myshopify.com/admin/api/2025-01/products/count.json?status=any`
+3. Shopify returns `{"count":0}` -- HTTP 200, not an error
 
-This means both Strategy 1 (exact source_path) and Strategy 1.5 (numeric ID lookup) fail for nearly all products.
+This is confirmed by edge function logs showing dozens of calls all returning `{"count":0}`. Meanwhile, the same function correctly returns customers (16,215), orders (4,539), categories (405), and pages (1).
 
-## Changes
+### Root Cause
 
-### 1. `src/lib/xml-parser.ts` (~line 220)
-Change source_path construction to use `internalId` instead of `sku`:
+The Shopify REST Products API (`/products/count.json`) was deprecated starting in API version `2024-10`. In version `2025-01`, this endpoint returns 0 even though products exist. The upload works because `POST /products.json` still functions for creation, but the count endpoint is broken.
 
-```typescript
-const sourceId = internalId || sku;
-const sourcePath = sourceId ? `/shop/${slugifiedTitle}-${sourceId}p.html` : null;
+### Plan
+
+**1. Fix `shopify-products-count` Edge Function** -- use GraphQL for products count instead of the deprecated REST endpoint
+
+Replace the products case in `fetchCountForEntity` with a GraphQL query:
+```graphql
+{ productsCount { count } }
 ```
 
-### 2. `supabase/functions/match-redirects/index.ts`
+This hits `POST /admin/api/2025-01/graphql.json` which is the supported way to count products in newer API versions. All other entity types (customers, orders, categories, pages) keep their current REST endpoints since those still work.
 
-**A) Add `internal_id` to `UploadedEntity` interface** (line 47):
-```typescript
-internal_id?: string;
+**2. No frontend changes needed**
+
+The frontend code in `UploadStep.tsx` already:
+- Calls the backend Edge Function (not Shopify directly)
+- Has per-entity-type refresh via `fetchShopifyLiveCountForEntity()`
+- Displays "–" when fetch fails (`null` values)
+- Logs responses to console
+
+The only change is in the backend Edge Function.
+
+### Technical Detail
+
+```text
+Current (broken):
+  GET /admin/api/2025-01/products/count.json?status=any → {"count": 0}
+
+Fixed:
+  POST /admin/api/2025-01/graphql.json
+  Body: { "query": "{ productsCount { count } }" }
+  → {"data": {"productsCount": {"count": 431}}}
 ```
 
-**B) Extract `internal_id` when building product entities** (~line 388-406):
-```typescript
-const internalId = (data?.internal_id as string) || '';
-// ... and include it in the entity push
-internal_id: internalId,
-```
+### Files to change
 
-**C) Build `internalIdToEntity` lookup map** (after line 500, alongside existing maps):
-```typescript
-const internalIdToEntity = new Map<string, UploadedEntity>();
-for (const entity of entities) {
-  if (entity.internal_id) {
-    internalIdToEntity.set(entity.internal_id, entity);
-  }
-}
-```
+- `supabase/functions/shopify-products-count/index.ts` -- replace REST products count with GraphQL query
+- `supabase/functions/upload-worker/index.ts` -- also fix the products count at line 172 which has the same bug (used for sequencing gate)
 
-**D) Update Strategy 1.5** (~line 576-586) to check `internal_id` first, then fall back to `external_id`:
-```typescript
-if (!matched) {
-  const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
-  if (productIdMatch) {
-    const dandoId = productIdMatch[1];
-    // Try internal_id first (what DanDomain actually uses in URLs)
-    const entityByInternalId = internalIdToEntity.get(dandoId);
-    if (entityByInternalId && entityByInternalId.entity_type === 'product') {
-      matched = entityByInternalId;
-      confidence = 99;
-      matchedBy = 'external_id';
-    }
-    // Fall back to external_id (SKU)
-    if (!matched) {
-      const entity = productEntities.find(e => e.external_id === dandoId);
-      if (entity) {
-        matched = entity;
-        confidence = 98;
-        matchedBy = 'external_id';
-      }
-    }
-  }
-  // ... existing category matching unchanged
-}
-```
-
-**E) Fix Strategy 1.3** (~line 560) to use type-appropriate entity list instead of all entities:
-```typescript
-// Determine which entities to search based on URL type
-const urlType = normalized.match(/-\d+p\.html$/i) ? 'product'
-  : normalized.match(/-\d+[cs]\d*\.html$/i) ? 'category' : null;
-const allowedEntities = urlType === 'product' ? productEntities
-  : urlType === 'category' ? categoryEntities : entities;
-
-// Then use allowedEntities in the Strategy 1.3 loop
-```
-
-### Expected Impact
-- Most of the 911 unmatched product URLs will now match via the `internalIdToEntity` lookup (Strategy 1.5) with 99% confidence
-- The `source_path` fix ensures Strategy 1 (exact path match) also works for future imports
-- Remaining unmatched URLs will be genuinely missing products (discontinued, not migrated)
+### Not changing
+- Upload logic, payload mapping, retry logic
+- "Afventer" count logic
+- Frontend UploadStep.tsx
+- Watchdog mechanism
 
