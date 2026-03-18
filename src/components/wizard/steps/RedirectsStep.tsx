@@ -1495,6 +1495,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
             </Button>
           </div>
 
+          {/* Progress bar during matching */}
+          {isMatching && progress.total > 0 && (
+            <div className="mt-3 space-y-1">
+              <Progress value={Math.round((progress.current / progress.total) * 100)} className="h-2" />
+              <p className="text-xs text-muted-foreground">
+                Matcher {progress.current} af {progress.total} URLs...
+              </p>
+            </div>
+          )}
+
           {/* Bulk actions */}
           {redirects.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
