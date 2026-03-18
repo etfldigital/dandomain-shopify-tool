@@ -393,6 +393,7 @@ Deno.serve(async (req) => {
       const sourcePath = data?.source_path as string | null;
       const storedHandle = data?.shopify_handle as string | null;
       const handle = storedHandle || generateShopifyHandle(title);
+      const internalId = (data?.internal_id as string) || '';
 
       if (title) {
         entities.push({
@@ -403,6 +404,7 @@ Deno.serve(async (req) => {
           title,
           sku,
           external_id: product.external_id,
+          internal_id: internalId,
         });
       }
     }
