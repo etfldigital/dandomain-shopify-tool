@@ -566,9 +566,14 @@ Deno.serve(async (req) => {
       // Strategy 1.3: Compare source_path name parts (ignore ID suffixes)
       // DanDomain sitemap URLs and XML source_paths often have the same slug but different IDs
       if (!matched && slug) {
+        // Determine URL type to search only relevant entities
+        const isProductUrl = !!normalized.match(/-\d+p\.html$/i);
+        const isCategoryUrl = !!normalized.match(/-\d+[cs]\d*\.html$/i);
+        const allowedEntities = isProductUrl ? productEntities
+          : isCategoryUrl ? categoryEntities : entities;
         const urlNamePart = normalizeForComparison(extractProductNameFromSlug(slug));
         if (urlNamePart && urlNamePart.length > 3) {
-          for (const entity of entities) {
+          for (const entity of allowedEntities) {
             if (entity.source_path) {
               const entitySlug = extractSlugFromPath(normalizePath(entity.source_path));
               const entityNamePart = normalizeForComparison(extractProductNameFromSlug(entitySlug));
