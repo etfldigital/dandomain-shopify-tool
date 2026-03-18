@@ -44,6 +44,7 @@ interface UploadedEntity {
   title: string;
   sku?: string;
   external_id?: string;
+  internal_id?: string;
 }
 
 // Normalize path for comparison
