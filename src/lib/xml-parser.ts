@@ -208,8 +208,9 @@ export function parseProductsXML(xmlText: string, stats?: ParseStats): ProductDa
         });
       }
       
-      // Build DanDomain source path from title and SKU
-      // Pattern: /shop/{slugified-title}-{sku}p.html
+      // Build DanDomain source path from title and internal ID
+      // Pattern: /shop/{slugified-title}-{internalId}p.html
+      // DanDomain URLs use INTERNAL_ID (not SKU) in their URL structure
       const slugifiedTitle = title
         .toLowerCase()
         .replace(/[æ]/g, 'ae')
@@ -217,7 +218,8 @@ export function parseProductsXML(xmlText: string, stats?: ParseStats): ProductDa
         .replace(/[å]/g, 'aa')
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '');
-      const sourcePath = sku ? `/shop/${slugifiedTitle}-${sku}p.html` : null;
+      const sourceId = internalId || sku;
+      const sourcePath = sourceId ? `/shop/${slugifiedTitle}-${sourceId}p.html` : null;
       
       return {
         title,

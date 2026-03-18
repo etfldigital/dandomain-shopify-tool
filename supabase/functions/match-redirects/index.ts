@@ -588,16 +588,26 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Strategy 1.5: Extract numeric ID from DanDomain URL and match against external_id
+      // Strategy 1.5: Extract numeric ID from DanDomain URL and match against internal_id then external_id
       if (!matched) {
         const productIdMatch = normalized.match(/-(\d+)p\.html$/i);
         if (productIdMatch) {
           const dandoId = productIdMatch[1];
-          const entity = productEntities.find(e => e.external_id === dandoId);
-          if (entity) {
-            matched = entity;
-            confidence = 98;
+          // Try internal_id first (this is what DanDomain actually uses in URLs)
+          const entityByInternalId = internalIdToEntity.get(dandoId);
+          if (entityByInternalId && entityByInternalId.entity_type === 'product') {
+            matched = entityByInternalId;
+            confidence = 99;
             matchedBy = 'external_id';
+          }
+          // Fall back to external_id (SKU)
+          if (!matched) {
+            const entity = productEntities.find(e => e.external_id === dandoId);
+            if (entity) {
+              matched = entity;
+              confidence = 98;
+              matchedBy = 'external_id';
+            }
           }
         }
 
