@@ -503,6 +503,14 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Build internal_id lookup map (DanDomain INTERNAL_ID used in URLs)
+    const internalIdToEntity = new Map<string, UploadedEntity>();
+    for (const entity of entities) {
+      if (entity.internal_id) {
+        internalIdToEntity.set(entity.internal_id, entity);
+      }
+    }
+
     // Process each old path
     const matchedRedirects: MatchedRedirect[] = [];
     const unmatchedUrls: UnmatchedUrl[] = [];
