@@ -835,6 +835,10 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
       const nonProductQueue: Array<{ index: number; input: (typeof oldUrlsForMatching)[number] }> = [];
       const maxSuggestions = 3;
 
+      // Process product URLs with progress updates
+      let productProcessed = 0;
+      const productIndices: number[] = [];
+      
       for (let index = 0; index < oldUrlsForMatching.length; index += 1) {
         const url = oldUrlsForMatching[index];
 
@@ -842,47 +846,66 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
           nonProductQueue.push({ index, input: url });
           continue;
         }
+        
+        productIndices.push(index);
+      }
 
-        const { query, brandStripped } = buildBrandStrippedQuery(
-          url.productTitle,
-          url.productVendorWords,
-          url.loc,
-          knownBrands,
-        );
+      // Process products in batches for progress visibility
+      const PRODUCT_BATCH = 50;
+      for (let batchStart = 0; batchStart < productIndices.length; batchStart += PRODUCT_BATCH) {
+        const batchEnd = Math.min(batchStart + PRODUCT_BATCH, productIndices.length);
+        
+        // Update progress
+        setProgress({ current: batchStart, total: oldUrlsForMatching.length });
+        
+        // Yield to UI thread
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        
+        for (let bi = batchStart; bi < batchEnd; bi++) {
+          const index = productIndices[bi];
+          const url = oldUrlsForMatching[index];
 
-        let usedQuery = query;
-        let matches = usedQuery ? await searchProductsWithManualLogic(usedQuery) : [];
+          const { query, brandStripped } = buildBrandStrippedQuery(
+            url.productTitle,
+            url.productVendorWords,
+            url.loc,
+            knownBrands,
+          );
 
-        if (matches.length === 0 && url.productTitle) {
-          const unstrippedQuery = toSearchTokens(url.productTitle).join(' ');
-          if (unstrippedQuery && unstrippedQuery !== usedQuery) {
-            usedQuery = unstrippedQuery;
-            matches = await searchProductsWithManualLogic(usedQuery);
+          let usedQuery = query;
+          let matches = usedQuery ? await searchProductsWithManualLogic(usedQuery) : [];
+
+          if (matches.length === 0 && url.productTitle) {
+            const unstrippedQuery = toSearchTokens(url.productTitle).join(' ');
+            if (unstrippedQuery && unstrippedQuery !== usedQuery) {
+              usedQuery = unstrippedQuery;
+              matches = await searchProductsWithManualLogic(usedQuery);
+            }
           }
+
+          const scoredMatches = matches
+            .map((destination) => ({
+              destination,
+              score: scoreSearchResult(destination, usedQuery, brandStripped),
+            }))
+            .sort((a, b) => b.score - a.score || a.destination.title.localeCompare(b.destination.title));
+
+          const topMatch = scoredMatches[0] || null;
+
+          indexedResults.set(index, {
+            oldUrl: url.loc,
+            oldType: url.type,
+            matchedDestination: topMatch ? topMatch.destination : null,
+            score: topMatch ? topMatch.score : 0,
+            matchMethod: topMatch
+              ? (brandStripped ? 'manual_search_auto_brand_stripped' : 'manual_search_auto')
+              : 'none',
+            suggestions: scoredMatches.slice(0, maxSuggestions).map((item) => ({
+              destination: item.destination,
+              score: item.score,
+            })),
+          });
         }
-
-        const scoredMatches = matches
-          .map((destination) => ({
-            destination,
-            score: scoreSearchResult(destination, usedQuery, brandStripped),
-          }))
-          .sort((a, b) => b.score - a.score || a.destination.title.localeCompare(b.destination.title));
-
-        const topMatch = scoredMatches[0] || null;
-
-        indexedResults.set(index, {
-          oldUrl: url.loc,
-          oldType: url.type,
-          matchedDestination: topMatch ? topMatch.destination : null,
-          score: topMatch ? topMatch.score : 0,
-          matchMethod: topMatch
-            ? (brandStripped ? 'manual_search_auto_brand_stripped' : 'manual_search_auto')
-            : 'none',
-          suggestions: scoredMatches.slice(0, maxSuggestions).map((item) => ({
-            destination: item.destination,
-            score: item.score,
-          })),
-        });
       }
 
       if (nonProductQueue.length > 0) {
@@ -1471,6 +1494,16 @@ export function RedirectsStep({ project, onNext }: RedirectsStepProps) {
               Nulstil
             </Button>
           </div>
+
+          {/* Progress bar during matching */}
+          {isMatching && progress.total > 0 && (
+            <div className="mt-3 space-y-1">
+              <Progress value={Math.round((progress.current / progress.total) * 100)} className="h-2" />
+              <p className="text-xs text-muted-foreground">
+                Matcher {progress.current} af {progress.total} URLs...
+              </p>
+            </div>
+          )}
 
           {/* Bulk actions */}
           {redirects.length > 0 && (
